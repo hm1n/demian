@@ -1,0 +1,10 @@
+{
+  "cssTheme": "GitHub Theme",
+  "interfaceFontFamily": "Pretendard",
+  "textFontFamily": "Pretendard",
+  "monospaceFontFamily": "RobotoMono Nerd Font Mono",
+  "accentColor": "#a0e290",
+  "enabledCssSnippets": [
+    "toss"
+  ]
+}

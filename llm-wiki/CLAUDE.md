@@ -1,0 +1,1 @@
+C:/Users/user/Documents/1st-project/llm-wiki/AGENTS.md

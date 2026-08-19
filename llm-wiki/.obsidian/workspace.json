@@ -1,0 +1,221 @@
+{
+  "main": {
+    "id": "687c6f5c4b722317",
+    "type": "split",
+    "children": [
+      {
+        "id": "75484f3c794762c6",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d9673ea967a117fb",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "wiki/사전-인터뷰-4건-종합.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "사전-인터뷰-4건-종합"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "25dc2ee46c009157",
+    "type": "split",
+    "children": [
+      {
+        "id": "400864f0f6e9a35f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "faa0ac9dfc5593b6",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "파일 탐색기"
+            }
+          },
+          {
+            "id": "53151c20d81bc054",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "검색"
+            }
+          },
+          {
+            "id": "a751404ea175cff0",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "북마크"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "612a0cd25476558a",
+    "type": "split",
+    "children": [
+      {
+        "id": "35d03b6e1cc8af97",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "cab8086920bdae66",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "wiki/사전-인터뷰-4건-종합.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "백링크"
+            }
+          },
+          {
+            "id": "6a6a577474a3c102",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "wiki/사전-인터뷰-4건-종합.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "나가는 링크"
+            }
+          },
+          {
+            "id": "7658fbbdd3c2bd61",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "태그"
+            }
+          },
+          {
+            "id": "30680de68bcee053",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "모든 속성"
+            }
+          },
+          {
+            "id": "5921fddba53e60ce",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "wiki/사전-인터뷰-4건-종합.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "개요"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:빠른 전환기 열기": false,
+      "graph:그래프 뷰 열기": false,
+      "canvas:새 캔버스 만들기": false,
+      "daily-notes:오늘의 일일 노트 열기": false,
+      "templates:템플릿 삽입": false,
+      "command-palette:명령어 팔레트 열기": false,
+      "bases:새 베이스 생성하기": false
+    }
+  },
+  "active": "d9673ea967a117fb",
+  "lastOpenFiles": [
+    "raw/2026-08-19-ai-provider-비용비교-session-log.md",
+    "log.md.tmp.7176.57dd6bc62dfb",
+    "output/2026-08-19-한계점-대응-결정-v1.md",
+    "wiki/2026-08-19-강사피드백-기반-한계점-분석.md",
+    "raw/2026-08-19-강사인터뷰-피드백.md",
+    "output/2026-08-19-강사피드백-질문리스트-확정-v1.md",
+    "wiki/사전-인터뷰-4건-종합.md",
+    "wiki/2026-08-19-기능-정의-초안.md",
+    "output/2026-08-19-서비스기획-확정-v1.md",
+    "raw/2026-08-19-실시간ai스트리밍응답-기능-설계-session-log.md",
+    "raw/2026-08-19-꼬리질문-기능-설계-session-log.md",
+    "raw/2026-08-19-코드기반ai질문-기능-설계-session-log.md",
+    "raw/2026-08-19-경험선택-기능-설계-session-log.md",
+    "raw/2026-08-19-경험후보근거표시-기능-설계-session-log.md",
+    "raw/2026-08-19-개발경험후보생성-기능-설계-session-log.md",
+    "raw/2026-08-19-repository-데이터조회-기능-경계-session-log.md",
+    "log.md.tmp.7176.a23b0885c1b0",
+    "raw/2026-08-19-기능-정의서-템플릿-설계-session-log.md",
+    "log.md.tmp.7176.c313350c159f",
+    "raw/2026-08-19-github-repository-입력-기능-설계-session-log.md",
+    "AGENTS.md",
+    "index.md",
+    "log.md",
+    "wiki/사전-인터뷰-4건-종합-v2.md",
+    "log.md.tmp.7176.69905445edb4",
+    "raw/2026-08-19-ai코드-소유감-재해석-session-log.md",
+    "raw/2026-08-18-사전인터뷰-인터뷰이4.md"
+  ]
+}
