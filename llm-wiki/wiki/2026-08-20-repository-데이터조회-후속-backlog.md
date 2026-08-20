@@ -60,6 +60,12 @@ Issue #3 PR(#8) 리뷰에서 non-blocking으로 판정해 이번 PR에 반영하
 - 테스트가 커밋 상세와 언어 통계와 파일 트리 요청 URL은 검증하지만 PR 조회 요청 URL은 검증하지 않는다.
 - 구현 세션 로그에 부분 실패의 원인 오류 종류를 `cause`로 보존한다는 설명이 없다.
 
+### 7. Issue #5 상태 화면 후속 항목
+
+- 3단계 파생 지표 계산은 `buildCandidateData`의 동기 객체 조립이며 실제 계산은 없다. 현재는 `setTimeout(0)`으로 상태를 그릴 기회만 만든다.
+- 커밋 목록 응답 JSON 파싱 실패는 `network`로 분류되어 사용자에게 네트워크 연결 확인 안내가 표시된다.
+- 테스트를 위해 `AnalysisDependencies`에 `yieldToBrowser`를 주입하고 프로덕션 DOM에 `data-error-kind`를 남겼다.
+
 ## 확인 필요
 
 - 위 항목 중 어느 것이 실데이터 검증에서 먼저 드러나는지 관측되지 않았다.
