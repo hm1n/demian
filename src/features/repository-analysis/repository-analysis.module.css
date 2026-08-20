@@ -1,0 +1,34 @@
+.shell { width: min(760px, 100%); display: grid; gap: 24px; }
+.header { display: grid; gap: 10px; }
+.eyebrow { color: #5b52d6; font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.header h1 { color: #171721; font-size: clamp(30px, 6vw, 48px); letter-spacing: -.04em; line-height: 1.08; }
+.header p:last-child { color: #62626e; font-size: 16px; line-height: 1.65; }
+.card { background: #fff; border: 1px solid #e8e7ed; border-radius: 18px; box-shadow: 0 18px 50px rgba(31, 28, 55, .08); padding: clamp(20px, 5vw, 32px); }
+.form, .state { display: grid; gap: 18px; }
+.repositoryFields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field { display: grid; gap: 8px; color: #383743; font-size: 14px; font-weight: 650; }
+.field input { width: 100%; border: 1px solid #d7d5df; border-radius: 10px; color: #171721; background: #fff; font: inherit; font-weight: 450; padding: 12px 14px; outline: none; }
+.field input:focus { border-color: #6d63e8; box-shadow: 0 0 0 3px rgba(109, 99, 232, .14); }
+.field input:disabled { background: #f4f3f7; color: #777580; }
+.hint { color: #74727d; font-size: 12px; font-weight: 450; line-height: 1.5; }
+.button, .secondaryButton { min-height: 44px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
+.button { border: 1px solid #5b52d6; background: #5b52d6; color: #fff; }
+.button:hover:not(:disabled) { background: #4d44c5; }
+.button:disabled { cursor: wait; opacity: .65; }
+.secondaryButton { border: 1px solid #d7d5df; background: #fff; color: #34333d; }
+.state { gap: 12px; margin-top: 24px; border-top: 1px solid #ecebf0; padding-top: 24px; }
+.state h2 { color: #1f1e28; font-size: 20px; letter-spacing: -.02em; }
+.state p { color: #696773; font-size: 14px; line-height: 1.65; }
+.step { color: #5b52d6; font-size: 13px; font-weight: 750; }
+.progressTrack { width: 100%; height: 8px; overflow: hidden; border-radius: 999px; background: #ebeaf0; }
+.progressBar { height: 100%; border-radius: inherit; background: #6d63e8; transition: width 180ms ease; }
+.indeterminate { width: 38%; animation: loading 1.2s ease-in-out infinite alternate; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.metric { border-radius: 12px; background: #f5f4fa; padding: 16px; }
+.metric strong, .metric span { display: block; }
+.metric strong { color: #282632; font-size: 24px; }
+.metric span { margin-top: 4px; color: #777580; font-size: 12px; }
+@keyframes loading { from { transform: translateX(-8%); } to { transform: translateX(172%); } }
+@media (max-width: 560px) { .repositoryFields, .summary { grid-template-columns: 1fr; } .button, .secondaryButton { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .indeterminate { animation: none; } .progressBar { transition: none; } }
