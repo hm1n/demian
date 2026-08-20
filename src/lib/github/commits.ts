@@ -32,7 +32,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   }
 }
 
-async function classifyErrorResponse(response: Response): Promise<GitHubFetchErrorKind> {
+export async function classifyErrorResponse(response: Response): Promise<GitHubFetchErrorKind> {
   if (response.status === 404) return "repo_not_found";
   if (response.status === 401) return "auth_revoked";
   if (response.status === 429) return "rate_limit";
@@ -54,7 +54,7 @@ async function classifyErrorResponse(response: Response): Promise<GitHubFetchErr
   return "server_error";
 }
 
-async function githubFetch(url: string, token: string): Promise<Response> {
+export async function githubFetch(url: string, token: string): Promise<Response> {
   try {
     return await fetch(url, { headers: githubHeaders(token) });
   } catch {
@@ -63,7 +63,7 @@ async function githubFetch(url: string, token: string): Promise<Response> {
 }
 
 /** 성공 응답의 body 파싱이 실패하면(끊긴 연결, 깨진 JSON) network 오류로 통일해서 던진다. */
-async function parseJson<T>(response: Response, context: string): Promise<T> {
+export async function parseJson<T>(response: Response, context: string): Promise<T> {
   try {
     return (await response.json()) as T;
   } catch (error) {
@@ -71,7 +71,7 @@ async function parseJson<T>(response: Response, context: string): Promise<T> {
   }
 }
 
-function parseNextLink(linkHeader: string | null): string | null {
+export function parseNextLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
   for (const part of linkHeader.split(",")) {
     const match = part.match(/<([^>]+)>;\s*rel="next"/);
@@ -90,11 +90,11 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
   };
 }
 
-interface RepoInfo {
+export interface RepoInfo {
   defaultBranch: string;
 }
 
-async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
+export async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
   const response = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
   if (!response.ok) {
     throw new GitHubFetchError(
