@@ -34,6 +34,8 @@ Issue #3 PR(#8) 리뷰에서 non-blocking으로 판정해 이번 PR에 반영하
 
 미뤄 둔 이유는 `classifyErrorResponse`가 Issue #1과 #2 구현이 함께 쓰는 공용 분류라는 점이다. 새 오류 종류를 추가하면 이번 PR 범위를 넘는 변경이 되고, 그 종류를 소비하는 화면도 아직 없다. 422가 실제 호출에서 관측된 근거도 없어 `확인 필요` 상태다.
 
+PR #11 리뷰에서 Codex bot이 같은 지적을 다시 제기했다. 2026-08-20 현재 여전히 실제 호출에서 관측된 근거는 없다.
+
 실데이터 검증에서 422가 관측되면 오류 종류를 추가한다. 그때 안내 문구까지 함께 정한다.
 
 ### 3. `changedFiles`와 `stats` 불일치
@@ -59,6 +61,12 @@ Issue #3 PR(#8) 리뷰에서 non-blocking으로 판정해 이번 PR에 반영하
 - `partialCommits`에는 부분 실패 시 `CommitDetail` 값이 담기지만 필드 타입은 `CommitSummary[]`다. 호출자가 좁혀 쓸 수 있다는 주석이 없다.
 - 테스트가 커밋 상세와 언어 통계와 파일 트리 요청 URL은 검증하지만 PR 조회 요청 URL은 검증하지 않는다.
 - 구현 세션 로그에 부분 실패의 원인 오류 종류를 `cause`로 보존한다는 설명이 없다.
+
+### 7. Issue #5 상태 화면 후속 항목
+
+- 3단계 파생 지표 계산은 `buildCandidateData`의 동기 객체 조립이며 실제 계산은 없다. 현재는 `setTimeout(0)`으로 상태를 그릴 기회만 만든다.
+- 커밋 목록 응답 JSON 파싱 실패는 `network`로 분류되어 사용자에게 네트워크 연결 확인 안내가 표시된다.
+- 테스트를 위해 `AnalysisDependencies`에 `yieldToBrowser`를 주입하고 프로덕션 DOM에 `data-error-kind`를 남겼다.
 
 ## 확인 필요
 

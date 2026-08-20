@@ -181,7 +181,9 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       response = await githubFetch(url, token);
     } catch (error) {
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
+        throw new GitHubFetchError("partial_failure", (error as Error).message, commits, {
+          cause: error,
+        });
       }
       throw error;
     }
@@ -201,24 +203,32 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
 
     if (!response.ok) {
       const message = `커밋 목록 조회에 실패했습니다 (${response.status})`;
+      const cause = new GitHubFetchError(await classifyErrorResponse(response), message);
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", message, commits);
+        throw new GitHubFetchError("partial_failure", message, commits, { cause });
       }
-      throw new GitHubFetchError(await classifyErrorResponse(response), message);
+      throw cause;
     }
 
     try {
       const page = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
       commits.push(...page.map(toCommitSummary));
     } catch (error) {
+      const cause =
+        error instanceof GitHubFetchError
+          ? error
+          : new GitHubFetchError(
+              "network",
+              `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`,
+              undefined,
+              { cause: error }
+            );
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
+        throw new GitHubFetchError("partial_failure", cause.message, commits, {
+          cause,
+        });
       }
-      if (error instanceof GitHubFetchError) throw error;
-      throw new GitHubFetchError(
-        "network",
-        `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`
-      );
+      throw cause;
     }
 
     url = parseNextLink(response.headers.get("link"));

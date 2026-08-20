@@ -161,6 +161,30 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
+    expect(error.cause).toBeUndefined();
+  });
+
+  it("일부 페이지 수집 뒤 호출 한도를 초과하면 원래 rate_limit 분류를 보존한다", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => rawCommit(i));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockRepoAndBranch(fetchMock)
+      .mockResolvedValueOnce(
+        jsonResponse(page1, { headers: { link: `<${COMMITS_URL}?page=2>; rel="next"` } })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "API rate limit exceeded" },
+          { status: 403, headers: { "x-ratelimit-remaining": "0" } }
+        )
+      );
+
+    const error: GitHubFetchError = await fetchAllCommits(AUTH).catch((caught) => caught);
+
+    expect(error.kind).toBe("partial_failure");
+    expect(error.partialCommits).toHaveLength(100);
+    expect(error.cause).toMatchObject({ kind: "rate_limit" });
   });
 
   it("429 응답도 rate_limit 오류로 분류한다", async () => {
@@ -252,6 +276,7 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
+    expect(error.cause).toMatchObject({ kind: "network" });
   });
 
   it("Repository 정보 응답을 해석할 수 없으면 network 오류를 던진다", async () => {
@@ -299,6 +324,7 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
+    expect(error.cause).toMatchObject({ kind: "network" });
   });
 
   it("첫 페이지 커밋 형태가 잘못되면 타입이 있는 network 오류를 던진다", async () => {
