@@ -4,7 +4,7 @@ import { GitHubFetchError } from "./errors";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "test-token" };
 const COMMITS = [
-  { sha: "sha-1", title: "feat: first", author: "octocat", date: "2026-08-20" },
+  { sha: "sha-1", title: "feat: first", author: "octocat", date: "2026-08-20", parentCount: 1 },
 ];
 
 function jsonResponse(
