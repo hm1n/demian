@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildCandidateData, fetchCandidateData } from "./candidate-data";
+import { CandidateDataFetchError } from "./errors";
 import type { CommitSummary, RepositoryContributionData } from "./types";
 
 const ALL_COMMITS: readonly CommitSummary[] = [
@@ -56,8 +57,8 @@ function contributionData(): RepositoryContributionData {
   };
 }
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), { status: 200 });
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
 }
 
 afterEach(() => {
@@ -67,7 +68,7 @@ afterEach(() => {
 describe("buildCandidateData", () => {
   it("전체 커밋과 RepositoryContributionData를 후보 생성 입력으로 전달한다", () => {
     const contributions = contributionData();
-    const output = buildCandidateData(ALL_COMMITS, contributions);
+    const output = buildCandidateData({ allCommits: ALL_COMMITS, contributionData: contributions });
 
     expect(output).toEqual({
       allCommits: ALL_COMMITS,
@@ -81,7 +82,10 @@ describe("buildCandidateData", () => {
   });
 
   it("제외 커밋은 전체 메타데이터에만 남기고 비제외 커밋은 기존 평면 지표를 보존한다", () => {
-    const output = buildCandidateData(ALL_COMMITS, contributionData());
+    const output = buildCandidateData({
+      allCommits: ALL_COMMITS,
+      contributionData: contributionData(),
+    });
 
     expect(output.allCommits.map(({ sha }) => sha)).toEqual(["included", "excluded"]);
     expect(output.includedCommits.map(({ sha }) => sha)).toEqual(["included"]);
@@ -96,24 +100,35 @@ describe("buildCandidateData", () => {
     const contributions = contributionData();
     contributions.commits[0].pullRequests = [];
 
-    expect(buildCandidateData(ALL_COMMITS, contributions).includedCommits[0].pullRequests).toEqual(
-      []
-    );
+    expect(
+      buildCandidateData({ allCommits: ALL_COMMITS, contributionData: contributions })
+        .includedCommits[0].pullRequests
+    ).toEqual([]);
   });
 
   it("읽기 전용 계약으로 앞 단계의 배열과 PR 정보를 변형 없이 전달한다", () => {
     const contributions = contributionData();
-    const output = buildCandidateData(ALL_COMMITS, contributions);
+    const output = buildCandidateData({ allCommits: ALL_COMMITS, contributionData: contributions });
 
     expect(output.allCommits).toBe(ALL_COMMITS);
     expect(output.includedCommits).toBe(contributions.commits);
     expect(output.repository.fileTree).toBe(contributions.tree);
     expect(output.includedCommits[0].pullRequests).toBe(contributions.commits[0].pullRequests);
+
+    if (false) {
+      // @ts-expect-error 출력 계약은 중첩 파일 배열도 변경할 수 없게 한다.
+      output.includedCommits[0].files.push(contributions.commits[0].files[0]);
+      // @ts-expect-error 출력 계약은 PR 객체의 필드 변경도 허용하지 않는다.
+      output.includedCommits[0].pullRequests[0].state = "open";
+    }
   });
 
   it("GitHub API 호출이나 후보 평가 결과를 출력 조립 단계에 추가하지 않는다", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const output = buildCandidateData(ALL_COMMITS, contributionData());
+    const output = buildCandidateData({
+      allCommits: ALL_COMMITS,
+      contributionData: contributionData(),
+    });
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(output.includedCommits[0]).not.toHaveProperty("score");
@@ -150,6 +165,64 @@ describe("fetchCandidateData", () => {
 
     expect(output.allCommits).toBe(ALL_COMMITS);
     expect(output.includedCommits.map(({ sha }) => sha)).toEqual(["included"]);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const calledUrls = fetchMock.mock.calls.map(([url]) => url);
+    expect(calledUrls).toEqual(
+      expect.arrayContaining([
+        "https://api.github.com/repos/hm1n/demian/commits/included",
+        "https://api.github.com/repos/hm1n/demian/commits/included/pulls?per_page=100",
+        "https://api.github.com/repos/hm1n/demian/languages",
+        "https://api.github.com/repos/hm1n/demian/git/trees/HEAD?recursive=1",
+      ])
+    );
+  });
+
+  it("부분 실패 시 이미 수집한 CommitDetail을 타입 안전한 오류로 보존한다", async () => {
+    const secondCommit: CommitSummary = {
+      sha: "second",
+      title: "feat: add formatter",
+      author: "min",
+      date: "2026-08-20",
+      parentCount: 1,
+    };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          sha: "included",
+          commit: {
+            message: "feat: add parser",
+            author: { name: "min", date: "2026-08-20" },
+          },
+          author: { login: "min" },
+          stats: { additions: 12, deletions: 3 },
+          files: [
+            {
+              filename: "src/parser.ts",
+              status: "modified",
+              additions: 12,
+              deletions: 3,
+              changes: 15,
+            },
+          ],
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse({ message: "server down" }, 500));
+
+    const error: CandidateDataFetchError = await fetchCandidateData(
+      { owner: "hm1n", repo: "demian", token: "token" },
+      [ALL_COMMITS[0], secondCommit]
+    ).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(CandidateDataFetchError);
+    expect(error.kind).toBe("partial_failure");
+    expect(error.partialCommits).toHaveLength(1);
+    expect(error.partialCommits?.[0]).toMatchObject({
+      sha: "included",
+      changedFiles: 1,
+      files: [{ path: "src/parser.ts" }],
+      pullRequests: [],
+    });
   });
 });
