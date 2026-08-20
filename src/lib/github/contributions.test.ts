@@ -270,6 +270,39 @@ describe("fetchRepositoryContributionData", () => {
     expect(result.treeTruncated).toBe(false);
   });
 
+  it("언어 통계 조회 후 트리 409가 나도 빈 저장소의 빈 트리로 처리한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(
+        jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
+      );
+
+    const result = await fetchRepositoryContributionData(AUTH, []);
+
+    expect(result.tree).toEqual([]);
+    expect(result.treeTruncated).toBe(false);
+  });
+
+  it("상세 조회한 커밋이 있는데 트리가 404면 빈 저장소로 보지 않고 실패로 전달한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(rawDetail()))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse({ TypeScript: 10 }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, { status: 404 }));
+
+    const error: GitHubFetchError = await fetchRepositoryContributionData(AUTH, COMMITS).catch(
+      (caught) => caught
+    );
+
+    expect(error.kind).toBe("partial_failure");
+    expect((error.cause as GitHubFetchError).kind).toBe("repo_not_found");
+    expect(error.partialCommits).toHaveLength(1);
+  });
+
   it("언어 통계 조회에서 404가 나면 존재하지 않는 Repository로 구분한다", async () => {
     const fetchMock = vi
       .fn()

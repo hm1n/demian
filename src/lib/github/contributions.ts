@@ -200,8 +200,11 @@ export async function fetchRepositoryContributionData(
       token
     );
     let tree: RawTree;
-    if (treeResponse.status === 404) {
-      // 언어 통계 조회가 성공했으므로 Repository 미존재가 아니라 커밋이 없는 빈 저장소다.
+    // 커밋이 없는 저장소는 HEAD ref가 없어 404를, 저장소 자체가 비어 있는 동안에는 409를 반환한다.
+    // 언어 통계 조회가 방금 성공했고 상세 조회할 커밋도 없으므로 Repository 미존재가 아니라 빈 저장소다.
+    // 상세 조회한 커밋이 있는데도 트리가 없는 경우는 빈 저장소일 수 없어 실패로 던진다.
+    const treeMissing = treeResponse.status === 404 || treeResponse.status === 409;
+    if (treeMissing && commits.length === 0) {
       tree = { tree: [], truncated: false };
     } else if (!treeResponse.ok) {
       throw new GitHubFetchError(
