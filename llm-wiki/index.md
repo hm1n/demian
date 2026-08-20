@@ -15,8 +15,9 @@
 ## 먼저 읽을 문서
 
 - `wiki/2026-08-20-repository-후보데이터-출력-스키마.md` : Repository 조회·분석 결과를 후보 생성 기능에 전달하는 출력 인터페이스와 책임 경계
+- `wiki/2026-08-20-repository-조회상태-정책.md` : Repository 조회의 Loading, Empty, Error 안내와 복구 정책
 
 ## 최근 산출물
 
 - `wiki/2026-08-20-repository-후보데이터-출력-스키마.md` : GitHub 이슈 #4 Repository 후보 데이터 출력 스키마
-
+- `wiki/2026-08-20-repository-조회상태-정책.md` : GitHub 이슈 #5 Repository 조회 상태와 복구 정책
