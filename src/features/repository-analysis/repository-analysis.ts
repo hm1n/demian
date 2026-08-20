@@ -131,7 +131,7 @@ export function toAnalysisError(error: unknown, context: FailureContext): Analys
     kind: "partial_failure",
     ...(causeKind === undefined ? {} : { causeKind }),
     title: "일부 Repository 데이터만 수집했습니다",
-    message: `${range}${causeGuidance} 중복이나 누락을 피하기 위해 부분 결과는 이어 쓰지 않고 전체 조회를 다시 시도합니다.`,
+    message: `${range}${causeGuidance} 중복이나 누락을 피하기 위해 부분 결과는 이어 쓰지 않습니다. 복구를 마치면 처음부터 다시 조회합니다.`,
     recovery: causeKind ? errorCopy(causeKind).recovery : "retry",
     completed,
     ...(context.total === undefined ? {} : { total: context.total }),
