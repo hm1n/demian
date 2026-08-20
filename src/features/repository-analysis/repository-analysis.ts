@@ -132,7 +132,7 @@ export function toAnalysisError(error: unknown, context: FailureContext): Analys
     ...(causeKind === undefined ? {} : { causeKind }),
     title: "일부 Repository 데이터만 수집했습니다",
     message: `${range}${causeGuidance} 중복이나 누락을 피하기 위해 부분 결과는 이어 쓰지 않고 전체 조회를 다시 시도합니다.`,
-    recovery: causeKind === "auth_revoked" ? "reauthenticate" : "retry",
+    recovery: causeKind ? errorCopy(causeKind).recovery : "retry",
     completed,
     ...(context.total === undefined ? {} : { total: context.total }),
   };

@@ -127,4 +127,14 @@ describe("toAnalysisError", () => {
       recovery: "reauthenticate",
     });
   });
+
+  it("Repository 미존재가 원인인 partial_failure는 Repository 재선택으로 복구한다", () => {
+    const cause = new GitHubFetchError("repo_not_found", "not found");
+    const error = new GitHubFetchError("partial_failure", "partial", [COMMIT], { cause });
+    expect(toAnalysisError(error, { step: "commits" })).toMatchObject({
+      kind: "partial_failure",
+      causeKind: "repo_not_found",
+      recovery: "select_repository",
+    });
+  });
 });
