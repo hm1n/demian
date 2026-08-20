@@ -87,6 +87,9 @@ describe("classifyBlacklistedCommit", () => {
     "feat: 프린트 미리보기 추가",
     "refactor: upgrade 파싱 알고리즘",
     "feat: 사용자 등급 upgrade 로직",
+    "style: 친구 목록 퍼블리싱",
+    "style: 버튼 컴포넌트 마크업",
+    "style: 알림 목록 정렬 추가",
     "feat: 알림 읽기 상태에 따른 정렬 추가",
     "fix: bump upload limit to 10 MB",
     "fix: bump upload limit from 5 to 10 MB",
@@ -125,7 +128,11 @@ describe("classifyBlacklistedCommit", () => {
     ["docs: add guide", "documentation"],
     ["chore(deps): bump react", "dependency"],
     ["build(deps): update vite", "dependency"],
+    ["fix(deps): update dependency axios to v1.6.0", "dependency"],
+    ["chore(deps-dev): bump eslint from 8 to 9", "dependency"],
     ["style: run prettier", "formatting"],
+    ["style: apply eslint", "formatting"],
+    ["style: 포맷 적용", "formatting"],
     ["fix: typo in login label", "typo"],
   ] as const)("Conventional Commit 접두사로 분류한다: %s", (message, category) => {
     expect(classifyBlacklistedCommit(commit(message))).toBe(category);
@@ -135,6 +142,17 @@ describe("classifyBlacklistedCommit", () => {
     expect(
       classifyBlacklistedCommit(commit("Bump react from 18 to 19", 1, "sha", "dependabot[bot]"))
     ).toBe("dependency");
+    expect(
+      classifyBlacklistedCommit(commit("Bump react from 18 to 19", 1, "sha", "renovate[bot]"))
+    ).toBe("dependency");
+    expect(
+      classifyBlacklistedCommit(commit("Bump react from 18 to 19", 1, "sha", "renovate-maintainer"))
+    ).toBeNull();
+    expect(
+      classifyBlacklistedCommit(
+        commit("Bump upload limit from 5 MB to 10 MB", 1, "sha", "dependabot-fan")
+      )
+    ).toBeNull();
     expect(classifyBlacklistedCommit(commit("Bump react from 18 to 19"))).toBeNull();
   });
 

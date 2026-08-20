@@ -19,7 +19,7 @@ const KOREAN_DOCUMENTATION_PATTERN = new RegExp(`^(?:문서화|(?:문서|리드�
 const KOREAN_DEPENDENCY_PATTERN = new RegExp(`^버전업(?:\\s*${KOREAN_ACTION})?$`);
 const KOREAN_TYPO_PATTERN = new RegExp(`^(?:오타|오탈자|맞춤법)(?:\\s*${KOREAN_ACTION})?$`);
 const KOREAN_FORMATTING_PATTERN = new RegExp(`^(?:포맷|린트)(?:\\s*${KOREAN_ACTION})?$`);
-const BOT_PATTERN = /\[bot\]$|^(?:dependabot|renovate)/i;
+const BOT_PATTERN = /\[bot\]$/i;
 const BOT_BUMP_PATTERN = /^bump .+ from .+ to .+$/i;
 
 /**
@@ -37,10 +37,15 @@ export function classifyBlacklistedCommit({
   if (conventional) {
     const [, type, scope, subject] = conventional;
     if (type.toLowerCase() === "docs") return "documentation";
-    if (/^(?:chore|build|ci)$/i.test(type) && /^(?:deps|dependencies|deps-dev)$/i.test(scope ?? "")) {
+    if (/^(?:chore|build|ci|fix)$/i.test(type) && /^(?:deps|dependencies|deps-dev)$/i.test(scope ?? "")) {
       return "dependency";
     }
-    if (type.toLowerCase() === "style") return "formatting";
+    if (
+      type.toLowerCase() === "style" &&
+      (FORMATTING_PATTERN.test(subject) || KOREAN_FORMATTING_PATTERN.test(subject))
+    ) {
+      return "formatting";
+    }
     if (/^(?:fix|chore)$/i.test(type) && (TYPO_PATTERN.test(subject) || KOREAN_TYPO_PATTERN.test(subject))) {
       return "typo";
     }
