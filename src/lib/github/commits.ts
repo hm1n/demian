@@ -181,7 +181,9 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       response = await githubFetch(url, token);
     } catch (error) {
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
+        throw new GitHubFetchError("partial_failure", (error as Error).message, commits, {
+          cause: error,
+        });
       }
       throw error;
     }
@@ -190,10 +192,15 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       // 커밋이 하나도 없는 Repository는 200 []이 아니라 409 "Git Repository is empty"를 반환한다.
       // 이미 일부 페이지를 받은 뒤라면 저장소 상태가 바뀐 것이므로 partial_failure로 처리한다.
       if (commits.length > 0) {
+        const cause = new GitHubFetchError(
+          "server_error",
+          "커밋 목록 조회 중 저장소 상태가 변경되었습니다 (409)"
+        );
         throw new GitHubFetchError(
           "partial_failure",
           `커밋 목록 조회 중 저장소 상태가 변경되어 실패했습니다 (409)`,
-          commits
+          commits,
+          { cause }
         );
       }
       break;
@@ -201,24 +208,32 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
 
     if (!response.ok) {
       const message = `커밋 목록 조회에 실패했습니다 (${response.status})`;
+      const cause = new GitHubFetchError(await classifyErrorResponse(response), message);
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", message, commits);
+        throw new GitHubFetchError("partial_failure", message, commits, { cause });
       }
-      throw new GitHubFetchError(await classifyErrorResponse(response), message);
+      throw cause;
     }
 
     try {
       const page = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
       commits.push(...page.map(toCommitSummary));
     } catch (error) {
+      const cause =
+        error instanceof GitHubFetchError
+          ? error
+          : new GitHubFetchError(
+              "network",
+              `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`,
+              undefined,
+              { cause: error }
+            );
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
+        throw new GitHubFetchError("partial_failure", cause.message, commits, {
+          cause,
+        });
       }
-      if (error instanceof GitHubFetchError) throw error;
-      throw new GitHubFetchError(
-        "network",
-        `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`
-      );
+      throw cause;
     }
 
     url = parseNextLink(response.headers.get("link"));
