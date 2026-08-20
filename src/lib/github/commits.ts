@@ -11,6 +11,7 @@ interface RawCommit {
     author: { name: string; date: string } | null;
   };
   author: { login: string } | null;
+  parents: Array<{ sha: string }>;
 }
 
 function githubHeaders(token: string): HeadersInit {
@@ -85,6 +86,7 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
     title: raw.commit.message.split("\n")[0],
     author: raw.author?.login ?? raw.commit.author?.name ?? "unknown",
     date: raw.commit.author?.date ?? "",
+    parentCount: raw.parents.length,
   };
 }
 

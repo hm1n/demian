@@ -14,6 +14,7 @@ function rawCommit(i: number) {
       author: { name: `author-${i}`, date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}` },
     },
     author: { login: `login-${i}` },
+    parents: [{ sha: `parent-${i}` }],
   };
 }
 
@@ -64,6 +65,7 @@ describe("fetchAllCommits", () => {
       title: "commit message 0",
       author: "login-0",
       date: "2026-01-01",
+      parentCount: 1,
     });
     expect(fetchMock).toHaveBeenCalledTimes(5);
 

@@ -9,4 +9,5 @@ export interface CommitSummary {
   title: string;
   author: string;
   date: string;
+  parentCount: number;
 }
