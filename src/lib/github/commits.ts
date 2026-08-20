@@ -207,16 +207,19 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       throw new GitHubFetchError(await classifyErrorResponse(response), message);
     }
 
-    let page: RawCommit[];
     try {
-      page = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
+      const page = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
+      commits.push(...page.map(toCommitSummary));
     } catch (error) {
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", (error as GitHubFetchError).message, commits);
+        throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
       }
-      throw error;
+      if (error instanceof GitHubFetchError) throw error;
+      throw new GitHubFetchError(
+        "network",
+        `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`
+      );
     }
-    commits.push(...page.map(toCommitSummary));
 
     url = parseNextLink(response.headers.get("link"));
   }

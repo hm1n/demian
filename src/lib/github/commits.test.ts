@@ -300,4 +300,33 @@ describe("fetchAllCommits", () => {
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
   });
+
+  it("첫 페이지 커밋 형태가 잘못되면 타입이 있는 network 오류를 던진다", async () => {
+    const malformed = { ...rawCommit(0), parents: undefined };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(jsonResponse([malformed]));
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "network" });
+  });
+
+  it("후속 페이지 커밋 형태가 잘못되면 이미 조회한 커밋과 함께 partial_failure를 던진다", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => rawCommit(i));
+    const malformed = { ...rawCommit(100), commit: undefined };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockRepoAndBranch(fetchMock)
+      .mockResolvedValueOnce(
+        jsonResponse(page1, { headers: { link: `<${COMMITS_URL}?page=2>; rel="next"` } })
+      )
+      .mockResolvedValueOnce(jsonResponse([malformed]));
+
+    const error: GitHubFetchError = await fetchAllCommits(AUTH).catch((e) => e);
+
+    expect(error).toBeInstanceOf(GitHubFetchError);
+    expect(error.kind).toBe("partial_failure");
+    expect(error.partialCommits).toHaveLength(100);
+  });
 });
