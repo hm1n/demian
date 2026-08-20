@@ -12,8 +12,13 @@ export class GitHubFetchError extends Error {
   readonly kind: GitHubFetchErrorKind;
   readonly partialCommits?: CommitSummary[];
 
-  constructor(kind: GitHubFetchErrorKind, message: string, partialCommits?: CommitSummary[]) {
-    super(message);
+  constructor(
+    kind: GitHubFetchErrorKind,
+    message: string,
+    partialCommits?: CommitSummary[],
+    options?: ErrorOptions
+  ) {
+    super(message, options);
     this.name = "GitHubFetchError";
     this.kind = kind;
     this.partialCommits = partialCommits;
