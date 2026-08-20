@@ -76,7 +76,12 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
   };
 }
 
-async function fetchDefaultBranch({ owner, repo, token }: GitHubAuth): Promise<string> {
+interface RepoInfo {
+  defaultBranch: string;
+  size: number;
+}
+
+async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
   const response = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
   if (!response.ok) {
     throw new GitHubFetchError(
@@ -85,29 +90,42 @@ async function fetchDefaultBranch({ owner, repo, token }: GitHubAuth): Promise<s
     );
   }
   const data = await response.json();
-  return data.default_branch as string;
+  return { defaultBranch: data.default_branch as string, size: data.size as number };
 }
 
 /**
  * 브랜치 이름을 그대로 페이지네이션 sha로 쓰면, 조회 도중 기본 브랜치에 새 커밋이 들어올 때
  * 페이지 경계에서 커밋이 중복되거나 누락될 수 있다. 브랜치 head를 커밋 SHA로 한 번 고정해
  * 이후 모든 페이지 요청이 같은 히스토리를 기준으로 동작하게 한다.
- */
-/**
+ *
  * 커밋이 하나도 없는 저장소는 기본 브랜치에 대한 ref 자체가 없어 이 조회가 404를 반환한다.
- * fetchDefaultBranch가 이미 저장소 존재를 확인했으므로, 여기서 404는 저장소가 없다는 뜻이 아니라
- * 빈 저장소라는 뜻이다. null을 반환해 빈 배열로 처리하도록 한다.
+ * 다만 Repository 정보 조회와 이 조회 사이에 기본 브랜치가 바뀌었을 수도 있으므로, 404를
+ * 곧바로 빈 저장소로 단정하지 않는다. 저장소 크기(size)가 0이면 확실히 빈 저장소로 보고,
+ * 그렇지 않으면 기본 브랜치를 한 번 다시 확인해 새 브랜치로 재시도한다.
  */
 async function resolveBranchHeadSha(
-  { owner, repo, token }: GitHubAuth,
-  branch: string
+  auth: GitHubAuth,
+  branch: string,
+  size: number,
+  hasRetried = false
 ): Promise<string | null> {
+  const { owner, repo, token } = auth;
   const response = await githubFetch(
     `${GITHUB_API_BASE}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
     token
   );
   if (response.status === 404) {
-    return null;
+    if (size === 0) {
+      return null;
+    }
+    if (hasRetried) {
+      throw new GitHubFetchError(
+        "server_error",
+        `기본 브랜치를 확인할 수 없습니다: ${owner}/${repo}@${branch}. 저장소 상태가 조회 중 변경되었을 수 있습니다.`
+      );
+    }
+    const refreshed = await fetchRepoInfo(auth);
+    return resolveBranchHeadSha(auth, refreshed.defaultBranch, refreshed.size, true);
   }
   if (!response.ok) {
     throw new GitHubFetchError(
@@ -125,8 +143,8 @@ async function resolveBranchHeadSha(
  */
 export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]> {
   const { owner, repo, token } = auth;
-  const branch = await fetchDefaultBranch(auth);
-  const headSha = await resolveBranchHeadSha(auth, branch);
+  const { defaultBranch, size } = await fetchRepoInfo(auth);
+  const headSha = await resolveBranchHeadSha(auth, defaultBranch, size);
   if (headSha === null) {
     return [];
   }
@@ -168,8 +186,17 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       throw new GitHubFetchError(await classifyErrorResponse(response), message);
     }
 
-    const page: RawCommit[] = await response.json();
-    commits.push(...page.map(toCommitSummary));
+    try {
+      const page: RawCommit[] = await response.json();
+      commits.push(...page.map(toCommitSummary));
+    } catch (error) {
+      const message = `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`;
+      if (commits.length > 0) {
+        throw new GitHubFetchError("partial_failure", message, commits);
+      }
+      throw new GitHubFetchError("network", message);
+    }
+
     url = parseNextLink(response.headers.get("link"));
   }
 
