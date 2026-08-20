@@ -161,7 +161,7 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
-    expect(error.cause).toMatchObject({ kind: "server_error" });
+    expect(error.cause).toBeUndefined();
   });
 
   it("일부 페이지 수집 뒤 호출 한도를 초과하면 원래 rate_limit 분류를 보존한다", async () => {

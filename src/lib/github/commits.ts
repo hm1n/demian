@@ -192,15 +192,10 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       // 커밋이 하나도 없는 Repository는 200 []이 아니라 409 "Git Repository is empty"를 반환한다.
       // 이미 일부 페이지를 받은 뒤라면 저장소 상태가 바뀐 것이므로 partial_failure로 처리한다.
       if (commits.length > 0) {
-        const cause = new GitHubFetchError(
-          "server_error",
-          "커밋 목록 조회 중 저장소 상태가 변경되었습니다 (409)"
-        );
         throw new GitHubFetchError(
           "partial_failure",
           `커밋 목록 조회 중 저장소 상태가 변경되어 실패했습니다 (409)`,
-          commits,
-          { cause }
+          commits
         );
       }
       break;
