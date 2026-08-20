@@ -1,4 +1,4 @@
-import type { CommitDetail, CommitSummary } from "./types";
+import type { CommitSummary } from "./types";
 
 export type GitHubFetchErrorKind =
   | "rate_limit"
@@ -11,18 +11,16 @@ export type GitHubFetchErrorKind =
 export class GitHubFetchError extends Error {
   readonly kind: GitHubFetchErrorKind;
   readonly partialCommits?: CommitSummary[];
-  readonly partialData?: { commits: CommitDetail[] };
 
   constructor(
     kind: GitHubFetchErrorKind,
     message: string,
     partialCommits?: CommitSummary[],
-    partialData?: { commits: CommitDetail[] }
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = "GitHubFetchError";
     this.kind = kind;
     this.partialCommits = partialCommits;
-    this.partialData = partialData;
   }
 }

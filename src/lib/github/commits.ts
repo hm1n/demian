@@ -90,11 +90,11 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
   };
 }
 
-export interface RepoInfo {
+interface RepoInfo {
   defaultBranch: string;
 }
 
-export async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
+async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
   const response = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
   if (!response.ok) {
     throw new GitHubFetchError(

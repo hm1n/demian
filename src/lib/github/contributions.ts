@@ -1,6 +1,5 @@
 import {
   classifyErrorResponse,
-  fetchRepoInfo,
   githubFetch,
   parseJson,
   parseNextLink,
@@ -203,19 +202,31 @@ export async function fetchRepositoryContributionData(
 
     onProgress?.({ phase: "repository_metadata" });
     const { owner, repo, token } = auth;
-    const { defaultBranch } = await fetchRepoInfo(auth);
-    const tree = await requestJson<RawTree>(
-      `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`,
-      token,
-      "Repository 파일 트리를 가져오지 못했습니다"
-    );
     const languages = await requestJson<Record<string, number>>(
       `${GITHUB_API_BASE}/repos/${owner}/${repo}/languages`,
       token,
       "Repository 언어 통계를 가져오지 못했습니다"
     );
+    const treeResponse = await githubFetch(
+      `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
+      token
+    );
+    let tree: RawTree;
+    if (treeResponse.status === 404) {
+      // 언어 통계 조회가 성공했으므로 Repository 미존재가 아니라 커밋이 없는 빈 저장소다.
+      tree = { tree: [], truncated: false };
+    } else if (!treeResponse.ok) {
+      throw new GitHubFetchError(
+        await classifyErrorResponse(treeResponse),
+        `Repository 파일 트리를 가져오지 못했습니다 (${treeResponse.status})`
+      );
+    } else {
+      tree = await parseJson<RawTree>(
+        treeResponse,
+        "Repository 파일 트리 응답을 해석하지 못했습니다"
+      );
+    }
 
-    onProgress?.({ phase: "metrics" });
     return {
       commits: details,
       tree: tree.tree.map(
@@ -231,8 +242,8 @@ export async function fetchRepositoryContributionData(
     };
   } catch (error) {
     if (details.length === 0) throw error;
-    throw new GitHubFetchError("partial_failure", (error as Error).message, undefined, {
-      commits: details,
+    throw new GitHubFetchError("partial_failure", (error as Error).message, details, {
+      cause: error,
     });
   }
 }

@@ -55,5 +55,4 @@ export interface RepositoryContributionData {
 
 export type ContributionFetchProgress =
   | { phase: "commit_details"; completed: number; total: number }
-  | { phase: "repository_metadata" }
-  | { phase: "metrics" };
+  | { phase: "repository_metadata" };

@@ -54,14 +54,13 @@ function mockCompleteResponses(fetchMock: ReturnType<typeof vi.fn>) {
         },
       ])
     )
-    .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+    .mockResolvedValueOnce(jsonResponse({ TypeScript: 1000, CSS: 200 }))
     .mockResolvedValueOnce(
       jsonResponse({
         truncated: false,
         tree: [{ path: "src/first.ts", type: "blob", sha: "blob-1", size: 123 }],
       })
-    )
-    .mockResolvedValueOnce(jsonResponse({ TypeScript: 1000, CSS: 200 }));
+    );
 }
 
 afterEach(() => {
@@ -97,10 +96,10 @@ describe("fetchRepositoryContributionData", () => {
     ]);
     expect(result.languages).toEqual({ TypeScript: 1000, CSS: 200 });
     expect(result.treeTruncated).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("상세 조회, 저장소 메타데이터 조회, 파생 지표 계산 진행 상태를 구분한다", async () => {
+  it("상세 조회와 저장소 메타데이터 조회 진행 상태를 구분한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     mockCompleteResponses(fetchMock);
@@ -112,7 +111,6 @@ describe("fetchRepositoryContributionData", () => {
       { phase: "commit_details", completed: 0, total: 1 },
       { phase: "commit_details", completed: 1, total: 1 },
       { phase: "repository_metadata" },
-      { phase: "metrics" },
     ]);
   });
 
@@ -122,9 +120,8 @@ describe("fetchRepositoryContributionData", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(rawDetail()))
       .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }))
-      .mockResolvedValueOnce(jsonResponse({}));
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }));
 
     const result = await fetchRepositoryContributionData(AUTH, COMMITS);
 
@@ -158,9 +155,8 @@ describe("fetchRepositoryContributionData", () => {
         })
       )
       .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }))
-      .mockResolvedValueOnce(jsonResponse({}));
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }));
 
     const result = await fetchRepositoryContributionData(AUTH, COMMITS);
 
@@ -175,15 +171,14 @@ describe("fetchRepositoryContributionData", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }))
-      .mockResolvedValueOnce(jsonResponse({ TypeScript: 10 }));
+      .mockResolvedValueOnce(jsonResponse({ TypeScript: 10 }))
+      .mockResolvedValueOnce(jsonResponse({ truncated: false, tree: [] }));
 
     const result = await fetchRepositoryContributionData(AUTH, []);
 
     expect(result.commits).toEqual([]);
     expect(result.languages).toEqual({ TypeScript: 10 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("첫 상세 조회의 API 호출 한도 초과를 rate_limit으로 구분한다", async () => {
@@ -215,20 +210,65 @@ describe("fetchRepositoryContributionData", () => {
 
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
-    expect(error.partialData?.commits).toHaveLength(1);
+    expect(error.partialCommits).toHaveLength(1);
     expect(error.message).toContain("sha-2");
+  });
+
+  it("일부 커밋을 수집한 뒤 호출 한도를 초과하면 원인 오류 종류를 보존한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(rawDetail()))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "API rate limit exceeded" },
+          { status: 403, headers: { "x-ratelimit-remaining": "0" } }
+        )
+      );
+
+    const error: GitHubFetchError = await fetchRepositoryContributionData(
+      AUTH,
+      [...COMMITS, { ...COMMITS[0], sha: "sha-2" }]
+    ).catch((caught) => caught);
+
+    expect(error.kind).toBe("partial_failure");
+    expect((error.cause as GitHubFetchError).kind).toBe("rate_limit");
   });
 
   it("파일 트리의 truncated 상태를 손실하지 않는다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ truncated: true, tree: [] }))
-      .mockResolvedValueOnce(jsonResponse({}));
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ truncated: true, tree: [] }));
 
     const result = await fetchRepositoryContributionData(AUTH, []);
 
     expect(result.treeTruncated).toBe(true);
+  });
+
+  it("언어 통계 조회 후 트리 404가 나면 빈 저장소의 빈 트리로 처리한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, { status: 404 }));
+
+    const result = await fetchRepositoryContributionData(AUTH, []);
+
+    expect(result.tree).toEqual([]);
+    expect(result.treeTruncated).toBe(false);
+  });
+
+  it("언어 통계 조회에서 404가 나면 존재하지 않는 Repository로 구분한다", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRepositoryContributionData(AUTH, [])).rejects.toMatchObject({
+      kind: "repo_not_found",
+    });
   });
 });

@@ -15,7 +15,7 @@
 
 ## 상태와 오류
 
-- 진행 상태는 `commit_details`, `repository_metadata`, `metrics`로 구분한다.
+- 진행 상태는 `commit_details`, `repository_metadata`로 구분한다. 파생 지표는 커밋 상세 응답을 변환할 때 함께 계산하므로 별도 진행 단계로 두지 않는다.
 - 기존 GitHub 오류 분류(rate limit, 인증 취소, 미존재, 네트워크, 서버 오류)를 재사용한다.
 - 일부 커밋 상세를 수집한 뒤 실패하면 `partial_failure`와 수집 완료된 커밋을 함께 전달한다.
 
