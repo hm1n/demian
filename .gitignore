@@ -50,3 +50,6 @@ next-env.d.ts
 
 # symlink duplicate of .agents/skills
 .claude/skills
+
+# obsidian
+.obsidian
