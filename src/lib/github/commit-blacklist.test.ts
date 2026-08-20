@@ -5,11 +5,11 @@ import {
 } from "./commit-blacklist";
 import type { CommitSummary } from "./types";
 
-function commit(message: string, parentCount = 1, sha = "sha"): CommitSummary {
+function commit(message: string, parentCount = 1, sha = "sha", author = "author"): CommitSummary {
   return {
     sha,
     title: message.split("\n")[0],
-    author: "author",
+    author,
     date: "2026-08-20",
     parentCount,
   };
@@ -34,7 +34,6 @@ describe("classifyBlacklistedCommit", () => {
   it.each([
     "chore(deps): update react",
     "build(deps): update vite",
-    "Bump react from 18 to 19",
     "update dependencies",
     "버전업",
   ])("의존성 규칙을 판별한다: %s", (message) => {
@@ -49,7 +48,7 @@ describe("classifyBlacklistedCommit", () => {
   );
 
   it.each([
-    "format source",
+    "format",
     "run lint",
     "apply eslint",
     "use prettier",
@@ -69,10 +68,10 @@ describe("classifyBlacklistedCommit", () => {
   });
 
   it("여러 규칙이 겹치면 병합 → 문서 → 의존성 → 오타 → 포맷팅 순서로 분류한다", () => {
-    expect(classifyBlacklistedCommit(commit("docs: deps typo lint", 2))).toBe("merge");
-    expect(classifyBlacklistedCommit(commit("docs: deps typo lint"))).toBe("documentation");
-    expect(classifyBlacklistedCommit(commit("deps typo lint"))).toBe("dependency");
-    expect(classifyBlacklistedCommit(commit("typo lint"))).toBe("typo");
+    expect(classifyBlacklistedCommit(commit("docs: dependency", 2))).toBe("merge");
+    expect(classifyBlacklistedCommit(commit("docs: dependency"))).toBe("documentation");
+    expect(classifyBlacklistedCommit(commit("chore(deps): typo"))).toBe("dependency");
+    expect(classifyBlacklistedCommit(commit("fix: typo in lint"))).toBe("typo");
   });
 
   it.each([
@@ -88,17 +87,56 @@ describe("classifyBlacklistedCommit", () => {
     "feat: 프린트 미리보기 추가",
     "refactor: upgrade 파싱 알고리즘",
     "feat: 사용자 등급 upgrade 로직",
-    "style: 친구 목록 퍼블리싱",
     "feat: 알림 읽기 상태에 따른 정렬 추가",
     "fix: bump upload limit to 10 MB",
     "fix: bump upload limit from 5 to 10 MB",
     "perf: implement bump allocator",
+    "feat: add dependency graph",
+    "Add dependency graph",
+    "feat: add spelling suggestions",
+    "Add spelling suggestions",
+    "fix: preserve date format",
+    "Preserve date format",
+    "Bump upload limit from 5 MB to 10 MB",
+    "fix: resolve circular dependencies in module loader",
+    "Resolve circular dependencies in module loader",
+    "feat: add changelog page to product",
+    "Add changelog page to product",
+    "feat: add readme parser for repo cards",
+    "Add readme parser for repo cards",
+    "feat: 문서 뷰어 화면 구현",
+    "문서 뷰어 화면 구현",
+    "feat: 맞춤법 검사 API 연동",
+    "맞춤법 검사 API 연동",
+    "feat: 이미지 포맷 변환 지원",
+    "이미지 포맷 변환 지원",
+    "feat: 린트 규칙 편집 UI 추가",
+    "린트 규칙 편집 UI 추가",
+    "perf: reduce prettier run time in CI",
+    "Reduce prettier run time in CI",
   ])(
     "일반 개발 커밋은 제외하지 않는다: %s",
     (message) => {
       expect(classifyBlacklistedCommit(commit(message))).toBeNull();
     }
   );
+
+  it.each([
+    ["docs: add guide", "documentation"],
+    ["chore(deps): bump react", "dependency"],
+    ["build(deps): update vite", "dependency"],
+    ["style: run prettier", "formatting"],
+    ["fix: typo in login label", "typo"],
+  ] as const)("Conventional Commit 접두사로 분류한다: %s", (message, category) => {
+    expect(classifyBlacklistedCommit(commit(message))).toBe(category);
+  });
+
+  it("봇이 작성한 Bump 제목만 의존성으로 분류한다", () => {
+    expect(
+      classifyBlacklistedCommit(commit("Bump react from 18 to 19", 1, "sha", "dependabot[bot]"))
+    ).toBe("dependency");
+    expect(classifyBlacklistedCommit(commit("Bump react from 18 to 19"))).toBeNull();
+  });
 
   it.each(["문서화", "리드미 수정", "버전업", "오타 수정", "포맷 적용", "린트 수정"])(
     "한국어 키워드로 시작하면 계속 분류한다: %s",
