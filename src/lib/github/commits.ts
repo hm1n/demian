@@ -43,6 +43,9 @@ async function classifyErrorResponse(response: Response): Promise<GitHubFetchErr
     const retryAfter = response.headers.get("retry-after");
     if (remaining === "0" || retryAfter !== null) return "rate_limit";
 
+    // ponytail: 메시지 문자열 매칭은 GitHub가 문구를 바꾸면 깨지는 얕은 방법이지만, 공식
+    // 문서에 나온 두 문구만 대응하는 지금 수준에서는 충분함. 오분류가 실제로 관찰되면 그때
+    // 패턴을 넓히면 됨.
     const message = await readErrorMessage(response);
     if (/secondary rate limit|abuse detection/i.test(message)) return "rate_limit";
     return "auth_revoked";
@@ -55,6 +58,15 @@ async function githubFetch(url: string, token: string): Promise<Response> {
     return await fetch(url, { headers: githubHeaders(token) });
   } catch {
     throw new GitHubFetchError("network", `GitHub API 요청에 실패했습니다: ${url}`);
+  }
+}
+
+/** 성공 응답의 body 파싱이 실패하면(끊긴 연결, 깨진 JSON) network 오류로 통일해서 던진다. */
+async function parseJson<T>(response: Response, context: string): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    throw new GitHubFetchError("network", `${context}: ${(error as Error).message}`);
   }
 }
 
@@ -78,7 +90,6 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
 
 interface RepoInfo {
   defaultBranch: string;
-  size: number;
 }
 
 async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
@@ -89,8 +100,11 @@ async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoIn
       `Repository 정보를 가져오지 못했습니다: ${owner}/${repo} (${response.status})`
     );
   }
-  const data = await response.json();
-  return { defaultBranch: data.default_branch as string, size: data.size as number };
+  const data = await parseJson<{ default_branch: string }>(
+    response,
+    `Repository 정보 응답을 해석하지 못했습니다: ${owner}/${repo}`
+  );
+  return { defaultBranch: data.default_branch };
 }
 
 /**
@@ -100,13 +114,18 @@ async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoIn
  *
  * 커밋이 하나도 없는 저장소는 기본 브랜치에 대한 ref 자체가 없어 이 조회가 404를 반환한다.
  * 다만 Repository 정보 조회와 이 조회 사이에 기본 브랜치가 바뀌었을 수도 있으므로, 404를
- * 곧바로 빈 저장소로 단정하지 않는다. 저장소 크기(size)가 0이면 확실히 빈 저장소로 보고,
- * 그렇지 않으면 기본 브랜치를 한 번 다시 확인해 새 브랜치로 재시도한다.
+ * 곧바로 빈 저장소로 단정하지 않는다. 저장소 크기(size)는 저장 용량(KB)일 뿐 커밋 수를 보장하지
+ * 않아 판별 기준으로 쓸 수 없다. 대신 기본 브랜치를 다시 조회해 이름이 그대로인지로 판별한다.
+ * 이름이 바뀌었으면 새 이름으로 한 번 재시도하고, 그대로인데도 404면 실제로 ref가 없는 빈
+ * 저장소로 본다.
+ *
+ * ponytail: 재시도는 1회로 고정. 재시도한 새 브랜치명도 404면(연속 rename) 재확인 없이 그냥
+ * 빈 저장소로 본다 — 두 번 연속 레이스는 사실상 안 일어나서 재시도 횟수를 매개변수로 뺄 필요는
+ * 없음. 실제로 반복 발생이 확인되면 그때 재시도 횟수를 인자로 빼서 늘리면 됨.
  */
 async function resolveBranchHeadSha(
   auth: GitHubAuth,
   branch: string,
-  size: number,
   hasRetried = false
 ): Promise<string | null> {
   const { owner, repo, token } = auth;
@@ -115,17 +134,14 @@ async function resolveBranchHeadSha(
     token
   );
   if (response.status === 404) {
-    if (size === 0) {
+    if (hasRetried) {
       return null;
     }
-    if (hasRetried) {
-      throw new GitHubFetchError(
-        "server_error",
-        `기본 브랜치를 확인할 수 없습니다: ${owner}/${repo}@${branch}. 저장소 상태가 조회 중 변경되었을 수 있습니다.`
-      );
-    }
     const refreshed = await fetchRepoInfo(auth);
-    return resolveBranchHeadSha(auth, refreshed.defaultBranch, refreshed.size, true);
+    if (refreshed.defaultBranch === branch) {
+      return null;
+    }
+    return resolveBranchHeadSha(auth, refreshed.defaultBranch, true);
   }
   if (!response.ok) {
     throw new GitHubFetchError(
@@ -133,8 +149,11 @@ async function resolveBranchHeadSha(
       `기본 브랜치 정보를 가져오지 못했습니다: ${owner}/${repo}@${branch} (${response.status})`
     );
   }
-  const data = await response.json();
-  return data.commit.sha as string;
+  const data = await parseJson<{ commit: { sha: string } }>(
+    response,
+    `기본 브랜치 응답을 해석하지 못했습니다: ${owner}/${repo}@${branch}`
+  );
+  return data.commit.sha;
 }
 
 /**
@@ -143,8 +162,8 @@ async function resolveBranchHeadSha(
  */
 export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]> {
   const { owner, repo, token } = auth;
-  const { defaultBranch, size } = await fetchRepoInfo(auth);
-  const headSha = await resolveBranchHeadSha(auth, defaultBranch, size);
+  const { defaultBranch } = await fetchRepoInfo(auth);
+  const headSha = await resolveBranchHeadSha(auth, defaultBranch);
   if (headSha === null) {
     return [];
   }
@@ -186,16 +205,16 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       throw new GitHubFetchError(await classifyErrorResponse(response), message);
     }
 
+    let page: RawCommit[];
     try {
-      const page: RawCommit[] = await response.json();
-      commits.push(...page.map(toCommitSummary));
+      page = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
     } catch (error) {
-      const message = `커밋 목록 응답을 해석하지 못했습니다: ${(error as Error).message}`;
       if (commits.length > 0) {
-        throw new GitHubFetchError("partial_failure", message, commits);
+        throw new GitHubFetchError("partial_failure", (error as GitHubFetchError).message, commits);
       }
-      throw new GitHubFetchError("network", message);
+      throw error;
     }
+    commits.push(...page.map(toCommitSummary));
 
     url = parseNextLink(response.headers.get("link"));
   }

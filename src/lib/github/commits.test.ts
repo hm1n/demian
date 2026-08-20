@@ -81,17 +81,18 @@ describe("fetchAllCommits", () => {
     expect(commits).toEqual([]);
   });
 
-  it("저장소 크기가 0인 신규 Repository는 기본 브랜치 ref가 없어 404여도 빈 배열을 반환한다", async () => {
+  it("재확인해도 기본 브랜치명이 그대로인데 404면 실제로 빈 저장소로 본다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main", size: 0 }))
-      .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }));
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }));
 
     const commits = await fetchAllCommits(AUTH);
     expect(commits).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("조회 사이에 기본 브랜치가 바뀌어 404가 나면 저장소 정보를 다시 확인해 새 브랜치로 재시도한다", async () => {
@@ -99,9 +100,9 @@ describe("fetchAllCommits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main", size: 100 }))
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "trunk", size: 100 }))
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "trunk" }))
       .mockResolvedValueOnce(jsonResponse({ commit: { sha: HEAD_SHA } }))
       .mockResolvedValueOnce(jsonResponse([]));
 
@@ -113,17 +114,18 @@ describe("fetchAllCommits", () => {
     expect(branchLookupUrl).toContain("/branches/trunk");
   });
 
-  it("재시도 후에도 브랜치를 찾을 수 없고 저장소가 비어있지 않다면 오류를 던진다", async () => {
+  it("재시도한 새 브랜치명도 404면 재시도를 더 하지 않고 빈 배열로 본다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main", size: 100 }))
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main", size: 100 }))
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "trunk" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }));
 
-    await expect(fetchAllCommits(AUTH)).rejects.toBeInstanceOf(GitHubFetchError);
+    const commits = await fetchAllCommits(AUTH);
+    expect(commits).toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
@@ -248,6 +250,26 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
+  });
+
+  it("Repository 정보 응답을 해석할 수 없으면 network 오류를 던진다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock.mockResolvedValueOnce(new Response("not json", { status: 200 }));
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "network" });
+  });
+
+  it("기본 브랜치 응답을 해석할 수 없으면 network 오류를 던진다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(new Response("not json", { status: 200 }));
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "network" });
   });
 
   it("첫 페이지 응답 본문을 해석할 수 없으면 network 오류를 던진다", async () => {
