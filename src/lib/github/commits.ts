@@ -24,8 +24,13 @@ function githubHeaders(token: string): HeadersInit {
 function classifyErrorResponse(response: Response): GitHubFetchErrorKind {
   if (response.status === 404) return "repo_not_found";
   if (response.status === 401) return "auth_revoked";
+  if (response.status === 429) return "rate_limit";
   if (response.status === 403) {
-    return response.headers.get("x-ratelimit-remaining") === "0" ? "rate_limit" : "auth_revoked";
+    // 1차 rate limit: x-ratelimit-remaining이 0. 2차(secondary) rate limit: remaining이 남아 있어도
+    // retry-after 헤더로 신호를 준다. 둘 다 놓치면 정상 유저가 인증 취소로 오분류된다.
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    const retryAfter = response.headers.get("retry-after");
+    return remaining === "0" || retryAfter !== null ? "rate_limit" : "auth_revoked";
   }
   return "server_error";
 }
@@ -90,6 +95,11 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
         throw new GitHubFetchError("partial_failure", (error as Error).message, commits);
       }
       throw error;
+    }
+
+    if (response.status === 409) {
+      // 커밋이 하나도 없는 Repository는 200 []이 아니라 409 "Git Repository is empty"를 반환한다.
+      break;
     }
 
     if (!response.ok) {

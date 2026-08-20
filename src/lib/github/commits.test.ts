@@ -73,6 +73,47 @@ describe("fetchAllCommits", () => {
     expect(commits).toEqual([]);
   });
 
+  it("커밋이 없는 Repository가 409를 반환해도 빈 배열을 반환한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(
+        jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
+      );
+
+    const commits = await fetchAllCommits(AUTH);
+    expect(commits).toEqual([]);
+  });
+
+  it("429 응답도 rate_limit 오류로 분류한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Too Many Requests" }, { status: 429 }));
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
+  });
+
+  it("2차(secondary) rate limit도 rate_limit 오류로 분류한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "You have exceeded a secondary rate limit" },
+          { status: 403, headers: { "x-ratelimit-remaining": "42", "retry-after": "60" } }
+        )
+      );
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
+  });
+
   it("API 호출 한도를 초과하면 rate_limit 오류를 던진다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
