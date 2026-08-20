@@ -21,16 +21,31 @@ function githubHeaders(token: string): HeadersInit {
   };
 }
 
-function classifyErrorResponse(response: Response): GitHubFetchErrorKind {
+async function readErrorMessage(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.clone().json();
+    const message = (body as { message?: unknown } | null)?.message;
+    return typeof message === "string" ? message : "";
+  } catch {
+    return "";
+  }
+}
+
+async function classifyErrorResponse(response: Response): Promise<GitHubFetchErrorKind> {
   if (response.status === 404) return "repo_not_found";
   if (response.status === 401) return "auth_revoked";
   if (response.status === 429) return "rate_limit";
   if (response.status === 403) {
-    // 1차 rate limit: x-ratelimit-remaining이 0. 2차(secondary) rate limit: remaining이 남아 있어도
-    // retry-after 헤더로 신호를 준다. 둘 다 놓치면 정상 유저가 인증 취소로 오분류된다.
+    // 1차 rate limit: x-ratelimit-remaining이 0. 2차(secondary) rate limit: remaining이 남아 있고
+    // retry-after 헤더도 없을 수 있어, 이때는 응답 본문 메시지로 판별한다. 다 놓치면 정상 유저가
+    // 인증 취소로 오분류된다.
     const remaining = response.headers.get("x-ratelimit-remaining");
     const retryAfter = response.headers.get("retry-after");
-    return remaining === "0" || retryAfter !== null ? "rate_limit" : "auth_revoked";
+    if (remaining === "0" || retryAfter !== null) return "rate_limit";
+
+    const message = await readErrorMessage(response);
+    if (/secondary rate limit|abuse detection/i.test(message)) return "rate_limit";
+    return "auth_revoked";
   }
   return "server_error";
 }
@@ -65,12 +80,35 @@ async function fetchDefaultBranch({ owner, repo, token }: GitHubAuth): Promise<s
   const response = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
   if (!response.ok) {
     throw new GitHubFetchError(
-      classifyErrorResponse(response),
+      await classifyErrorResponse(response),
       `Repository 정보를 가져오지 못했습니다: ${owner}/${repo} (${response.status})`
     );
   }
   const data = await response.json();
   return data.default_branch as string;
+}
+
+/**
+ * 브랜치 이름을 그대로 페이지네이션 sha로 쓰면, 조회 도중 기본 브랜치에 새 커밋이 들어올 때
+ * 페이지 경계에서 커밋이 중복되거나 누락될 수 있다. 브랜치 head를 커밋 SHA로 한 번 고정해
+ * 이후 모든 페이지 요청이 같은 히스토리를 기준으로 동작하게 한다.
+ */
+async function resolveBranchHeadSha(
+  { owner, repo, token }: GitHubAuth,
+  branch: string
+): Promise<string> {
+  const response = await githubFetch(
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+    token
+  );
+  if (!response.ok) {
+    throw new GitHubFetchError(
+      await classifyErrorResponse(response),
+      `기본 브랜치 정보를 가져오지 못했습니다: ${owner}/${repo}@${branch} (${response.status})`
+    );
+  }
+  const data = await response.json();
+  return data.commit.sha as string;
 }
 
 /**
@@ -80,10 +118,11 @@ async function fetchDefaultBranch({ owner, repo, token }: GitHubAuth): Promise<s
 export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]> {
   const { owner, repo, token } = auth;
   const branch = await fetchDefaultBranch(auth);
+  const headSha = await resolveBranchHeadSha(auth, branch);
 
   const commits: CommitSummary[] = [];
   let url: string | null = `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(
-    branch
+    headSha
   )}&per_page=${PER_PAGE}`;
 
   while (url) {
@@ -99,6 +138,14 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
 
     if (response.status === 409) {
       // 커밋이 하나도 없는 Repository는 200 []이 아니라 409 "Git Repository is empty"를 반환한다.
+      // 이미 일부 페이지를 받은 뒤라면 저장소 상태가 바뀐 것이므로 partial_failure로 처리한다.
+      if (commits.length > 0) {
+        throw new GitHubFetchError(
+          "partial_failure",
+          `커밋 목록 조회 중 저장소 상태가 변경되어 실패했습니다 (409)`,
+          commits
+        );
+      }
       break;
     }
 
@@ -107,7 +154,7 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
       if (commits.length > 0) {
         throw new GitHubFetchError("partial_failure", message, commits);
       }
-      throw new GitHubFetchError(classifyErrorResponse(response), message);
+      throw new GitHubFetchError(await classifyErrorResponse(response), message);
     }
 
     const page: RawCommit[] = await response.json();

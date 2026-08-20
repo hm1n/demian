@@ -4,6 +4,7 @@ import { GitHubFetchError } from "./errors";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "test-token" };
 const COMMITS_URL = "https://api.github.com/repos/octocat/hello-world/commits";
+const HEAD_SHA = "abc123headsha";
 
 function rawCommit(i: number) {
   return {
@@ -26,12 +27,19 @@ function jsonResponse(
   });
 }
 
+function mockRepoAndBranch(fetchMock: ReturnType<typeof vi.fn>, headSha = HEAD_SHA) {
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+    .mockResolvedValueOnce(jsonResponse({ commit: { sha: headSha } }));
+  return fetchMock;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("fetchAllCommits", () => {
-  it("커밋 수 상한 없이 여러 페이지를 끝까지 조회한다", async () => {
+  it("커밋 수 상한 없이 여러 페이지를 끝까지 조회하고, 고정된 브랜치 head SHA로 페이지네이션한다", async () => {
     const page1 = Array.from({ length: 100 }, (_, i) => rawCommit(i));
     const page2 = Array.from({ length: 100 }, (_, i) => rawCommit(100 + i));
     const page3 = Array.from({ length: 50 }, (_, i) => rawCommit(200 + i));
@@ -39,8 +47,7 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+    mockRepoAndBranch(fetchMock)
       .mockResolvedValueOnce(
         jsonResponse(page1, { headers: { link: `<${COMMITS_URL}?page=2>; rel="next"` } })
       )
@@ -58,16 +65,17 @@ describe("fetchAllCommits", () => {
       author: "login-0",
       date: "2026-01-01",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    const firstPageUrl = fetchMock.mock.calls[2][0] as string;
+    expect(firstPageUrl).toContain(`sha=${HEAD_SHA}`);
   });
 
   it("커밋이 하나도 없으면 빈 배열을 반환한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse([]));
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(jsonResponse([]));
 
     const commits = await fetchAllCommits(AUTH);
     expect(commits).toEqual([]);
@@ -77,39 +85,69 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
+    );
+
+    const commits = await fetchAllCommits(AUTH);
+    expect(commits).toEqual([]);
+  });
+
+  it("첫 페이지 이후 409를 받으면 partial_failure로 처리하고 빈 배열을 성공으로 반환하지 않는다", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => rawCommit(i));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockRepoAndBranch(fetchMock)
+      .mockResolvedValueOnce(
+        jsonResponse(page1, { headers: { link: `<${COMMITS_URL}?page=2>; rel="next"` } })
+      )
       .mockResolvedValueOnce(
         jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
       );
 
-    const commits = await fetchAllCommits(AUTH);
-    expect(commits).toEqual([]);
+    const error: GitHubFetchError = await fetchAllCommits(AUTH).catch((e) => e);
+
+    expect(error).toBeInstanceOf(GitHubFetchError);
+    expect(error.kind).toBe("partial_failure");
+    expect(error.partialCommits).toHaveLength(100);
   });
 
   it("429 응답도 rate_limit 오류로 분류한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ message: "Too Many Requests" }, { status: 429 }));
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse({ message: "Too Many Requests" }, { status: 429 })
+    );
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
   });
 
-  it("2차(secondary) rate limit도 rate_limit 오류로 분류한다", async () => {
+  it("Retry-After 헤더가 있는 2차(secondary) rate limit도 rate_limit 오류로 분류한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(
-        jsonResponse(
-          { message: "You have exceeded a secondary rate limit" },
-          { status: 403, headers: { "x-ratelimit-remaining": "42", "retry-after": "60" } }
-        )
-      );
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse(
+        { message: "You have exceeded a secondary rate limit" },
+        { status: 403, headers: { "x-ratelimit-remaining": "42", "retry-after": "60" } }
+      )
+    );
+
+    await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
+  });
+
+  it("Retry-After 헤더 없이 본문 메시지로만 알 수 있는 2차 rate limit도 rate_limit 오류로 분류한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse(
+        { message: "You have exceeded a secondary rate limit. Please wait before retrying." },
+        { status: 403, headers: { "x-ratelimit-remaining": "42" } }
+      )
+    );
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
   });
@@ -118,14 +156,12 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(
-        jsonResponse(
-          { message: "API rate limit exceeded" },
-          { status: 403, headers: { "x-ratelimit-remaining": "0" } }
-        )
-      );
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse(
+        { message: "API rate limit exceeded" },
+        { status: 403, headers: { "x-ratelimit-remaining": "0" } }
+      )
+    );
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
   });
@@ -134,9 +170,9 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
-      .mockResolvedValueOnce(jsonResponse({ message: "Bad credentials" }, { status: 401 }));
+    mockRepoAndBranch(fetchMock).mockResolvedValueOnce(
+      jsonResponse({ message: "Bad credentials" }, { status: 401 })
+    );
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "auth_revoked" });
   });
@@ -155,8 +191,7 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+    mockRepoAndBranch(fetchMock)
       .mockResolvedValueOnce(
         jsonResponse(page1, { headers: { link: `<${COMMITS_URL}?page=2>; rel="next"` } })
       )
