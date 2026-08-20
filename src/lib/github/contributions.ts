@@ -1,5 +1,6 @@
 import {
   classifyErrorResponse,
+  GITHUB_API_BASE,
   githubFetch,
   parseJson,
   parseNextLink,
@@ -14,8 +15,6 @@ import type {
   RepositoryContributionData,
   RepositoryTreeEntry,
 } from "./types";
-
-const GITHUB_API_BASE = "https://api.github.com";
 
 interface RawCommitDetail {
   sha: string;
@@ -52,17 +51,6 @@ interface RawTree {
     sha: string;
     size?: number;
   }>;
-}
-
-async function requestJson<T>(url: string, token: string, context: string): Promise<T> {
-  const response = await githubFetch(url, token);
-  if (!response.ok) {
-    throw new GitHubFetchError(
-      await classifyErrorResponse(response),
-      `${context} (${response.status})`
-    );
-  }
-  return parseJson<T>(response, `${context} 응답을 해석하지 못했습니다`);
 }
 
 async function requestPage<T>(
@@ -147,7 +135,7 @@ async function fetchCommitDetail(
   const { owner, repo, token } = auth;
   const encodedSha = encodeURIComponent(summary.sha);
   const detail = await fetchAllCommitFiles(
-    `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits/${encodedSha}?per_page=100`,
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits/${encodedSha}`,
     token,
     summary.sha
   );
@@ -184,7 +172,7 @@ async function fetchCommitDetail(
  */
 export async function fetchRepositoryContributionData(
   auth: GitHubAuth,
-  commits: CommitSummary[],
+  commits: readonly CommitSummary[],
   onProgress?: (progress: ContributionFetchProgress) => void
 ): Promise<RepositoryContributionData> {
   const details: CommitDetail[] = [];
@@ -202,7 +190,7 @@ export async function fetchRepositoryContributionData(
 
     onProgress?.({ phase: "repository_metadata" });
     const { owner, repo, token } = auth;
-    const languages = await requestJson<Record<string, number>>(
+    const { data: languages } = await requestPage<Record<string, number>>(
       `${GITHUB_API_BASE}/repos/${owner}/${repo}/languages`,
       token,
       "Repository 언어 통계를 가져오지 못했습니다"

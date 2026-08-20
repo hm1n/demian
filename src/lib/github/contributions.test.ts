@@ -97,6 +97,15 @@ describe("fetchRepositoryContributionData", () => {
     expect(result.languages).toEqual({ TypeScript: 1000, CSS: 200 });
     expect(result.treeTruncated).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://api.github.com/repos/octocat/hello-world/commits/sha-1"
+    );
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://api.github.com/repos/octocat/hello-world/languages"
+    );
+    expect(fetchMock.mock.calls[3][0]).toBe(
+      "https://api.github.com/repos/octocat/hello-world/git/trees/HEAD?recursive=1"
+    );
   });
 
   it("상세 조회와 저장소 메타데이터 조회 진행 상태를 구분한다", async () => {

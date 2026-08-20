@@ -1,7 +1,7 @@
 import { GitHubFetchError, type GitHubFetchErrorKind } from "./errors";
 import type { CommitSummary, GitHubAuth } from "./types";
 
-const GITHUB_API_BASE = "https://api.github.com";
+export const GITHUB_API_BASE = "https://api.github.com";
 const PER_PAGE = 100;
 
 interface RawCommit {
