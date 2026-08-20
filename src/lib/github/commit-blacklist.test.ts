@@ -69,9 +69,9 @@ describe("classifyBlacklistedCommit", () => {
   });
 
   it("여러 규칙이 겹치면 병합 → 문서 → 의존성 → 오타 → 포맷팅 순서로 분류한다", () => {
-    expect(classifyBlacklistedCommit(commit("docs: bump typo lint", 2))).toBe("merge");
-    expect(classifyBlacklistedCommit(commit("docs: bump typo lint"))).toBe("documentation");
-    expect(classifyBlacklistedCommit(commit("bump typo lint"))).toBe("dependency");
+    expect(classifyBlacklistedCommit(commit("docs: deps typo lint", 2))).toBe("merge");
+    expect(classifyBlacklistedCommit(commit("docs: deps typo lint"))).toBe("documentation");
+    expect(classifyBlacklistedCommit(commit("deps typo lint"))).toBe("dependency");
     expect(classifyBlacklistedCommit(commit("typo lint"))).toBe("typo");
   });
 
@@ -90,6 +90,9 @@ describe("classifyBlacklistedCommit", () => {
     "feat: 사용자 등급 upgrade 로직",
     "style: 친구 목록 퍼블리싱",
     "feat: 알림 읽기 상태에 따른 정렬 추가",
+    "fix: bump upload limit to 10 MB",
+    "fix: bump upload limit from 5 to 10 MB",
+    "perf: implement bump allocator",
   ])(
     "일반 개발 커밋은 제외하지 않는다: %s",
     (message) => {

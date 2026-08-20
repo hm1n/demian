@@ -10,7 +10,10 @@ export type CommitBlacklistCategory =
 type CommitBlacklistInput = Pick<CommitSummary, "title" | "parentCount">;
 
 const DOCUMENTATION_PATTERN = /\b(?:docs|documentation|readme|changelog)\b|(?<![가-힣])(?:문서|리드미)/i;
-const DEPENDENCY_PATTERN = /\b(?:bump|deps|dependency|dependencies)\b|(?<![가-힣])버전업/i;
+// bump는 "bump upload limit to 10 MB"처럼 일반 동사로도 쓰여서 단독으로는 오탐이 난다.
+// Dependabot/Renovate가 남기는 "Bump X from A to B" 형태로만 의존성 신호로 인정한다.
+const DEPENDENCY_PATTERN =
+  /\b(?:deps|dependency|dependencies)\b|(?<![가-힣])버전업|^bump .+ from .+ to .+$/i;
 const TYPO_PATTERN = /\b(?:typo|misspell|spelling)\b|(?<![가-힣])(?:오타|오탈자|맞춤법)/i;
 const FORMATTING_PATTERN = /\b(?:format|lint|eslint|prettier)\b|(?<![가-힣])(?:포맷|린트)/i;
 
