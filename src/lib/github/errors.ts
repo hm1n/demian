@@ -1,4 +1,4 @@
-import type { CommitSummary } from "./types";
+import type { CommitDetail, CommitSummary } from "./types";
 
 export type GitHubFetchErrorKind =
   | "rate_limit"
@@ -8,14 +8,14 @@ export type GitHubFetchErrorKind =
   | "server_error"
   | "partial_failure";
 
-export class GitHubFetchError extends Error {
+export class GitHubFetchError<TCommit extends CommitSummary = CommitSummary> extends Error {
   readonly kind: GitHubFetchErrorKind;
-  readonly partialCommits?: CommitSummary[];
+  readonly partialCommits?: TCommit[];
 
   constructor(
     kind: GitHubFetchErrorKind,
     message: string,
-    partialCommits?: CommitSummary[],
+    partialCommits?: TCommit[],
     options?: ErrorOptions
   ) {
     super(message, options);
@@ -24,3 +24,9 @@ export class GitHubFetchError extends Error {
     this.partialCommits = partialCommits;
   }
 }
+
+/** 후보 데이터 조회 중 일부만 수집했을 때 CommitDetail 근거를 보존하는 오류입니다. */
+export class CandidateDataFetchError extends GitHubFetchError<CommitDetail> {}
+
+/** Repository 기여 데이터 조회 중 수집한 CommitDetail을 보존하는 오류입니다. */
+export class RepositoryContributionFetchError extends GitHubFetchError<CommitDetail> {}
