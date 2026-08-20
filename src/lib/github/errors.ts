@@ -27,3 +27,6 @@ export class GitHubFetchError<TCommit extends CommitSummary = CommitSummary> ext
 
 /** 후보 데이터 조회 중 일부만 수집했을 때 CommitDetail 근거를 보존하는 오류입니다. */
 export class CandidateDataFetchError extends GitHubFetchError<CommitDetail> {}
+
+/** Repository 기여 데이터 조회 중 수집한 CommitDetail을 보존하는 오류입니다. */
+export class RepositoryContributionFetchError extends GitHubFetchError<CommitDetail> {}

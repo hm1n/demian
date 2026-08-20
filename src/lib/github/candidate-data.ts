@@ -1,10 +1,9 @@
 import { filterCommitsForDetail } from "./commit-blacklist";
 import { fetchRepositoryContributionData } from "./contributions";
-import { CandidateDataFetchError, GitHubFetchError } from "./errors";
+import { CandidateDataFetchError, RepositoryContributionFetchError } from "./errors";
 import type {
   CandidateDataInput,
   CandidateDataOutput,
-  CommitDetail,
   CommitSummary,
   ContributionFetchProgress,
   GitHubAuth,
@@ -45,9 +44,8 @@ export async function fetchCandidateData(
     return buildCandidateData({ allCommits, contributionData });
   } catch (error) {
     if (
-      error instanceof GitHubFetchError &&
-      error.kind === "partial_failure" &&
-      error.partialCommits?.every(isCommitDetail)
+      error instanceof RepositoryContributionFetchError &&
+      error.kind === "partial_failure"
     ) {
       throw new CandidateDataFetchError(
         "partial_failure",
@@ -58,15 +56,4 @@ export async function fetchCandidateData(
     }
     throw error;
   }
-}
-
-function isCommitDetail(commit: CommitSummary): commit is CommitDetail {
-  return (
-    "message" in commit &&
-    "additions" in commit &&
-    "deletions" in commit &&
-    "changedFiles" in commit &&
-    "files" in commit &&
-    "pullRequests" in commit
-  );
 }

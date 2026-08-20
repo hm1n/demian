@@ -5,7 +5,7 @@ import {
   parseJson,
   parseNextLink,
 } from "./commits";
-import { GitHubFetchError } from "./errors";
+import { GitHubFetchError, RepositoryContributionFetchError } from "./errors";
 import type {
   CommitDetail,
   CommitSummary,
@@ -233,8 +233,11 @@ export async function fetchRepositoryContributionData(
     };
   } catch (error) {
     if (details.length === 0) throw error;
-    throw new GitHubFetchError("partial_failure", (error as Error).message, details, {
-      cause: error,
-    });
+    throw new RepositoryContributionFetchError(
+      "partial_failure",
+      (error as Error).message,
+      details,
+      { cause: error }
+    );
   }
 }

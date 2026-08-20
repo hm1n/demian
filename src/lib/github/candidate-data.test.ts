@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { buildCandidateData, fetchCandidateData } from "./candidate-data";
 import { CandidateDataFetchError } from "./errors";
-import type { CommitSummary, RepositoryContributionData } from "./types";
+import type {
+  CommitFileChange,
+  CommitSummary,
+  PullRequestReference,
+  RepositoryContributionData,
+} from "./types";
 
 const ALL_COMMITS: readonly CommitSummary[] = [
   {
@@ -115,12 +120,12 @@ describe("buildCandidateData", () => {
     expect(output.repository.fileTree).toBe(contributions.tree);
     expect(output.includedCommits[0].pullRequests).toBe(contributions.commits[0].pullRequests);
 
-    if (false) {
-      // @ts-expect-error 출력 계약은 중첩 파일 배열도 변경할 수 없게 한다.
-      output.includedCommits[0].files.push(contributions.commits[0].files[0]);
-      // @ts-expect-error 출력 계약은 PR 객체의 필드 변경도 허용하지 않는다.
-      output.includedCommits[0].pullRequests[0].state = "open";
-    }
+    expectTypeOf(output.includedCommits[0].files).toEqualTypeOf<
+      readonly Readonly<CommitFileChange>[]
+    >();
+    expectTypeOf(output.includedCommits[0].pullRequests).toEqualTypeOf<
+      readonly Readonly<PullRequestReference>[]
+    >();
   });
 
   it("GitHub API 호출이나 후보 평가 결과를 출력 조립 단계에 추가하지 않는다", () => {
