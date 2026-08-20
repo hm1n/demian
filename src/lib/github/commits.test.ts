@@ -81,7 +81,20 @@ describe("fetchAllCommits", () => {
     expect(commits).toEqual([]);
   });
 
-  it("커밋이 없는 Repository가 409를 반환해도 빈 배열을 반환한다", async () => {
+  it("커밋이 없는 신규 Repository는 기본 브랜치 ref가 없어 404여도 빈 배열을 반환한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }));
+
+    const commits = await fetchAllCommits(AUTH);
+    expect(commits).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("브랜치 head는 있지만 커밋 목록 조회가 409를 반환해도 빈 배열을 반환한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 

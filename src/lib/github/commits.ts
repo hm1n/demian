@@ -93,14 +93,22 @@ async function fetchDefaultBranch({ owner, repo, token }: GitHubAuth): Promise<s
  * 페이지 경계에서 커밋이 중복되거나 누락될 수 있다. 브랜치 head를 커밋 SHA로 한 번 고정해
  * 이후 모든 페이지 요청이 같은 히스토리를 기준으로 동작하게 한다.
  */
+/**
+ * 커밋이 하나도 없는 저장소는 기본 브랜치에 대한 ref 자체가 없어 이 조회가 404를 반환한다.
+ * fetchDefaultBranch가 이미 저장소 존재를 확인했으므로, 여기서 404는 저장소가 없다는 뜻이 아니라
+ * 빈 저장소라는 뜻이다. null을 반환해 빈 배열로 처리하도록 한다.
+ */
 async function resolveBranchHeadSha(
   { owner, repo, token }: GitHubAuth,
   branch: string
-): Promise<string> {
+): Promise<string | null> {
   const response = await githubFetch(
     `${GITHUB_API_BASE}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
     token
   );
+  if (response.status === 404) {
+    return null;
+  }
   if (!response.ok) {
     throw new GitHubFetchError(
       await classifyErrorResponse(response),
@@ -119,6 +127,9 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
   const { owner, repo, token } = auth;
   const branch = await fetchDefaultBranch(auth);
   const headSha = await resolveBranchHeadSha(auth, branch);
+  if (headSha === null) {
+    return [];
+  }
 
   const commits: CommitSummary[] = [];
   let url: string | null = `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(
