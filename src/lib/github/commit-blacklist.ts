@@ -37,7 +37,12 @@ export function classifyBlacklistedCommit({
   if (conventional) {
     const [, type, scope, subject] = conventional;
     if (type.toLowerCase() === "docs") return "documentation";
-    if (/^(?:chore|build|ci|fix)$/i.test(type) && /^(?:deps|dependencies|deps-dev)$/i.test(scope ?? "")) {
+    const dependencyScope = /^(?:deps|dependencies|deps-dev)$/i.test(scope ?? "");
+    if (
+      dependencyScope &&
+      (/^(?:chore|build|ci)$/i.test(type) ||
+        (type.toLowerCase() === "fix" && /^(?:update|bump)\b/i.test(subject)))
+    ) {
       return "dependency";
     }
     if (
