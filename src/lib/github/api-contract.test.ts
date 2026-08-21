@@ -51,13 +51,13 @@ describe("GitHub API 오류 계약", () => {
 
 describe("커밋 커서", () => {
   it("고정 head SHA와 다음 페이지를 불투명 값으로 왕복한다", () => {
-    const cursor = { headSha: "a".repeat(40), login: "octocat", page: 21 };
+    const cursor = { headSha: "a".repeat(40), page: 21 };
     const encoded = encodeCommitCursor(cursor);
     expect(encoded).not.toContain(cursor.headSha);
     expect(decodeCommitCursor(encoded)).toEqual(cursor);
   });
 
-  it.each(["broken", Buffer.from(JSON.stringify({ headSha: "main", login: "octocat", page: 2 })).toString("base64url")])("위조·손상된 커서 %s를 거부한다", (cursor) => {
+  it.each(["broken", Buffer.from(JSON.stringify({ headSha: "main", page: 2 })).toString("base64url")])("위조·손상된 커서 %s를 거부한다", (cursor) => {
     expect(() => decodeCommitCursor(cursor)).toThrow("invalid cursor");
   });
 });

@@ -15,16 +15,33 @@ describe("GitHub route 배치 원시 조회", () => {
       .mockResolvedValueOnce(Response.json({ default_branch: "main" }))
       .mockResolvedValueOnce(Response.json({ commit: { sha: SHA } }))
       .mockResolvedValueOnce(Response.json([], { headers: { link: `<https://api.github.com/next>; rel="next"` } }))
+      .mockResolvedValueOnce(Response.json({ login: "octocat" }))
       .mockResolvedValueOnce(Response.json([]));
     vi.stubGlobal("fetch", fetchMock);
 
     const first = await fetchAuthoredCommitsBatch(AUTH, null, 1);
     await fetchAuthoredCommitsBatch(AUTH, first.cursor, 1);
 
-    expect(first.cursor).toEqual({ headSha: SHA, login: "octocat", page: 2 });
-    expect(fetchMock.mock.calls[4][0]).toContain(`sha=${SHA}`);
-    expect(fetchMock.mock.calls[4][0]).toContain("page=2");
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(first.cursor).toEqual({ headSha: SHA, page: 2 });
+    expect(fetchMock.mock.calls[5][0]).toContain(`sha=${SHA}`);
+    expect(fetchMock.mock.calls[5][0]).toContain("author=octocat");
+    expect(fetchMock.mock.calls[5][0]).toContain("page=2");
+    expect(fetchMock.mock.calls.filter(([url]) => url === "https://api.github.com/user")).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("형태가 유효한 커서의 login 필드를 무시하고 PAT 소유자를 다시 조회한다", async () => {
+    const cursor = { headSha: SHA, page: 2, login: "attacker" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ login: "octocat" }))
+      .mockResolvedValueOnce(Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchAuthoredCommitsBatch(AUTH, cursor, 1);
+
+    expect(fetchMock.mock.calls[1][0]).toContain("author=octocat");
+    expect(fetchMock.mock.calls[1][0]).not.toContain("attacker");
+    expect(fetchMock.mock.calls.filter(([url]) => url === "https://api.github.com/user")).toHaveLength(1);
   });
 
   it("상세 route 응답 타입과 값에서 patch를 제거한다", () => {

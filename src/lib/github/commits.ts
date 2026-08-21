@@ -6,7 +6,6 @@ const PER_PAGE = 100;
 
 export interface AuthoredCommitsCursor {
   headSha: string;
-  login: string;
   page: number;
 }
 
@@ -281,15 +280,15 @@ export async function fetchAuthoredCommitsBatch(
   maxPages: number
 ): Promise<AuthoredCommitsBatchResult> {
   const { owner, repo, token } = auth;
+  const login = await fetchAuthenticatedUserLogin(token);
   let state = cursor;
   if (state === null) {
-    const login = await fetchAuthenticatedUserLogin(token);
     const { defaultBranch } = await fetchRepoInfo(auth);
     const headSha = await resolveBranchHeadSha(auth, defaultBranch);
     if (headSha === null) {
       return { commits: [], repositoryHasCommits: false, cursor: null };
     }
-    state = { headSha, login, page: 1 };
+    state = { headSha, page: 1 };
   }
 
   const commits: CommitSummary[] = [];
@@ -298,7 +297,7 @@ export async function fetchAuthoredCommitsBatch(
     let response: Response;
     try {
       response = await githubFetch(
-        `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(state.headSha)}&author=${encodeURIComponent(state.login)}&per_page=${PER_PAGE}&page=${page}`,
+        `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(state.headSha)}&author=${encodeURIComponent(login)}&per_page=${PER_PAGE}&page=${page}`,
         token
       );
     } catch (error) {
