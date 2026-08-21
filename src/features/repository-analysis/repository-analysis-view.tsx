@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useRef, useState } from "react";
-import type { GitHubAuth } from "@/lib/github/types";
+import type { RepositoryRef } from "@/lib/github/types";
 import { analyzeRepository, type AnalysisState, type LoadingPhase } from "./repository-analysis";
 import styles from "./repository-analysis.module.css";
 
@@ -45,21 +45,20 @@ export function RepositoryAnalysisView() {
   const [repo, setRepo] = useState("");
   const [contributionItems, setContributionItems] = useState("");
   const [token, setToken] = useState("");
-  // ponytail: #14에서 조회를 서버 route로 옮기면 이 과도기 PAT state를 삭제한다.
-  const [sessionToken, setSessionToken] = useState("");
+  const [hasSession, setHasSession] = useState(false);
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
-  async function startAnalysis(auth: GitHubAuth) {
+  async function startAnalysis(repository: RepositoryRef, newToken: string) {
     setState({ status: "loading", loading: { step: "commits" } });
     let response: Response;
     try {
       response = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: auth.token }),
+        body: JSON.stringify({ token: newToken }),
       });
     } catch {
       setState({
@@ -85,23 +84,29 @@ export function RepositoryAnalysisView() {
       });
       return;
     }
-    setSessionToken(auth.token);
+    setHasSession(true);
     setToken("");
-    await analyzeRepository(auth, setState);
+    await analyzeRepository(repository, setState);
+  }
+
+  function runAnalysis() {
+    const repository = { owner: owner.trim(), repo: repo.trim() };
+    if (token) return startAnalysis(repository, token);
+    if (hasSession) return analyzeRepository(repository, setState);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
+    runAnalysis();
   }
 
   function retry() {
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
+    runAnalysis();
   }
 
   async function reauthenticate() {
     await fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
-    setSessionToken("");
+    setHasSession(false);
     setToken("");
     setState(INITIAL_STATE);
     requestAnimationFrame(() => tokenInput.current?.focus());
@@ -142,7 +147,7 @@ export function RepositoryAnalysisView() {
           </label>
           <label className={styles.field}>
             GitHub token
-            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!sessionToken} />
+            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!hasSession} />
             <span className={styles.hint}>토큰은 암호화된 보안 쿠키에 저장하며 화면에 표시하지 않습니다.</span>
           </label>
           <button className={styles.button} type="submit" disabled={loading}>

@@ -1,13 +1,16 @@
 import {
   classifyErrorResponse,
+  fetchRepoInfo,
   GITHUB_API_BASE,
   githubFetch,
   parseJson,
   parseNextLink,
+  resolveBranchHeadSha,
 } from "./commits";
 import { GitHubFetchError, RepositoryContributionFetchError } from "./errors";
 import type {
   CommitDetail,
+  CommitDetailWithoutPatch,
   CommitSummary,
   ContributionFetchProgress,
   GitHubAuth,
@@ -128,7 +131,7 @@ function toPullRequest(raw: RawPullRequest): PullRequestReference {
   };
 }
 
-async function fetchCommitDetail(
+export async function fetchCommitDetail(
   auth: GitHubAuth,
   summary: CommitSummary
 ): Promise<CommitDetail> {
@@ -163,6 +166,83 @@ async function fetchCommitDetail(
       ...(file.patch === undefined ? {} : { patch: file.patch }),
     })),
     pullRequests: pullRequests.map(toPullRequest),
+  };
+}
+
+export async function fetchCommitDetailsBatch(
+  auth: GitHubAuth,
+  commits: readonly CommitSummary[]
+): Promise<CommitDetail[]> {
+  const details: CommitDetail[] = [];
+  try {
+    for (const commit of commits) details.push(await fetchCommitDetail(auth, commit));
+    return details;
+  } catch (error) {
+    if (details.length === 0) throw error;
+    throw new RepositoryContributionFetchError(
+      "partial_failure",
+      (error as Error).message,
+      details,
+      { cause: error }
+    );
+  }
+}
+
+export function withoutPatch(detail: CommitDetail): CommitDetailWithoutPatch {
+  return {
+    ...detail,
+    files: detail.files.map((file) => ({
+      path: file.path,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      changes: file.changes,
+    })),
+  };
+}
+
+export async function fetchRepositoryMetadata(
+  auth: GitHubAuth
+): Promise<Omit<RepositoryContributionData, "commits">> {
+  const { owner, repo, token } = auth;
+  const { data: languages } = await requestPage<Record<string, number>>(
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/languages`,
+    token,
+    "Repository 언어 통계를 가져오지 못했습니다"
+  );
+  const treeResponse = await githubFetch(
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
+    token
+  );
+  let tree: RawTree;
+  const treeMissing = treeResponse.status === 404 || treeResponse.status === 409;
+  if (treeMissing) {
+    const { defaultBranch } = await fetchRepoInfo(auth);
+    const headSha = await resolveBranchHeadSha(auth, defaultBranch);
+    if (headSha === null) tree = { tree: [], truncated: false };
+    else {
+      throw new GitHubFetchError(
+        await classifyErrorResponse(treeResponse),
+        `Repository 파일 트리를 가져오지 못했습니다 (${treeResponse.status})`
+      );
+    }
+  } else if (!treeResponse.ok) {
+    throw new GitHubFetchError(
+      await classifyErrorResponse(treeResponse),
+      `Repository 파일 트리를 가져오지 못했습니다 (${treeResponse.status})`
+    );
+  } else {
+    tree = await parseJson<RawTree>(treeResponse, "Repository 파일 트리 응답을 해석하지 못했습니다");
+  }
+  return {
+    tree: tree.tree.map((entry) => ({
+      path: entry.path,
+      type: entry.type,
+      sha: entry.sha,
+      ...(entry.size === undefined ? {} : { size: entry.size }),
+    })),
+    treeTruncated: tree.truncated,
+    languages,
   };
 }
 

@@ -1,6 +1,9 @@
-export interface GitHubAuth {
+export interface RepositoryRef {
   owner: string;
   repo: string;
+}
+
+export interface GitHubAuth extends RepositoryRef {
   token: string;
 }
 
@@ -38,6 +41,12 @@ export interface CommitDetail extends CommitSummary {
   files: CommitFileChange[];
   pullRequests: PullRequestReference[];
 }
+
+export type CommitFileChangeWithoutPatch = Omit<CommitFileChange, "patch">;
+
+export type CommitDetailWithoutPatch = Omit<CommitDetail, "files"> & {
+  files: CommitFileChangeWithoutPatch[];
+};
 
 export interface RepositoryTreeEntry {
   path: string;
