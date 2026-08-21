@@ -12,11 +12,12 @@ vi.mock("./repository-analysis", async (importOriginal) => {
 });
 
 const analyzeMock = vi.mocked(analyzeRepository);
+const GITHUB_TOKEN = "github_pat_secret_value";
 
 function fillRepository() {
   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "octocat" } });
   fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "hello-world" } });
-  fireEvent.change(screen.getByLabelText(/^GitHub token/), { target: { value: "github_pat_secret_value" } });
+  fireEvent.change(screen.getByLabelText(/^GitHub token/), { target: { value: GITHUB_TOKEN } });
 }
 
 async function submitRepository() {
@@ -66,30 +67,30 @@ describe("RepositoryAnalysisView 기여 항목", () => {
     expect(parseContributionItems(value)).toEqual(expected);
   });
 
-  it("기여 항목 입력 여부와 무관하게 기존 Repository 분석을 시작한다", () => {
+  it("기여 항목 입력 여부와 무관하게 기존 Repository 분석을 시작한다", async () => {
     render(<RepositoryAnalysisView />);
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
-    submitRepository();
+    await submitRepository();
     expect(analyzeMock).toHaveBeenCalledWith(
-      { owner: "octocat", repo: "hello-world", token: "token" },
+      { owner: "octocat", repo: "hello-world", token: GITHUB_TOKEN },
       expect.any(Function)
     );
   });
 
-  it("오류 후 수정한 기여 항목을 재시도해도 현재 입력값을 유지한다", () => {
+  it("오류 후 수정한 기여 항목을 재시도해도 현재 입력값을 유지한다", async () => {
     mockState({ status: "error", error: { kind: "network", title: "네트워크 실패", message: "연결 확인", recovery: "retry" } });
     render(<RepositoryAnalysisView />);
-    submitRepository();
+    await submitRepository();
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "게시판 기능 구현" } });
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
     expect(screen.getByLabelText(/^본인 기여 항목/)).toHaveValue("게시판 기능 구현");
   });
 
-  it("다른 Repository를 선택하면 이전 Repository의 기여 항목을 지운다", () => {
+  it("다른 Repository를 선택하면 이전 Repository의 기여 항목을 지운다", async () => {
     mockState({ status: "empty", kind: "no_commits" });
     render(<RepositoryAnalysisView />);
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
-    submitRepository();
+    await submitRepository();
     fireEvent.click(screen.getByRole("button", { name: "다른 Repository 선택" }));
     expect(screen.getByLabelText(/^본인 기여 항목/)).toHaveValue("");
   });
@@ -118,7 +119,7 @@ describe("RepositoryAnalysisView Empty", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: "github_pat_secret_value" });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: GITHUB_TOKEN });
   });
 });
 
@@ -148,7 +149,7 @@ describe("RepositoryAnalysisView Error", () => {
     await submitRepository();
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world", token: "github_pat_secret_value" });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world", token: GITHUB_TOKEN });
   });
 
   it("인증 재진행을 선택하면 쿠키와 기존 토큰을 지우고 새 인증 입력을 기다린다", async () => {
@@ -183,11 +184,11 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
 
     expect(await screen.findByRole("alert")).toHaveAttribute("data-error-kind", "network");
-    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("github_pat_secret_value");
+    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue(GITHUB_TOKEN);
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe("github_pat_secret_value");
+    expect(analyzeMock.mock.calls[0][0].token).toBe(GITHUB_TOKEN);
   });
 
   it("세션 발급 500 응답은 토큰을 보존하고 재시도한다", async () => {
@@ -197,11 +198,11 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
 
     expect(await screen.findByRole("alert")).toHaveAttribute("data-error-kind", "server_error");
-    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("github_pat_secret_value");
+    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue(GITHUB_TOKEN);
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe("github_pat_secret_value");
+    expect(analyzeMock.mock.calls[0][0].token).toBe(GITHUB_TOKEN);
   });
 
   it("세션 응답과 DOM에 입력한 토큰을 남기지 않는다", async () => {
@@ -209,6 +210,6 @@ describe("RepositoryAnalysisView Error", () => {
     render(<RepositoryAnalysisView />);
     await submitRepository();
     expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("");
-    expect(document.body.textContent).not.toContain("github_pat_secret_value");
+    expect(document.body.textContent).not.toContain(GITHUB_TOKEN);
   });
 });
