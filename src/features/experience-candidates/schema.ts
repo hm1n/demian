@@ -2,6 +2,7 @@ import { jsonSchema } from "ai";
 import { ExperienceCandidateOutputError } from "./errors";
 import type {
   ExperienceCandidate,
+  ExperienceCandidateEvidenceInput,
   ExperienceCandidateOutput,
   ExperienceCandidateSource,
 } from "./types";
@@ -137,6 +138,50 @@ export function assertCandidateShas(
       `입력 집합에 없는 커밋 SHA가 포함되어 있습니다: ${unknownShas.join(", ")}`,
       { unknownShas }
     );
+  }
+
+  return output;
+}
+
+/** Stage B 후보의 PR 관계와 인용 경로를 실제 Repository 근거와 대조합니다. */
+export function assertCandidateEvidence(
+  output: ExperienceCandidateOutput,
+  input: ExperienceCandidateEvidenceInput
+): ExperienceCandidateOutput {
+  const commitsBySha = new Map(input.commits.map((commit) => [commit.sha, commit]));
+  assertCandidateShas(output, [...commitsBySha.keys()]);
+
+  for (const candidate of output.candidates) {
+    const representative = commitsBySha.get(candidate.sha)!;
+    const representativePullRequests = new Set(
+      representative.pullRequests.map((pullRequest) => pullRequest.number)
+    );
+    const unrelatedShas = candidate.relatedShas.filter((sha) =>
+      commitsBySha
+        .get(sha)!
+        .pullRequests.every((pullRequest) => !representativePullRequests.has(pullRequest.number))
+    );
+
+    if (unrelatedShas.length > 0) {
+      throw new ExperienceCandidateOutputError(
+        "unrelated_sha",
+        `대표 커밋과 같은 PR에 속하지 않은 관련 SHA가 있습니다: ${unrelatedShas.join(", ")}`,
+        { unknownShas: unrelatedShas }
+      );
+    }
+
+    const citedPaths = new Set(input.fileTree.map(({ path }) => path));
+    for (const sha of [candidate.sha, ...candidate.relatedShas]) {
+      for (const file of commitsBySha.get(sha)!.files) citedPaths.add(file.path);
+    }
+
+    const unknownPaths = candidate.citedFilePaths.filter((path) => !citedPaths.has(path));
+    if (unknownPaths.length > 0) {
+      throw new ExperienceCandidateOutputError(
+        "unknown_file_path",
+        `Repository 근거에 없는 인용 파일 경로가 있습니다: ${unknownPaths.join(", ")}`
+      );
+    }
   }
 
   return output;

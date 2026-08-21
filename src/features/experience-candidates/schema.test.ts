@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+  assertCandidateEvidence,
   assertCandidateShas,
   parseExperienceCandidateOutput,
   validateExperienceCandidateOutput,
@@ -111,6 +112,66 @@ describe("후보 SHA 검증", () => {
       expect.objectContaining<Partial<ExperienceCandidateOutputError>>({
         kind: "unknown_sha",
         unknownShas: ["related"],
+      })
+    );
+  });
+});
+
+describe("후보 Repository 근거 검증", () => {
+  const evidenceInput = {
+    commits: [
+      {
+        sha: "representative",
+        files: [{ path: "src/parser.ts" }],
+        pullRequests: [{ number: 10 }],
+      },
+      {
+        sha: "related",
+        files: [{ path: "src/parser.test.ts" }],
+        pullRequests: [{ number: 10 }],
+      },
+      {
+        sha: "automatic",
+        files: [{ path: "src/stream.ts" }],
+        pullRequests: [],
+      },
+      {
+        sha: "third",
+        files: [{ path: "src/errors.ts" }],
+        pullRequests: [],
+      },
+    ],
+    fileTree: [{ path: "README.md" }],
+  };
+
+  it("입력에 존재해도 대표 커밋과 같은 PR이 아닌 관련 SHA는 거부한다", () => {
+    const output = {
+      ...VALID_OUTPUT,
+      candidates: [
+        { ...VALID_OUTPUT.candidates[0], relatedShas: ["automatic"] },
+        ...VALID_OUTPUT.candidates.slice(1),
+      ],
+    };
+
+    expect(() => assertCandidateEvidence(output, evidenceInput)).toThrowError(
+      expect.objectContaining<Partial<ExperienceCandidateOutputError>>({
+        kind: "unrelated_sha",
+      })
+    );
+  });
+
+  it("Repository 파일 트리와 후보 커밋에 없는 인용 경로는 거부한다", () => {
+    const output = {
+      ...VALID_OUTPUT,
+      candidates: [
+        { ...VALID_OUTPUT.candidates[0], citedFilePaths: ["src/invented.ts"] },
+        ...VALID_OUTPUT.candidates.slice(1),
+      ],
+    };
+
+    expect(() => assertCandidateEvidence(output, evidenceInput)).toThrowError(
+      expect.objectContaining<Partial<ExperienceCandidateOutputError>>({
+        kind: "unknown_file_path",
       })
     );
   });

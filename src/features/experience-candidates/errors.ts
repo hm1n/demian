@@ -1,7 +1,9 @@
 export type ExperienceCandidateOutputErrorKind =
   | "json_parse"
   | "schema_validation"
-  | "unknown_sha";
+  | "unknown_sha"
+  | "unrelated_sha"
+  | "unknown_file_path";
 
 export class ExperienceCandidateOutputError extends Error {
   readonly kind: ExperienceCandidateOutputErrorKind;
