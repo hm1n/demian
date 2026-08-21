@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAllCommits } from "./commits";
+import {
+  fetchAllCommits,
+  fetchAuthenticatedUserLogin,
+  fetchAuthoredCommits,
+} from "./commits";
 import { GitHubFetchError } from "./errors";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "test-token" };
@@ -30,6 +34,7 @@ function jsonResponse(
 
 function mockRepoAndBranch(fetchMock: ReturnType<typeof vi.fn>, headSha = HEAD_SHA) {
   fetchMock
+    .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
     .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
     .mockResolvedValueOnce(jsonResponse({ commit: { sha: headSha } }));
   return fetchMock;
@@ -67,10 +72,11 @@ describe("fetchAllCommits", () => {
       date: "2026-01-01",
       parentCount: 1,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
 
-    const firstPageUrl = fetchMock.mock.calls[2][0] as string;
+    const firstPageUrl = fetchMock.mock.calls[3][0] as string;
     expect(firstPageUrl).toContain(`sha=${HEAD_SHA}`);
+    expect(firstPageUrl).toContain("author=octocat");
   });
 
   it("커밋이 하나도 없으면 빈 배열을 반환한다", async () => {
@@ -88,13 +94,14 @@ describe("fetchAllCommits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }));
 
     const commits = await fetchAllCommits(AUTH);
     expect(commits).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("조회 사이에 기본 브랜치가 바뀌어 404가 나면 저장소 정보를 다시 확인해 새 브랜치로 재시도한다", async () => {
@@ -102,6 +109,7 @@ describe("fetchAllCommits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "trunk" }))
@@ -111,8 +119,8 @@ describe("fetchAllCommits", () => {
     const commits = await fetchAllCommits(AUTH);
 
     expect(commits).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    const branchLookupUrl = fetchMock.mock.calls[3][0] as string;
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const branchLookupUrl = fetchMock.mock.calls[4][0] as string;
     expect(branchLookupUrl).toContain("/branches/trunk");
   });
 
@@ -121,6 +129,7 @@ describe("fetchAllCommits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ message: "Branch not found" }, { status: 404 }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "trunk" }))
@@ -128,10 +137,10 @@ describe("fetchAllCommits", () => {
 
     const commits = await fetchAllCommits(AUTH);
     expect(commits).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
-  it("브랜치 head는 있지만 커밋 목록 조회가 409를 반환해도 빈 배열을 반환한다", async () => {
+  it("브랜치 head는 있지만 첫 커밋 목록 조회가 409이면 빈 저장소로 판별한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -139,8 +148,8 @@ describe("fetchAllCommits", () => {
       jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
     );
 
-    const commits = await fetchAllCommits(AUTH);
-    expect(commits).toEqual([]);
+    const result = await fetchAuthoredCommits(AUTH);
+    expect(result).toEqual({ commits: [], repositoryHasCommits: false });
   });
 
   it("첫 페이지 이후 409를 받으면 partial_failure로 처리하고 빈 배열을 성공으로 반환하지 않는다", async () => {
@@ -255,7 +264,9 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, { status: 404 }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, { status: 404 }));
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "repo_not_found" });
   });
@@ -283,7 +294,9 @@ describe("fetchAllCommits", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    fetchMock.mockResolvedValueOnce(new Response("not json", { status: 200 }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
+      .mockResolvedValueOnce(new Response("not json", { status: 200 }));
 
     await expect(fetchAllCommits(AUTH)).rejects.toMatchObject({ kind: "network" });
   });
@@ -293,6 +306,7 @@ describe("fetchAllCommits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     fetchMock
+      .mockResolvedValueOnce(jsonResponse({ login: "octocat" }))
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(new Response("not json", { status: 200 }));
 
@@ -354,5 +368,37 @@ describe("fetchAllCommits", () => {
     expect(error).toBeInstanceOf(GitHubFetchError);
     expect(error.kind).toBe("partial_failure");
     expect(error.partialCommits).toHaveLength(100);
+  });
+});
+
+describe("fetchAuthenticatedUserLogin", () => {
+  it("GET /user 응답에서 PAT 소유자의 login을 반환한다", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ login: "octocat" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchAuthenticatedUserLogin(AUTH.token)).resolves.toBe("octocat");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.github.com/user", expect.anything());
+  });
+
+  it.each([
+    [404, "server_error"],
+    [409, "server_error"],
+    [401, "auth_revoked"],
+    [403, "auth_revoked"],
+    [429, "rate_limit"],
+    [422, "server_error"],
+  ] as const)("GET /user의 %s 응답을 %s 오류로 변환한다", async (status, kind) => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ message: "failed" }, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchAuthenticatedUserLogin(AUTH.token)).rejects.toMatchObject({ kind });
+  });
+
+  it("GET /user 성공 응답 JSON 파싱 실패를 타입이 있는 오류로 변환한다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("not json")));
+
+    await expect(fetchAuthenticatedUserLogin(AUTH.token)).rejects.toMatchObject({
+      kind: "network",
+    });
   });
 });
