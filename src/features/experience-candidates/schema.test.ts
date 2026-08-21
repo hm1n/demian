@@ -96,6 +96,22 @@ describe("경험 후보 출력 검증", () => {
       })
     );
   });
+
+  it("같은 대표 SHA를 여러 후보로 반복하면 거부한다", () => {
+    expect(() =>
+      validateExperienceCandidateOutput({
+        candidates: VALID_OUTPUT.candidates.map((candidate) => ({
+          ...candidate,
+          sha: "representative",
+        })),
+        insufficientCandidatesReason: null,
+      })
+    ).toThrowError(
+      expect.objectContaining<Partial<ExperienceCandidateOutputError>>({
+        kind: "schema_validation",
+      })
+    );
+  });
 });
 
 describe("후보 SHA 검증", () => {

@@ -89,6 +89,14 @@ export function validateExperienceCandidateOutput(value: unknown): ExperienceCan
     );
   }
 
+  const representativeShas = value.candidates.map(({ sha }) => sha);
+  if (new Set(representativeShas).size !== representativeShas.length) {
+    throw new ExperienceCandidateOutputError(
+      "schema_validation",
+      "경험 후보의 대표 커밋 SHA는 서로 달라야 합니다."
+    );
+  }
+
   const reason = value.insufficientCandidatesReason;
   const reasonIsValid =
     value.candidates.length < 3 ? isNonEmptyString(reason) : reason === null;
