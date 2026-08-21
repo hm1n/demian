@@ -7,6 +7,11 @@ import styles from "./repository-analysis.module.css";
 
 const INITIAL_STATE: AnalysisState = { status: "idle" };
 
+// ponytail: 줄바꿈을 항목 경계로 고정합니다. 항목 안에 여러 줄 설명이 필요해질 때 구조화 입력으로 승격합니다.
+export function parseContributionItems(value: string) {
+  return value.split("\n").map((item) => item.trim()).filter(Boolean);
+}
+
 function loadingCopy(loading: LoadingPhase) {
   if (loading.step === "commits") {
     return {
@@ -38,6 +43,7 @@ function loadingCopy(loading: LoadingPhase) {
 export function RepositoryAnalysisView() {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
+  const [contributionItems, setContributionItems] = useState("");
   const [token, setToken] = useState("");
   // ponytail: #14에서 조회를 서버 route로 옮기면 이 과도기 PAT state를 삭제한다.
   const [sessionToken, setSessionToken] = useState("");
@@ -104,6 +110,7 @@ export function RepositoryAnalysisView() {
   function selectRepository() {
     setOwner("");
     setRepo("");
+    setContributionItems("");
     setState(INITIAL_STATE);
     requestAnimationFrame(() => ownerInput.current?.focus());
   }
@@ -128,6 +135,11 @@ export function RepositoryAnalysisView() {
               <input name="repository" value={repo} onChange={(event) => setRepo(event.target.value)} placeholder="hello-world" autoComplete="off" disabled={loading} required />
             </label>
           </div>
+          <label className={styles.field}>
+            본인 기여 항목 (선택)
+            <textarea name="contributionItems" value={contributionItems} onChange={(event) => setContributionItems(event.target.value)} placeholder={"푸시 알림 구현\n게시판 기능 구현"} autoComplete="off" disabled={loading} rows={4} />
+            <span className={styles.hint}>기억나는 기여를 한 줄에 하나씩 입력해 주세요. 비워두면 Repository 근거만으로 경험 후보를 찾습니다.</span>
+          </label>
           <label className={styles.field}>
             GitHub token
             <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!sessionToken} />
