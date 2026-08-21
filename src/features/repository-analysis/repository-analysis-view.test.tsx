@@ -51,6 +51,35 @@ describe("RepositoryAnalysisView Loading", () => {
   });
 });
 
+describe("RepositoryAnalysisView 기여 항목", () => {
+  it("입력한 기여 항목을 줄 단위 목록으로 전달한다", () => {
+    const onContributionItemsSubmit = vi.fn();
+    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현\n게시판 기능 구현" } });
+    submitRepository();
+    expect(onContributionItemsSubmit).toHaveBeenCalledWith(["푸시 알림 구현", "게시판 기능 구현"]);
+  });
+
+  it("기여 항목을 생략해도 기존 Repository 분석을 시작한다", () => {
+    const onContributionItemsSubmit = vi.fn();
+    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+    submitRepository();
+    expect(onContributionItemsSubmit).toHaveBeenCalledWith([]);
+    expect(analyzeMock).toHaveBeenCalledWith(
+      { owner: "octocat", repo: "hello-world", token: "token" },
+      expect.any(Function)
+    );
+  });
+
+  it("일부 행만 입력하면 빈 행을 제외해 전달한다", () => {
+    const onContributionItemsSubmit = vi.fn();
+    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "  푸시 알림 구현  \n\n  " } });
+    submitRepository();
+    expect(onContributionItemsSubmit).toHaveBeenCalledWith(["푸시 알림 구현"]);
+  });
+});
+
 describe("RepositoryAnalysisView Empty", () => {
   it.each([
     ["no_commits", "분석할 커밋이 없습니다"],

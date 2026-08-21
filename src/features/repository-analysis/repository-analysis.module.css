@@ -7,9 +7,10 @@
 .form, .state { display: grid; gap: 18px; }
 .repositoryFields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .field { display: grid; gap: 8px; color: #383743; font-size: 14px; font-weight: 650; }
-.field input { width: 100%; border: 1px solid #d7d5df; border-radius: 10px; color: #171721; background: #fff; font: inherit; font-weight: 450; padding: 12px 14px; outline: none; }
-.field input:focus { border-color: #6d63e8; box-shadow: 0 0 0 3px rgba(109, 99, 232, .14); }
-.field input:disabled { background: #f4f3f7; color: #777580; }
+.field input, .field textarea { width: 100%; border: 1px solid #d7d5df; border-radius: 10px; color: #171721; background: #fff; font: inherit; font-weight: 450; padding: 12px 14px; outline: none; }
+.field textarea { resize: vertical; }
+.field input:focus, .field textarea:focus { border-color: #6d63e8; box-shadow: 0 0 0 3px rgba(109, 99, 232, .14); }
+.field input:disabled, .field textarea:disabled { background: #f4f3f7; color: #777580; }
 .hint { color: #74727d; font-size: 12px; font-weight: 450; line-height: 1.5; }
 .button, .secondaryButton { min-height: 44px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
 .button { border: 1px solid #5b52d6; background: #5b52d6; color: #fff; }
