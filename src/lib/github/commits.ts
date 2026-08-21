@@ -108,7 +108,7 @@ export async function fetchAuthenticatedUserLogin(token: string): Promise<string
   const response = await githubFetch(`${GITHUB_API_BASE}/user`, token);
   if (!response.ok) {
     throw new GitHubFetchError(
-      await classifyErrorResponse(response),
+      response.status === 404 ? "server_error" : await classifyErrorResponse(response),
       `인증 사용자 정보를 가져오지 못했습니다 (${response.status})`
     );
   }
@@ -200,6 +200,7 @@ export async function fetchAuthoredCommits(auth: GitHubAuth): Promise<AuthoredCo
   let url: string | null = `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(
     headSha
   )}&author=${encodeURIComponent(login)}&per_page=${PER_PAGE}`;
+  // ponytail: GitHub의 author 연결만 신뢰한다. 실제 누락이 관찰되면 명시적 identity 입력을 검토한다.
 
   while (url) {
     let response: Response;
@@ -224,7 +225,7 @@ export async function fetchAuthoredCommits(auth: GitHubAuth): Promise<AuthoredCo
           commits
         );
       }
-      break;
+      return { commits: [], repositoryHasCommits: false };
     }
 
     if (!response.ok) {

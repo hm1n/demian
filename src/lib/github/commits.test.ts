@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAllCommits, fetchAuthenticatedUserLogin } from "./commits";
+import {
+  fetchAllCommits,
+  fetchAuthenticatedUserLogin,
+  fetchAuthoredCommits,
+} from "./commits";
 import { GitHubFetchError } from "./errors";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "test-token" };
@@ -136,7 +140,7 @@ describe("fetchAllCommits", () => {
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
-  it("브랜치 head는 있지만 커밋 목록 조회가 409를 반환해도 빈 배열을 반환한다", async () => {
+  it("브랜치 head는 있지만 첫 커밋 목록 조회가 409이면 빈 저장소로 판별한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -144,8 +148,8 @@ describe("fetchAllCommits", () => {
       jsonResponse({ message: "Git Repository is empty." }, { status: 409 })
     );
 
-    const commits = await fetchAllCommits(AUTH);
-    expect(commits).toEqual([]);
+    const result = await fetchAuthoredCommits(AUTH);
+    expect(result).toEqual({ commits: [], repositoryHasCommits: false });
   });
 
   it("첫 페이지 이후 409를 받으면 partial_failure로 처리하고 빈 배열을 성공으로 반환하지 않는다", async () => {
@@ -377,7 +381,7 @@ describe("fetchAuthenticatedUserLogin", () => {
   });
 
   it.each([
-    [404, "repo_not_found"],
+    [404, "server_error"],
     [409, "server_error"],
     [401, "auth_revoked"],
     [403, "auth_revoked"],
