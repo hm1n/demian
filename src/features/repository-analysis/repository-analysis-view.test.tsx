@@ -13,10 +13,14 @@ vi.mock("./repository-analysis", async (importOriginal) => {
 
 const analyzeMock = vi.mocked(analyzeRepository);
 
-async function submitRepository() {
+function fillRepository() {
   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "octocat" } });
   fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "hello-world" } });
   fireEvent.change(screen.getByLabelText(/^GitHub token/), { target: { value: "github_pat_secret_value" } });
+}
+
+async function submitRepository() {
+  fillRepository();
   fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
   await waitFor(() => expect(analyzeMock).toHaveBeenCalled());
 }
@@ -64,6 +68,19 @@ describe("RepositoryAnalysisView Empty", () => {
     expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다른 Repository 선택" })).toBeInTheDocument();
   });
+
+  it("다른 Repository를 선택하면 이미 만든 인증 세션을 재사용한다", async () => {
+    mockState({ status: "empty", kind: "no_commits" });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+    fireEvent.click(screen.getByRole("button", { name: "다른 Repository 선택" }));
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "hm1n" } });
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "demian" } });
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: "github_pat_secret_value" });
+  });
 });
 
 describe("RepositoryAnalysisView Error", () => {
@@ -106,17 +123,46 @@ describe("RepositoryAnalysisView Error", () => {
     expect(fetch).toHaveBeenLastCalledWith("/api/auth/session", { method: "DELETE" });
   });
 
-  it("쿠키 삭제가 실패하면 인증 화면을 초기화하지 않고 오류를 안내한다", async () => {
+  it("쿠키 삭제 요청이 거부되어도 로컬 인증 정보를 지우고 재입력을 허용한다", async () => {
     const error: AnalysisError = { kind: "auth_revoked", title: "인증 취소", message: "인증 필요", recovery: "reauthenticate" };
     mockState({ status: "error", error });
     render(<RepositoryAnalysisView />);
     await submitRepository();
-    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("offline"));
 
     fireEvent.click(screen.getByRole("button", { name: "GitHub 인증 다시 하기" }));
 
-    expect(await screen.findByRole("heading", { name: "GitHub 인증 세션을 삭제하지 못했습니다" })).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveAttribute("data-error-kind", "server_error");
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("");
+    expect(screen.getByLabelText(/^GitHub token/)).toBeRequired();
+  });
+
+  it("세션 발급 네트워크 실패는 토큰을 보존하고 재시도한다", async () => {
+    render(<RepositoryAnalysisView />);
+    fillRepository();
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    expect(await screen.findByRole("alert")).toHaveAttribute("data-error-kind", "network");
+    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("github_pat_secret_value");
+    fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
+    expect(analyzeMock.mock.calls[0][0].token).toBe("github_pat_secret_value");
+  });
+
+  it("세션 발급 500 응답은 토큰을 보존하고 재시도한다", async () => {
+    render(<RepositoryAnalysisView />);
+    fillRepository();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    expect(await screen.findByRole("alert")).toHaveAttribute("data-error-kind", "server_error");
+    expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("github_pat_secret_value");
+    fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
+    expect(analyzeMock.mock.calls[0][0].token).toBe("github_pat_secret_value");
   });
 
   it("세션 응답과 DOM에 입력한 토큰을 남기지 않는다", async () => {
