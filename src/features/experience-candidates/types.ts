@@ -28,3 +28,14 @@ export interface ExperienceCandidateEvidenceInput {
   }[];
   readonly fileTree: readonly Pick<RepositoryTreeEntry, "path">[];
 }
+
+export interface StageACandidate {
+  readonly sha: string;
+  readonly source: ExperienceCandidateSource;
+  readonly contributionItem: string | null;
+}
+
+export interface StageACandidateOutput {
+  readonly candidates: readonly StageACandidate[];
+  readonly unclassifiedShas: readonly string[];
+}
