@@ -8,6 +8,8 @@ description: 기능 정의서를 바탕으로 GitHub Feature Issue를 작성합�
 
 기능 정의서를 먼저 읽고 작업의 목적과 배경을 이해한 뒤 Issue를 작성합니다.
 
+**Issue 제목을 작성하기 전에 `references/issue-title-convention.md`를 반드시 읽고 따릅니다.**
+
 ## 사용 시점
 
 다음 상황에서 사용합니다.
@@ -40,9 +42,9 @@ description: 기능 정의서를 바탕으로 GitHub Feature Issue를 작성합�
 Issue를 생성할 때 아래 설정을 함께 적용합니다.
 
 - Assignee는 `hm1n`으로 고정합니다.
-- Label은 Issue 제목의 라벨과 동일한 GitHub Label을 추가합니다.
-  - 예: Issue 제목이 `[enhancement/github-repo] GitHub 저장소 연결`이면 `enhancement` 라벨을 추가합니다.
-  - Issue 제목의 라벨이 GitHub Label과 정확히 일치하지 않으면, 기존 Label 목록에서 의미가 같은 라벨을 확인해 사용합니다.
+- 제목에는 GitHub Label에서 파생한 소문자 슬러그를 사용하고, Issue에는 원래 GitHub Label을 추가합니다.
+  - 예: Issue 제목이 `[docs/llm-wiki] 인터뷰 설계 원칙 문서화`이면 `📃 Docs` Label을 추가합니다.
+  - 슬러그와 Label의 매핑은 `references/issue-title-convention.md`에서 확인합니다.
 
 ---
 
@@ -60,4 +62,6 @@ Issue를 작성하기 전에 아래 내용을 확인합니다.
 - 기능 정의서의 목적을 충분히 이해했는가?
 - 하나의 Issue가 하나의 PR로 구현 가능한 적절한 크기인가?
 - 기능 정의서에 없는 내용을 추측하지 않았는가?
+- 제목에 이모지가 없고 라벨 슬러그와 도메인이 소문자인가?
+- 제목의 라벨 슬러그가 실제 GitHub Label에서 유도된 값인가?
 
