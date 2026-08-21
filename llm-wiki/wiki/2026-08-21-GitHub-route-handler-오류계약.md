@@ -9,8 +9,12 @@
 
 ## 오류 매핑
 
-| body `kind` | HTTP status | 화면 복구 동작 |
+오류 응답은 후보 생성 API와 같은 `{ error: { kind, message, ... } }` 봉투를 쓴다.
+
+| `error.kind` | HTTP status | 화면 복구 동작 |
 | --- | ---: | --- |
+| `invalid_json` | 400 | UI 도달 불가 |
+| `invalid_request` | 422 | UI 도달 불가 |
 | `auth_revoked` | 401 | GitHub 인증 다시 하기 |
 | `repo_not_found` | 404 | Repository 다시 선택 |
 | `rate_limit` | 429 | 전체 조회 다시 시도 |
@@ -18,7 +22,11 @@
 | `server_error` | 500 | 전체 조회 다시 시도 |
 | `partial_failure` | 500 | 근본 `causeKind`에 따른 복구 |
 
+`invalid_json`과 `invalid_request`는 조회 오류가 아니라 route 입력 계약 위반이므로 `GitHubFetchErrorKind`와 화면 상태 정책에 추가하지 않는다. 클라이언트가 이 kind를 받으면 알 수 없는 오류로 보고 기존 `server_error` 안내를 사용한다.
+
 `partial_failure`는 `partialCommits`, `causeKind`, `completed`, `total`을 함께 보존한다. 클라이언트는 JSON이 아니거나 계약 형태가 아닌 응답을 `server_error`, `fetch` 자체 실패를 `network`로 복원한다. 커밋 상세 응답과 부분 실패 본문 모두 파일 `patch`를 제외한다.
+
+Repository 메타데이터 요청은 클라이언트가 빈 저장소 여부를 전달하지 않는다. 트리 조회가 404 또는 409일 때만 서버가 기본 브랜치 head를 직접 재확인하고, head가 없을 때만 빈 트리로 처리한다.
 
 ## 오케스트레이션 결정
 
