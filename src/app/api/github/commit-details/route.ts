@@ -1,9 +1,9 @@
 import type { NextRequest } from "next/server";
-import { errorResponse, GITHUB_BATCH_LIMITS } from "@/lib/github/api-contract";
-import { fetchCommitDetailsBatch } from "@/lib/github/contributions";
-import { GitHubFetchError, RepositoryContributionFetchError } from "@/lib/github/errors";
+import { errorResponse, GITHUB_BATCH_LIMITS, GitHubRouteRequestError } from "@/lib/github/api-contract";
+import { fetchCommitDetailsBatch, withoutPatch } from "@/lib/github/contributions";
+import { RepositoryContributionFetchError } from "@/lib/github/errors";
 import { readGitHubRouteRequest } from "@/lib/github/route-request";
-import type { CommitDetailWithoutPatch, CommitSummary } from "@/lib/github/types";
+import type { CommitSummary } from "@/lib/github/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,25 +14,12 @@ function isCommitSummary(value: unknown): value is CommitSummary {
     Number.isInteger((value as Record<string, unknown>).parentCount);
 }
 
-export function withoutPatch(detail: Awaited<ReturnType<typeof fetchCommitDetailsBatch>>[number]): CommitDetailWithoutPatch {
-  return {
-    ...detail,
-    files: detail.files.map((file) => ({
-      path: file.path,
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-      changes: file.changes,
-    })),
-  };
-}
-
 export async function POST(request: NextRequest): Promise<Response> {
   let total: number | undefined;
   try {
     const { body, auth } = await readGitHubRouteRequest(request);
     if (!Array.isArray(body.commits) || !body.commits.every(isCommitSummary) || body.commits.length > GITHUB_BATCH_LIMITS.commitDetails) {
-      throw new GitHubFetchError("server_error", `commits는 최대 ${GITHUB_BATCH_LIMITS.commitDetails}개여야 합니다.`);
+      throw new GitHubRouteRequestError("invalid_request", `commits는 최대 ${GITHUB_BATCH_LIMITS.commitDetails}개여야 합니다.`, 422);
     }
     total = body.commits.length;
     const commits = await fetchCommitDetailsBatch(auth, body.commits);

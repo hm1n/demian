@@ -101,7 +101,7 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
   };
 }
 
-interface RepoInfo {
+export interface RepoInfo {
   defaultBranch: string;
 }
 
@@ -129,7 +129,7 @@ export async function fetchAuthenticatedUserLogin(token: string): Promise<string
   return data.login;
 }
 
-async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
+export async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
   const response = await githubFetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
   if (!response.ok) {
     throw new GitHubFetchError(
@@ -160,7 +160,7 @@ async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoIn
  * 빈 저장소로 본다 — 두 번 연속 레이스는 사실상 안 일어나서 재시도 횟수를 매개변수로 뺄 필요는
  * 없음. 실제로 반복 발생이 확인되면 그때 재시도 횟수를 인자로 빼서 늘리면 됨.
  */
-async function resolveBranchHeadSha(
+export async function resolveBranchHeadSha(
   auth: GitHubAuth,
   branch: string,
   hasRetried = false

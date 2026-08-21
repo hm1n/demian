@@ -21,6 +21,16 @@ export interface SerializedGitHubError {
   total?: number;
 }
 
+export class GitHubRouteRequestError extends Error {
+  constructor(
+    readonly kind: "invalid_json" | "invalid_request",
+    message: string,
+    readonly status: 400 | 422
+  ) {
+    super(message);
+  }
+}
+
 const STATUS_BY_KIND: Record<GitHubFetchErrorKind, number> = {
   auth_revoked: 401,
   repo_not_found: 404,
@@ -40,6 +50,12 @@ function rootKind(error: GitHubFetchError): SerializedGitHubError["causeKind"] {
 }
 
 export function errorResponse(error: unknown, total?: number): Response {
+  if (error instanceof GitHubRouteRequestError) {
+    return Response.json(
+      { error: { kind: error.kind, message: error.message } },
+      { status: error.status }
+    );
+  }
   const githubError =
     error instanceof GitHubFetchError
       ? error
@@ -52,11 +68,11 @@ export function errorResponse(error: unknown, total?: number): Response {
     ...(githubError.partialCommits === undefined ? {} : { completed: githubError.partialCommits.length }),
     ...(total === undefined ? {} : { total }),
   };
-  return Response.json(body, { status: STATUS_BY_KIND[githubError.kind] });
+  return Response.json({ error: body }, { status: STATUS_BY_KIND[githubError.kind] });
 }
 
 function isKind(value: unknown): value is GitHubFetchErrorKind {
-  return ["rate_limit", "auth_revoked", "repo_not_found", "network", "server_error", "partial_failure"].includes(value as string);
+  return Object.keys(STATUS_BY_KIND).includes(value as string);
 }
 
 export async function readApiResponse<T>(response: Response, detailError = false): Promise<T> {
@@ -67,17 +83,22 @@ export async function readApiResponse<T>(response: Response, detailError = false
     throw new GitHubFetchError("server_error", "서버 응답을 해석하지 못했습니다.");
   }
   if (response.ok) return body as T;
-  if (typeof body !== "object" || body === null || !("kind" in body) || !isKind(body.kind)) {
+  const serialized =
+    typeof body === "object" && body !== null && "error" in body &&
+    typeof body.error === "object" && body.error !== null
+      ? body.error
+      : undefined;
+  if (!serialized || !("kind" in serialized) || !isKind(serialized.kind)) {
     throw new GitHubFetchError("server_error", "서버 오류 응답 형식이 올바르지 않습니다.");
   }
-  const serialized = body as SerializedGitHubError;
-  const cause = serialized.causeKind
-    ? new GitHubFetchError(serialized.causeKind, serialized.message)
+  const errorBody = serialized as SerializedGitHubError;
+  const cause = errorBody.causeKind
+    ? new GitHubFetchError(errorBody.causeKind, errorBody.message)
     : undefined;
   if (detailError) {
-    throw new RepositoryContributionFetchError(serialized.kind, serialized.message, serialized.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
+    throw new RepositoryContributionFetchError(errorBody.kind, errorBody.message, errorBody.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
   }
-  throw new CandidateDataFetchError(serialized.kind, serialized.message, serialized.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
+  throw new CandidateDataFetchError(errorBody.kind, errorBody.message, errorBody.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
 }
 
 export async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit, detailError = false): Promise<T> {

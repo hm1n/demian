@@ -1,8 +1,7 @@
 import type { NextRequest } from "next/server";
-import { errorResponse, GITHUB_BATCH_LIMITS } from "@/lib/github/api-contract";
+import { errorResponse, GITHUB_BATCH_LIMITS, GitHubRouteRequestError } from "@/lib/github/api-contract";
 import { fetchAuthoredCommitsBatch } from "@/lib/github/commits";
 import { decodeCommitCursor, encodeCommitCursor } from "@/lib/github/cursor";
-import { GitHubFetchError } from "@/lib/github/errors";
 import { readGitHubRouteRequest } from "@/lib/github/route-request";
 
 export const runtime = "nodejs";
@@ -15,7 +14,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     try {
       cursor = decodeCommitCursor(body.cursor);
     } catch {
-      throw new GitHubFetchError("server_error", "커서가 손상되었거나 유효하지 않습니다.");
+      throw new GitHubRouteRequestError("invalid_request", "커서가 손상되었거나 유효하지 않습니다.", 422);
     }
     const result = await fetchAuthoredCommitsBatch(auth, cursor, GITHUB_BATCH_LIMITS.commitPages);
     return Response.json({

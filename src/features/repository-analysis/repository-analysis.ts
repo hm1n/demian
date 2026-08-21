@@ -7,7 +7,7 @@ import type {
   CandidateDataOutput,
   CommitSummary,
   ContributionFetchProgress,
-  GitHubAuth,
+  RepositoryRef,
   RepositoryContributionData,
 } from "@/lib/github/types";
 
@@ -42,10 +42,10 @@ export type AnalysisState =
   | { status: "success"; data: CandidateDataOutput };
 
 interface AnalysisDependencies {
-  fetchCommits(auth: GitHubAuth): Promise<AuthoredCommitsResult>;
+  fetchCommits(repository: RepositoryRef): Promise<AuthoredCommitsResult>;
   filterCommits(commits: readonly CommitSummary[]): CommitSummary[];
   fetchContributions(
-    auth: GitHubAuth,
+    repository: RepositoryRef,
     commits: readonly CommitSummary[],
     onProgress: (progress: ContributionFetchProgress) => void
   ): Promise<RepositoryContributionData>;
@@ -139,7 +139,7 @@ export function toAnalysisError(error: unknown, context: FailureContext): Analys
 }
 
 export async function analyzeRepository(
-  auth: GitHubAuth,
+  repository: RepositoryRef,
   onStateChange: (state: AnalysisState) => void,
   dependencies: AnalysisDependencies = defaultDependencies
 ): Promise<void> {
@@ -147,7 +147,7 @@ export async function analyzeRepository(
   onStateChange({ status: "loading", loading: { step: "commits" } });
 
   try {
-    const { commits: allCommits, repositoryHasCommits } = await dependencies.fetchCommits(auth);
+    const { commits: allCommits, repositoryHasCommits } = await dependencies.fetchCommits(repository);
     if (allCommits.length === 0) {
       onStateChange({
         status: "empty",
@@ -164,7 +164,7 @@ export async function analyzeRepository(
 
     failureContext = { step: "details", total: includedCommits.length };
     const contributionData = await dependencies.fetchContributions(
-      auth,
+      repository,
       includedCommits,
       (progress) => {
         onStateChange({

@@ -1,10 +1,10 @@
-import { apiFetch } from "./api-contract";
+import { apiFetch, GITHUB_BATCH_LIMITS } from "./api-contract";
 import { GitHubFetchError, RepositoryContributionFetchError } from "./errors";
 import type {
   CommitDetailWithoutPatch,
   CommitSummary,
   ContributionFetchProgress,
-  GitHubAuth,
+  RepositoryRef,
   RepositoryContributionData,
 } from "./types";
 
@@ -18,7 +18,7 @@ function invalidResponse(): never {
   throw new GitHubFetchError("server_error", "서버 응답 형식이 올바르지 않습니다.");
 }
 
-export async function fetchAuthoredCommitsFromApi(auth: GitHubAuth) {
+export async function fetchAuthoredCommitsFromApi(repository: RepositoryRef) {
   const commits: CommitSummary[] = [];
   let cursor: string | null | undefined;
   let repositoryHasCommits = true;
@@ -28,7 +28,7 @@ export async function fetchAuthoredCommitsFromApi(auth: GitHubAuth) {
         commits: CommitSummary[];
         repositoryHasCommits: boolean;
         cursor: string | null;
-      }>("/api/github/commits", jsonRequest({ owner: auth.owner, repo: auth.repo, ...(cursor ? { cursor } : {}) }));
+      }>("/api/github/commits", jsonRequest({ ...repository, ...(cursor ? { cursor } : {}) }));
       if (!Array.isArray(result.commits) || typeof result.repositoryHasCommits !== "boolean" || (result.cursor !== null && typeof result.cursor !== "string")) invalidResponse();
       commits.push(...result.commits);
       repositoryHasCommits = result.repositoryHasCommits;
@@ -42,17 +42,17 @@ export async function fetchAuthoredCommitsFromApi(auth: GitHubAuth) {
 }
 
 export async function fetchContributionsFromApi(
-  auth: GitHubAuth,
+  repository: RepositoryRef,
   commits: readonly CommitSummary[],
   onProgress: (progress: ContributionFetchProgress) => void
 ): Promise<RepositoryContributionData> {
   const details: CommitDetailWithoutPatch[] = [];
   onProgress({ phase: "commit_details", completed: 0, total: commits.length });
   try {
-    for (let start = 0; start < commits.length; start += 20) {
+    for (let start = 0; start < commits.length; start += GITHUB_BATCH_LIMITS.commitDetails) {
       const result = await apiFetch<{ commits: CommitDetailWithoutPatch[] }>(
         "/api/github/commit-details",
-        jsonRequest({ owner: auth.owner, repo: auth.repo, commits: commits.slice(start, start + 20) }),
+        jsonRequest({ ...repository, commits: commits.slice(start, start + GITHUB_BATCH_LIMITS.commitDetails) }),
         true
       );
       if (!Array.isArray(result.commits)) invalidResponse();
@@ -62,10 +62,10 @@ export async function fetchContributionsFromApi(
     onProgress({ phase: "repository_metadata" });
     const metadata = await apiFetch<Omit<RepositoryContributionData, "commits">>(
       "/api/github/repository-meta",
-      jsonRequest({ owner: auth.owner, repo: auth.repo, repositoryHasCommits: true }),
+      jsonRequest(repository),
       true
     );
-    if (!metadata || !Array.isArray(metadata.tree) || typeof metadata.treeTruncated !== "boolean" || typeof metadata.languages !== "object") invalidResponse();
+    if (!metadata || !Array.isArray(metadata.tree) || typeof metadata.treeTruncated !== "boolean" || metadata.languages === null || typeof metadata.languages !== "object") invalidResponse();
     return { commits: details, ...metadata };
   } catch (error) {
     const partial = [

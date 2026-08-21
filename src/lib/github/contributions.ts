@@ -1,13 +1,16 @@
 import {
   classifyErrorResponse,
+  fetchRepoInfo,
   GITHUB_API_BASE,
   githubFetch,
   parseJson,
   parseNextLink,
+  resolveBranchHeadSha,
 } from "./commits";
 import { GitHubFetchError, RepositoryContributionFetchError } from "./errors";
 import type {
   CommitDetail,
+  CommitDetailWithoutPatch,
   CommitSummary,
   ContributionFetchProgress,
   GitHubAuth,
@@ -185,9 +188,21 @@ export async function fetchCommitDetailsBatch(
   }
 }
 
+export function withoutPatch(detail: CommitDetail): CommitDetailWithoutPatch {
+  return {
+    ...detail,
+    files: detail.files.map((file) => ({
+      path: file.path,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      changes: file.changes,
+    })),
+  };
+}
+
 export async function fetchRepositoryMetadata(
-  auth: GitHubAuth,
-  repositoryHasCommits: boolean
+  auth: GitHubAuth
 ): Promise<Omit<RepositoryContributionData, "commits">> {
   const { owner, repo, token } = auth;
   const { data: languages } = await requestPage<Record<string, number>>(
@@ -201,8 +216,16 @@ export async function fetchRepositoryMetadata(
   );
   let tree: RawTree;
   const treeMissing = treeResponse.status === 404 || treeResponse.status === 409;
-  if (treeMissing && !repositoryHasCommits) {
-    tree = { tree: [], truncated: false };
+  if (treeMissing) {
+    const { defaultBranch } = await fetchRepoInfo(auth);
+    const headSha = await resolveBranchHeadSha(auth, defaultBranch);
+    if (headSha === null) tree = { tree: [], truncated: false };
+    else {
+      throw new GitHubFetchError(
+        await classifyErrorResponse(treeResponse),
+        `Repository 파일 트리를 가져오지 못했습니다 (${treeResponse.status})`
+      );
+    }
   } else if (!treeResponse.ok) {
     throw new GitHubFetchError(
       await classifyErrorResponse(treeResponse),

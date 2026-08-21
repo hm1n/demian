@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useRef, useState } from "react";
-import type { GitHubAuth } from "@/lib/github/types";
+import type { RepositoryRef } from "@/lib/github/types";
 import { analyzeRepository, type AnalysisState, type LoadingPhase } from "./repository-analysis";
 import styles from "./repository-analysis.module.css";
 
@@ -51,14 +51,14 @@ export function RepositoryAnalysisView() {
   const tokenInput = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
-  async function startAnalysis(auth: GitHubAuth) {
+  async function startAnalysis(repository: RepositoryRef, newToken: string) {
     setState({ status: "loading", loading: { step: "commits" } });
     let response: Response;
     try {
       response = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: auth.token }),
+        body: JSON.stringify({ token: newToken }),
       });
     } catch {
       setState({
@@ -86,18 +86,22 @@ export function RepositoryAnalysisView() {
     }
     setHasSession(true);
     setToken("");
-    await analyzeRepository({ ...auth, token: "" }, setState);
+    await analyzeRepository(repository, setState);
+  }
+
+  function runAnalysis() {
+    const repository = { owner: owner.trim(), repo: repo.trim() };
+    if (token) return startAnalysis(repository, token);
+    if (hasSession) return analyzeRepository(repository, setState);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (hasSession) analyzeRepository({ owner: owner.trim(), repo: repo.trim(), token: "" }, setState);
-    else startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
+    runAnalysis();
   }
 
   function retry() {
-    if (hasSession) analyzeRepository({ owner: owner.trim(), repo: repo.trim(), token: "" }, setState);
-    else startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
+    runAnalysis();
   }
 
   async function reauthenticate() {

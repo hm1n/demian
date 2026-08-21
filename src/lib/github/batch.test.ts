@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withoutPatch } from "@/app/api/github/commit-details/route";
 import { fetchAuthoredCommitsBatch } from "./commits";
-import { fetchRepositoryMetadata } from "./contributions";
+import { fetchRepositoryMetadata, withoutPatch } from "./contributions";
 import type { CommitDetail } from "./types";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "secret" };
@@ -42,10 +41,36 @@ describe("GitHub route 배치 원시 조회", () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(Response.json({ TypeScript: 10 }))
       .mockResolvedValueOnce(Response.json({ truncated: true, tree: [{ path: "src", type: "tree", sha: SHA }] })));
-    await expect(fetchRepositoryMetadata(AUTH, true)).resolves.toEqual({
+    await expect(fetchRepositoryMetadata(AUTH)).resolves.toEqual({
       tree: [{ path: "src", type: "tree", sha: SHA }],
       treeTruncated: true,
       languages: { TypeScript: 10 },
     });
+  });
+
+  it("트리 404 뒤 기본 브랜치 head도 없으면 빈 트리로 확인한다", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({}))
+      .mockResolvedValueOnce(Response.json({}, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ default_branch: "main" }))
+      .mockResolvedValueOnce(Response.json({}, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ default_branch: "main" })));
+    await expect(fetchRepositoryMetadata(AUTH)).resolves.toEqual({ tree: [], treeTruncated: false, languages: {} });
+  });
+
+  it("트리 404 뒤 기본 브랜치 head가 있으면 repo_not_found 오류를 유지한다", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({}))
+      .mockResolvedValueOnce(Response.json({}, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ default_branch: "main" }))
+      .mockResolvedValueOnce(Response.json({ commit: { sha: SHA } })));
+    await expect(fetchRepositoryMetadata(AUTH)).rejects.toMatchObject({ kind: "repo_not_found" });
+  });
+
+  it("트리 403 rate limit을 빈 트리로 삼키지 않는다", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({}))
+      .mockResolvedValueOnce(Response.json({}, { status: 403, headers: { "x-ratelimit-remaining": "0" } })));
+    await expect(fetchRepositoryMetadata(AUTH)).rejects.toMatchObject({ kind: "rate_limit" });
   });
 });

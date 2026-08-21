@@ -27,7 +27,7 @@ describe("GitHub API 오류 계약", () => {
     const response = errorResponse(error, 3);
     expect(response.status).toBe(500);
     const body = await response.clone().json();
-    expect(body).toMatchObject({ kind: "partial_failure", causeKind: "rate_limit", completed: 1, total: 3, partialCommits: [DETAIL] });
+    expect(body).toMatchObject({ error: { kind: "partial_failure", causeKind: "rate_limit", completed: 1, total: 3, partialCommits: [DETAIL] } });
     const restored = await readApiResponse(response, true).catch((caught) => caught);
     expect(toAnalysisError(restored, { step: "details", total: 3 })).toMatchObject({ kind: "partial_failure", causeKind: "rate_limit", completed: 1, total: 3 });
   });

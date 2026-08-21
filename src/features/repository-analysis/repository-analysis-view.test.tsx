@@ -72,7 +72,7 @@ describe("RepositoryAnalysisView 기여 항목", () => {
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
     await submitRepository();
     expect(analyzeMock).toHaveBeenCalledWith(
-      { owner: "octocat", repo: "hello-world", token: "" },
+      { owner: "octocat", repo: "hello-world" },
       expect.any(Function)
     );
   });
@@ -119,7 +119,25 @@ describe("RepositoryAnalysisView Empty", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: "" });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("기존 세션이 있어도 새 토큰을 입력하면 세션 쿠키를 교체한다", async () => {
+    mockState({ status: "empty", kind: "no_commits" });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+    fireEvent.click(screen.getByRole("button", { name: "다른 Repository 선택" }));
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "hm1n" } });
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "demian" } });
+    fireEvent.change(screen.getByLabelText(/^GitHub token/), { target: { value: "new_token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(fetch).toHaveBeenLastCalledWith("/api/auth/session", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ token: "new_token" }),
+    }));
   });
 });
 
@@ -149,7 +167,7 @@ describe("RepositoryAnalysisView Error", () => {
     await submitRepository();
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world", token: "" });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world" });
   });
 
   it("인증 재진행을 선택하면 쿠키와 기존 토큰을 지우고 새 인증 입력을 기다린다", async () => {
@@ -188,7 +206,9 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe("");
+    expect(fetch).toHaveBeenLastCalledWith("/api/auth/session", expect.objectContaining({
+      body: JSON.stringify({ token: GITHUB_TOKEN }),
+    }));
   });
 
   it("세션 발급 500 응답은 토큰을 보존하고 재시도한다", async () => {
@@ -202,7 +222,9 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe("");
+    expect(fetch).toHaveBeenLastCalledWith("/api/auth/session", expect.objectContaining({
+      body: JSON.stringify({ token: GITHUB_TOKEN }),
+    }));
   });
 
   it("세션 응답과 DOM에 입력한 토큰을 남기지 않는다", async () => {

@@ -1,6 +1,9 @@
-export interface GitHubAuth {
+export interface RepositoryRef {
   owner: string;
   repo: string;
+}
+
+export interface GitHubAuth extends RepositoryRef {
   token: string;
 }
 

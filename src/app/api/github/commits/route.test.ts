@@ -45,7 +45,7 @@ describe("POST /api/github/commits", () => {
     setupUntilCommit(Response.json(body, { status: upstreamStatus, headers }));
     const response = await POST(request());
     expect(response.status).toBe(status);
-    expect(await response.json()).toMatchObject({ kind });
+    expect(await response.json()).toMatchObject({ error: { kind } });
   });
 
   it("GitHub 409를 빈 저장소의 직접 근거로 처리한다", async () => {
@@ -58,7 +58,7 @@ describe("POST /api/github/commits", () => {
   it("성공 응답 JSON 파싱 실패를 network로 직렬화한다", async () => {
     setupUntilCommit(new Response("broken", { status: 200 }));
     const response = await POST(request());
-    expect(await response.json()).toMatchObject({ kind: "network" });
+    expect(await response.json()).toMatchObject({ error: { kind: "network" } });
   });
 
   it("후속 페이지 실패에서 이미 받은 커밋과 근본 원인을 보존한다", async () => {
@@ -71,6 +71,6 @@ describe("POST /api/github/commits", () => {
       .mockResolvedValueOnce(Response.json({}, { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);
     const response = await POST(request());
-    expect(await response.json()).toMatchObject({ kind: "partial_failure", causeKind: "rate_limit", completed: 1, partialCommits: [{ sha: SHA }] });
+    expect(await response.json()).toMatchObject({ error: { kind: "partial_failure", causeKind: "rate_limit", completed: 1, partialCommits: [{ sha: SHA }] } });
   });
 });
