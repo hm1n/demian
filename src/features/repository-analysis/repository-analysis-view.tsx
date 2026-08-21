@@ -39,25 +39,63 @@ export function RepositoryAnalysisView() {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [token, setToken] = useState("");
+  // ponytail: #14에서 조회를 서버 route로 옮기면 이 과도기 PAT state를 삭제한다.
+  const [sessionToken, setSessionToken] = useState("");
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
-  function startAnalysis(auth: GitHubAuth) {
-    void analyzeRepository(auth, setState);
+  async function startAnalysis(auth: GitHubAuth) {
+    setState({ status: "loading", loading: { step: "commits" } });
+    let response: Response;
+    try {
+      response = await fetch("/api/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: auth.token }),
+      });
+    } catch {
+      setState({
+        status: "error",
+        error: {
+          kind: "network",
+          title: "GitHub 인증 세션에 연결하지 못했습니다",
+          message: "네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
+          recovery: "retry",
+        },
+      });
+      return;
+    }
+    if (!response.ok) {
+      setState({
+        status: "error",
+        error: {
+          kind: "server_error",
+          title: "GitHub 인증 세션을 만들지 못했습니다",
+          message: "잠시 후 다시 시도해 주세요.",
+          recovery: "retry",
+        },
+      });
+      return;
+    }
+    setSessionToken(auth.token);
+    setToken("");
+    await analyzeRepository(auth, setState);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
+    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
   }
 
   function retry() {
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
+    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
   }
 
-  function reauthenticate() {
+  async function reauthenticate() {
+    await fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
+    setSessionToken("");
     setToken("");
     setState(INITIAL_STATE);
     requestAnimationFrame(() => tokenInput.current?.focus());
@@ -92,8 +130,8 @@ export function RepositoryAnalysisView() {
           </div>
           <label className={styles.field}>
             GitHub token
-            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required />
-            <span className={styles.hint}>토큰은 현재 조회 요청에만 사용하며 화면에 표시하지 않습니다.</span>
+            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!sessionToken} />
+            <span className={styles.hint}>토큰은 암호화된 보안 쿠키에 저장하며 화면에 표시하지 않습니다.</span>
           </label>
           <button className={styles.button} type="submit" disabled={loading}>
             {loading ? "Repository 분석 중" : "Repository 분석 시작"}
