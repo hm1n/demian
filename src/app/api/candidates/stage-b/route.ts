@@ -22,10 +22,14 @@ export const MAX_STAGE_B_BODY_BYTES = 4.5 * 1024 * 1024;
 
 type FetchDetail = (auth: GitHubAuth, sha: string) => Promise<CommitDetail>;
 
+// Stage A가 내는 후보 SHA는 GitHub commits API의 40자 소문자 hex다. 브랜치명·태그 같은 이동 가능한 ref를
+// 받으면 페이지네이션 중 파일 목록이 중복·누락되고 응답의 SHA 자리에 ref가 새어 나가므로 형식을 고정한다.
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
 function isCandidate(value: unknown): value is StageACandidate {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<StageACandidate>;
-  return typeof candidate.sha === "string" && candidate.sha.length > 0 &&
+  return typeof candidate.sha === "string" && COMMIT_SHA_PATTERN.test(candidate.sha) &&
     ["contribution_match", "automatic_recommendation"].includes(candidate.source ?? "") &&
     (candidate.contributionItem === null || typeof candidate.contributionItem === "string");
 }

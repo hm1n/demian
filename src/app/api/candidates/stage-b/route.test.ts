@@ -6,11 +6,13 @@ import { STAGE_B_MAX_CANDIDATES, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATC
 import { GitHubFetchError } from "@/lib/github/errors";
 import { handleStageB } from "./route";
 
-const candidate = { sha: "a", source: "automatic_recommendation" as const, contributionItem: null };
+const sha = "a".repeat(40);
+const otherSha = "b".repeat(40);
+const candidate = { sha, source: "automatic_recommendation" as const, contributionItem: null };
 function request(value: unknown, authenticated = true) {
   return new NextRequest("https://example.com/api/candidates/stage-b", { method: "POST", headers: authenticated ? { cookie: `${GITHUB_SESSION_COOKIE}=${encryptGitHubToken("token")}` } : undefined, body: JSON.stringify(value) });
 }
-const detail = { sha: "a", title: "a", author: "me", date: "date", parentCount: 1, message: "a", additions: 1, deletions: 0, changedFiles: 1, files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: "diff" }], pullRequests: [] };
+const detail = { sha, title: "a", author: "me", date: "date", parentCount: 1, message: "a", additions: 1, deletions: 0, changedFiles: 1, files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: "diff" }], pullRequests: [] };
 
 beforeEach(() => { process.env[GITHUB_SESSION_KEY_ENV] = Buffer.alloc(32, 7).toString("base64"); });
 afterEach(() => { delete process.env[GITHUB_SESSION_KEY_ENV]; });
@@ -28,9 +30,9 @@ describe("POST /api/candidates/stage-b", () => {
   });
 
   it("최종 후보에 포함된 SHA의 diff만 반환한다", async () => {
-    const response = await handleStageB(request({ owner: "o", repo: "r", candidates: [candidate] }), async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "automatic_recommendation" }], insufficientCandidatesReason: "하나뿐" }), undefined, async () => detail);
+    const response = await handleStageB(request({ owner: "o", repo: "r", candidates: [candidate] }), async () => ({ candidates: [{ sha, relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "automatic_recommendation" }], insufficientCandidatesReason: "하나뿐" }), undefined, async () => detail);
     expect(response.status).toBe(200);
-    expect((await response.json()).diffs).toEqual([{ sha: "a", files: detail.files }]);
+    expect((await response.json()).diffs).toEqual([{ sha, files: detail.files }]);
   });
 
   it("세션 누락, 중복 SHA, GitHub 실패를 LLM 호출 전에 거부한다", async () => {
@@ -42,8 +44,23 @@ describe("POST /api/candidates/stage-b", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it("브랜치명 같은 이동 가능한 ref를 sha로 보내면 조회 없이 422를 반환한다", async () => {
+    const fetchDetail = vi.fn();
+    const generate = vi.fn();
+    const response = await handleStageB(
+      request({ owner: "o", repo: "r", candidates: [{ ...candidate, sha: "main" }] }),
+      generate,
+      undefined,
+      fetchDetail
+    );
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: { kind: "invalid_request" } });
+    expect(fetchDetail).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("후보 상한, 잘못된 JSON, 본문 크기 상한을 요청 오류로 구분한다", async () => {
-    const tooMany = Array.from({ length: STAGE_B_MAX_CANDIDATES + 1 }, (_, index) => ({ ...candidate, sha: String(index) }));
+    const tooMany = Array.from({ length: STAGE_B_MAX_CANDIDATES + 1 }, (_, index) => ({ ...candidate, sha: `${index}`.padStart(40, "0") }));
     expect((await handleStageB(request({ owner: "o", repo: "r", candidates: tooMany }))).status).toBe(422);
     const malformed = request({});
     Object.defineProperty(malformed, "json", { value: async () => { throw new SyntaxError(); } });
@@ -62,7 +79,7 @@ describe("POST /api/candidates/stage-b", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const generate = vi.fn();
-    const second = { ...candidate, sha: "b" };
+    const second = { ...candidate, sha: otherSha };
     const response = await handleStageB(request({ owner: "o", repo: "r", candidates: [candidate, second] }), generate, 20_000, async (_auth, sha) => {
       vi.setSystemTime(11_001);
       return { ...detail, sha };
@@ -108,7 +125,7 @@ describe("POST /api/candidates/stage-b", () => {
       path: `src/${index}.ts`,
       patch: "x".repeat(index === 0 ? STAGE_B_MAX_PATCH_CHARS + 1 : STAGE_B_MAX_PATCH_CHARS),
     }));
-    const response = await handleStageB(request({ owner: "o", repo: "r", candidates: [candidate] }), async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/0.ts"], source: candidate.source }], insufficientCandidatesReason: "부족" }), undefined, async () => ({ ...detail, files }));
+    const response = await handleStageB(request({ owner: "o", repo: "r", candidates: [candidate] }), async () => ({ candidates: [{ sha, relatedShas: [], evidence: "근거", citedFilePaths: ["src/0.ts"], source: candidate.source }], insufficientCandidatesReason: "부족" }), undefined, async () => ({ ...detail, files }));
     const body = await response.json();
     expect(body.diffs[0].files[0].patchTruncated).toBe(true);
     expect(body.diffs[0].files.at(-1).patchTruncated).toBe(true);
