@@ -72,6 +72,24 @@ describe("POST /api/candidates/stage-b", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it("마지막 조회가 예산을 소진하면 LLM 호출 없이 504를 반환한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const generate = vi.fn();
+    const response = await handleStageB(
+      request({ owner: "o", repo: "r", candidates: [candidate] }),
+      generate,
+      20_000,
+      async (_auth, sha) => {
+        vi.setSystemTime(11_000);
+        return { ...detail, sha };
+      }
+    );
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ error: { kind: "llm_timeout" } });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("GitHub 조회에 쓴 시간을 제외한 잔여 예산만 LLM에 전달한다", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

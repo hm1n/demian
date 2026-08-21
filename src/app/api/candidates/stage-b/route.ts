@@ -92,23 +92,23 @@ export async function handleStageB(
         diffs: [],
       });
     }
-    const commits: CommitDetail[] = [];
-    // ponytail: 요청 하나는 끝날 때까지 예산을 넘길 수 있습니다. 필요해지면 조회 계층에 AbortSignal을 배선합니다.
-    for (const candidate of candidates) {
-      if (totalBudgetMs - (Date.now() - startedAt) < STAGE_B_MIN_LLM_BUDGET_MS) {
+    const remaining = () => totalBudgetMs - (Date.now() - startedAt);
+    const assertBudget = () => {
+      if (remaining() < STAGE_B_MIN_LLM_BUDGET_MS) {
         throw new ExperienceCandidateOutputError(
           "llm_timeout",
           "Stage B 실행 시간 예산이 초과되었습니다."
         );
       }
+    };
+    const commits: CommitDetail[] = [];
+    // ponytail: 요청 하나는 끝날 때까지 예산을 넘길 수 있습니다. 필요해지면 조회 계층에 AbortSignal을 배선합니다.
+    for (const candidate of candidates) {
+      assertBudget();
       commits.push(await fetchDetail(auth, candidate.sha));
     }
-    const output = await selectStageBCandidates(
-      commits,
-      candidates,
-      generate,
-      totalBudgetMs - (Date.now() - startedAt)
-    );
+    assertBudget();
+    const output = await selectStageBCandidates(commits, candidates, generate, remaining());
     const selected = new Set(
       output.candidates.flatMap(({ sha, relatedShas }) => [sha, ...relatedShas])
     );
