@@ -29,13 +29,25 @@ export function buildStageBPayload(commits: readonly CommitDetail[], candidates:
       changedFiles: commit.changedFiles,
       source: candidateBySha.get(commit.sha)!.source,
       contributionItem: candidateBySha.get(commit.sha)!.contributionItem,
-      pullRequests: commit.pullRequests.map(({ number, title, state, baseBranch, headBranch }) => ({ number, title, state, baseBranch, headBranch })),
+      pullRequests: commit.pullRequests.map(
+        ({ number, title, state, baseBranch, headBranch }) => ({
+          number,
+          title,
+          state,
+          baseBranch,
+          headBranch,
+        })
+      ),
       files: commit.files.map((file) => {
         const available = Math.max(0, STAGE_B_MAX_TOTAL_PATCH_CHARS - used);
         const patch = file.patch?.slice(0, Math.min(STAGE_B_MAX_PATCH_CHARS, available));
         used += patch?.length ?? 0;
         return {
-          path: file.path, status: file.status, additions: file.additions, deletions: file.deletions, changes: file.changes,
+          path: file.path,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          changes: file.changes,
           ...(patch ? { patch } : {}),
           ...(file.patch !== undefined && patch?.length !== file.patch.length ? { patchTruncated: true } : {}),
         };
@@ -46,34 +58,97 @@ export function buildStageBPayload(commits: readonly CommitDetail[], candidates:
 
 function mapLlmError(error: unknown) {
   if (error instanceof ExperienceCandidateOutputError) return error;
-  if (NoObjectGeneratedError.isInstance(error)) return new ExperienceCandidateOutputError("schema_validation", "Stage B 구조화 응답이 출력 스키마와 일치하지 않습니다.", { cause: error });
-  if (LoadAPIKeyError.isInstance(error)) return new ExperienceCandidateOutputError("llm_configuration", "LLM API 키가 설정되지 않았습니다.", { cause: error });
-  if (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name)) return new ExperienceCandidateOutputError("llm_timeout", "Stage B 분석 시간이 초과되었습니다.", { cause: error });
+  if (NoObjectGeneratedError.isInstance(error)) {
+    return new ExperienceCandidateOutputError(
+      "schema_validation",
+      "Stage B 구조화 응답이 출력 스키마와 일치하지 않습니다.",
+      { cause: error }
+    );
+  }
+  if (LoadAPIKeyError.isInstance(error)) {
+    return new ExperienceCandidateOutputError(
+      "llm_configuration",
+      "LLM API 키가 설정되지 않았습니다.",
+      { cause: error }
+    );
+  }
+  if (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name)) {
+    return new ExperienceCandidateOutputError(
+      "llm_timeout",
+      "Stage B 분석 시간이 초과되었습니다.",
+      { cause: error }
+    );
+  }
   if (APICallError.isInstance(error)) {
-    if (error.statusCode === 401 || error.statusCode === 403) return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", { cause: error });
-    if (error.statusCode === 429) return new ExperienceCandidateOutputError("llm_rate_limit", "LLM 호출 한도에 도달했습니다.", { cause: error });
-    if (error.statusCode === 408 || error.statusCode === 504) return new ExperienceCandidateOutputError("llm_timeout", "Stage B 분석 시간이 초과되었습니다.", { cause: error });
-    if (error.statusCode === 404) return new ExperienceCandidateOutputError("llm_configuration", "LLM 모델 설정이 올바르지 않습니다.", { cause: error });
-    if ([400, 409, 422].includes(error.statusCode ?? 0)) return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", { cause: error });
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", {
+        cause: error,
+      });
+    }
+    if (error.statusCode === 429) {
+      return new ExperienceCandidateOutputError(
+        "llm_rate_limit",
+        "LLM 호출 한도에 도달했습니다.",
+        { cause: error }
+      );
+    }
+    if (error.statusCode === 408 || error.statusCode === 504) {
+      return new ExperienceCandidateOutputError(
+        "llm_timeout",
+        "Stage B 분석 시간이 초과되었습니다.",
+        { cause: error }
+      );
+    }
+    if (error.statusCode === 404) {
+      return new ExperienceCandidateOutputError(
+        "llm_configuration",
+        "LLM 모델 설정이 올바르지 않습니다.",
+        { cause: error }
+      );
+    }
+    if ([400, 409, 422].includes(error.statusCode ?? 0)) {
+      return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", {
+        cause: error,
+      });
+    }
     return new ExperienceCandidateOutputError("llm_failure", "Stage B 분석에 실패했습니다.", { cause: error });
   }
-  if (error instanceof TypeError) return new ExperienceCandidateOutputError("llm_network", "LLM에 연결하지 못했습니다.", { cause: error });
+  if (error instanceof TypeError) {
+    return new ExperienceCandidateOutputError("llm_network", "LLM에 연결하지 못했습니다.", {
+      cause: error,
+    });
+  }
   return new ExperienceCandidateOutputError("llm_failure", "Stage B 분석에 실패했습니다.", { cause: error });
 }
 
 const generateWithGemini: GenerateStageB = async (payload, abortSignal) => {
   const { object } = await generateObject({
-    model: createGoogle()(STAGE_B_MODEL), schema: experienceCandidateOutputSchema,
-    system: "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. 관련 커밋은 대표 커밋과 같은 PR에 속한 입력 SHA만 사용하세요. 억지로 3개를 채우지 말고, evidence에는 대표 선정 이유와 관련 커밋이 근거가 되는 이유를 함께 쓰세요. citedFilePaths는 제공된 diff 경로만 사용하세요. 절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
-    prompt: JSON.stringify(payload), abortSignal,
+    model: createGoogle()(STAGE_B_MODEL),
+    schema: experienceCandidateOutputSchema,
+    system:
+      "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. " +
+      "관련 커밋은 대표 커밋과 같은 PR에 속한 입력 SHA만 사용하세요. " +
+      "억지로 3개를 채우지 말고, evidence에는 대표 선정 이유와 관련 커밋이 근거가 되는 이유를 함께 쓰세요. " +
+      "citedFilePaths는 제공된 diff 경로만 사용하세요. " +
+      "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
+    prompt: JSON.stringify(payload),
+    abortSignal,
   });
   return object;
 };
 
-export async function selectStageBCandidates(commits: readonly CommitDetail[], candidates: readonly StageACandidate[], generate: GenerateStageB = generateWithGemini, timeoutMs = STAGE_B_TOTAL_BUDGET_MS): Promise<ExperienceCandidateOutput> {
+export async function selectStageBCandidates(
+  commits: readonly CommitDetail[],
+  candidates: readonly StageACandidate[],
+  generate: GenerateStageB = generateWithGemini,
+  timeoutMs = STAGE_B_TOTAL_BUDGET_MS
+): Promise<ExperienceCandidateOutput> {
   const payload = buildStageBPayload(commits, candidates);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new DOMException("Stage B timeout", "TimeoutError")), timeoutMs);
+  const timeout = setTimeout(
+    () => controller.abort(new DOMException("Stage B timeout", "TimeoutError")),
+    timeoutMs
+  );
   try {
     const output = validateExperienceCandidateOutput(await generate(payload, controller.signal));
     // ponytail: 인용은 입력 diff 경로로 제한합니다. 이슈 #32가 전체 트리 근거를 요구하면 fileTree를 입력에 추가합니다.
