@@ -78,6 +78,16 @@ describe("RepositoryAnalysisView 기여 항목", () => {
     submitRepository();
     expect(onContributionItemsSubmit).toHaveBeenCalledWith(["푸시 알림 구현"]);
   });
+
+  it("다른 Repository를 선택하면 이전 Repository의 기여 항목을 지운다", () => {
+    const onContributionItemsSubmit = vi.fn();
+    mockState({ status: "empty", kind: "no_commits" });
+    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
+    submitRepository();
+    fireEvent.click(screen.getByRole("button", { name: "다른 Repository 선택" }));
+    expect(screen.getByLabelText(/^본인 기여 항목/)).toHaveValue("");
+  });
 });
 
 describe("RepositoryAnalysisView Empty", () => {
