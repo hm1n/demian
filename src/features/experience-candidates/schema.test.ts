@@ -82,6 +82,19 @@ describe("경험 후보 출력 검증", () => {
       })
     );
   });
+
+  it("후보가 최대 개수인 3개를 초과하면 거부한다", () => {
+    expect(() =>
+      validateExperienceCandidateOutput({
+        candidates: [...VALID_OUTPUT.candidates, VALID_OUTPUT.candidates[0]],
+        insufficientCandidatesReason: null,
+      })
+    ).toThrowError(
+      expect.objectContaining<Partial<ExperienceCandidateOutputError>>({
+        kind: "schema_validation",
+      })
+    );
+  });
 });
 
 describe("후보 SHA 검증", () => {

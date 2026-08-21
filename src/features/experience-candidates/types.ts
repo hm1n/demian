@@ -10,6 +10,6 @@ export interface ExperienceCandidate {
 
 export interface ExperienceCandidateOutput {
   readonly candidates: readonly ExperienceCandidate[];
-  /** 후보가 3개 미만인 이유입니다. 3개 이상이면 null입니다. */
+  /** 후보가 3개 미만인 이유입니다. 후보가 3개이면 null입니다. */
   readonly insufficientCandidatesReason: string | null;
 }

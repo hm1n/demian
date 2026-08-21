@@ -11,6 +11,8 @@ const SOURCES: readonly ExperienceCandidateSource[] = [
   "automatic_recommendation",
 ];
 
+// ponytail: 새 검증 의존성 없이 JSON Schema와 최소 런타임 검증을 병행합니다. 계약 변경 시
+// 둘의 불일치가 반복되면 단일 스키마에서 타입과 JSON Schema를 함께 생성하는 방식으로 승격합니다.
 const candidateOutputJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -18,6 +20,7 @@ const candidateOutputJsonSchema = {
   properties: {
     candidates: {
       type: "array",
+      maxItems: 3,
       items: {
         type: "object",
         additionalProperties: false,
@@ -76,6 +79,7 @@ export function validateExperienceCandidateOutput(value: unknown): ExperienceCan
     !isRecord(value) ||
     !hasOnlyKeys(value, ["candidates", "insufficientCandidatesReason"]) ||
     !Array.isArray(value.candidates) ||
+    value.candidates.length > 3 ||
     !value.candidates.every(isCandidate)
   ) {
     throw new ExperienceCandidateOutputError(
@@ -91,7 +95,7 @@ export function validateExperienceCandidateOutput(value: unknown): ExperienceCan
   if (!reasonIsValid) {
     throw new ExperienceCandidateOutputError(
       "schema_validation",
-      "후보가 3개 미만이면 부족 사유가 필요하고, 3개 이상이면 부족 사유는 null이어야 합니다."
+      "후보가 3개 미만이면 부족 사유가 필요하고, 3개이면 부족 사유는 null이어야 합니다."
     );
   }
 
