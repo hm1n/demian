@@ -8,6 +8,7 @@ export type ExperienceCandidateOutputErrorKind =
   | "llm_auth"
   | "llm_rate_limit"
   | "llm_timeout"
+  | "llm_configuration"
   | "llm_failure";
 
 export class ExperienceCandidateOutputError extends Error {

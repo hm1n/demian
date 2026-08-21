@@ -1,5 +1,11 @@
 import { createGroq } from "@ai-sdk/groq";
-import { APICallError, generateObject, jsonSchema, NoObjectGeneratedError } from "ai";
+import {
+  APICallError,
+  generateObject,
+  jsonSchema,
+  LoadAPIKeyError,
+  NoObjectGeneratedError,
+} from "ai";
 import { ExperienceCandidateOutputError } from "./errors";
 import type { StageACandidate, StageACandidateOutput } from "./types";
 import type { CandidateDataOutput, CommitDetail } from "@/lib/github/types";
@@ -114,6 +120,13 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
       { cause: error }
     );
   }
+  if (LoadAPIKeyError.isInstance(error)) {
+    return new ExperienceCandidateOutputError(
+      "llm_configuration",
+      "LLM API 키가 설정되지 않았습니다.",
+      { cause: error }
+    );
+  }
   if (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name)) {
     return new ExperienceCandidateOutputError("llm_timeout", "Stage A 분석 시간이 초과되었습니다.", {
       cause: error,
@@ -154,7 +167,7 @@ const generateWithGroq: GenerateStageA = async (payload) => {
     model: createGroq()(STAGE_A_MODEL),
     schema: structuredOutputSchema,
     system:
-      `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 자동 추천 후보는 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
+      `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
     prompt: JSON.stringify(payload),
   });
   return object;
@@ -188,17 +201,27 @@ export async function selectStageACandidates(
       "Stage A 응답에 같은 SHA가 두 번 이상 포함되어 있습니다."
     );
   }
+  if (returnedShas.length !== allowedShas.size) {
+    throw new ExperienceCandidateOutputError(
+      "schema_validation",
+      "Stage A 응답은 입력된 모든 커밋 SHA를 정확히 한 번 포함해야 합니다."
+    );
+  }
 
   const contributionItems = new Set(input.contributionItems);
   const candidates = output.decisions.flatMap<StageACandidate>((decision) => {
-    if (decision.contributionItem !== null && contributionItems.has(decision.contributionItem)) {
+    if (
+      decision.contributionItem !== UNCLASSIFIED_LABEL &&
+      decision.contributionItem !== null &&
+      contributionItems.has(decision.contributionItem)
+    ) {
       return [{
         sha: decision.sha,
         source: "contribution_match" as const,
         contributionItem: decision.contributionItem,
       }];
     }
-    if (decision.contributionItem === null && decision.recommended) {
+    if (decision.recommended) {
       return [{
         sha: decision.sha,
         source: "automatic_recommendation" as const,

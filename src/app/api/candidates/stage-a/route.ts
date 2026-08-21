@@ -60,6 +60,7 @@ function errorResponse(error: unknown): Response {
       llm_auth: 502,
       llm_rate_limit: 503,
       llm_timeout: 504,
+      llm_configuration: 500,
       llm_failure: 502,
     }[error.kind];
     return Response.json({ error: { kind: error.kind, message: error.message } }, { status });

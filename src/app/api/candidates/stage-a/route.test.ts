@@ -67,6 +67,8 @@ describe("POST /api/candidates/stage-a", () => {
     ["llm_auth", 502],
     ["llm_rate_limit", 503],
     ["llm_timeout", 504],
+    ["llm_configuration", 500],
+    ["llm_failure", 502],
   ] as const)("%s 오류를 HTTP %i로 매핑한다", async (kind, status) => {
     const response = await handleStageA(request(body), async () => {
       throw new ExperienceCandidateOutputError(kind, "safe message");

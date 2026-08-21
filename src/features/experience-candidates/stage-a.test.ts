@@ -1,7 +1,12 @@
-import { APICallError } from "ai";
+import { APICallError, LoadAPIKeyError, NoObjectGeneratedError } from "ai";
 import { describe, expect, it } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
-import { buildStageAPayload, selectStageACandidates, type StageAInput } from "./stage-a";
+import {
+  buildStageAPayload,
+  INITIAL_STAGE_A_CANDIDATE_LIMIT,
+  selectStageACandidates,
+  type StageAInput,
+} from "./stage-a";
 
 const input: StageAInput = {
   contributionItems: ["인증 구현"],
@@ -65,8 +70,8 @@ describe("Stage A 후보 선별", () => {
   it("기여 항목 매칭과 미분류 자동 추천을 한 경로에서 조합한다", async () => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
       { sha: "matched", contributionItem: "인증 구현", recommended: true },
-      { sha: "automatic", contributionItem: null, recommended: true },
-      { sha: "unclassified", contributionItem: null, recommended: false },
+      { sha: "automatic", contributionItem: "미분류", recommended: true },
+      { sha: "unclassified", contributionItem: "미분류", recommended: false },
     ] }));
 
     expect(output).toEqual({
@@ -91,6 +96,8 @@ describe("Stage A 후보 선별", () => {
   it("기여 항목만 있으면 일치한 SHA를 해당 항목 후보로 만든다", async () => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
       { sha: "matched", contributionItem: "인증 구현", recommended: false },
+      { sha: "automatic", contributionItem: null, recommended: false },
+      { sha: "unclassified", contributionItem: null, recommended: false },
     ] }));
     expect(output.candidates[0]).toEqual({
       sha: "matched",
@@ -99,10 +106,35 @@ describe("Stage A 후보 선별", () => {
     });
   });
 
-  it.each(["미분류", "존재하지 않는 항목"])("%s 라벨은 후보가 아닌 미분류로 처리한다", async (label) => {
+  it.each(["미분류", "존재하지 않는 항목"])("%s 라벨도 추천되면 자동 추천 후보로 정규화한다", async (label) => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
       { sha: "matched", contributionItem: label, recommended: true },
+      { sha: "automatic", contributionItem: null, recommended: false },
+      { sha: "unclassified", contributionItem: null, recommended: false },
     ] }));
+    expect(output.candidates).toEqual([
+      { sha: "matched", source: "automatic_recommendation", contributionItem: null },
+    ]);
+  });
+
+  it("recommended가 false인 커밋만 미분류로 남긴다", async () => {
+    const output = await selectStageACandidates(input, async () => ({ decisions: [
+      { sha: "matched", contributionItem: null, recommended: false },
+      { sha: "automatic", contributionItem: null, recommended: true },
+      { sha: "unclassified", contributionItem: "미분류", recommended: false },
+    ] }));
+    expect(output.unclassifiedShas).toEqual(["matched", "unclassified"]);
+  });
+
+  it("사용자가 입력한 미분류 문자열을 기여 항목으로 오인하지 않는다", async () => {
+    const output = await selectStageACandidates(
+      { ...input, contributionItems: ["미분류"] },
+      async () => ({ decisions: [
+        { sha: "matched", contributionItem: "미분류", recommended: false },
+        { sha: "automatic", contributionItem: null, recommended: false },
+        { sha: "unclassified", contributionItem: null, recommended: false },
+      ] })
+    );
     expect(output.candidates).toEqual([]);
     expect(output.unclassifiedShas).toContain("matched");
   });
@@ -120,18 +152,61 @@ describe("Stage A 후보 선별", () => {
     });
   });
 
-  it("구조 위반과 환각 SHA를 서로 다른 kind로 전체 거부한다", async () => {
+  it("구조 위반, 환각 SHA, 누락 SHA를 전체 거부한다", async () => {
     await expect(selectStageACandidates(input, async () => ({ decisions: "invalid" }))).rejects.toMatchObject({ kind: "schema_validation" });
     await expect(selectStageACandidates(input, async () => ({ decisions: [
       { sha: "invented", contributionItem: null, recommended: true },
     ] }))).rejects.toMatchObject({ kind: "unknown_sha", unknownShas: ["invented"] });
+    await expect(selectStageACandidates(input, async () => ({ decisions: [
+      { sha: "matched", contributionItem: "인증 구현", recommended: true },
+    ] }))).rejects.toMatchObject({ kind: "schema_validation" });
+  });
+
+  it("초기 후보 상한을 넘긴 응답을 순서대로 절단하지 않고 전체 거부한다", async () => {
+    const commits = Array.from({ length: INITIAL_STAGE_A_CANDIDATE_LIMIT + 1 }, (_, index) => ({
+      ...input.commits[0],
+      sha: `sha-${index}`,
+    }));
+    await expect(selectStageACandidates(
+      { commits, contributionItems: [] },
+      async () => ({ decisions: commits.map(({ sha }) => ({
+        sha,
+        contributionItem: null,
+        recommended: true,
+      })) })
+    )).rejects.toMatchObject({ kind: "schema_validation" });
+  });
+
+  const apiError = (statusCode: number) => new APICallError({
+    message: "provider error",
+    url: "https://api.groq.com",
+    requestBodyValues: {},
+    statusCode,
+  });
+  const noObjectError = new NoObjectGeneratedError({
+    response: { id: "response", timestamp: new Date(), modelId: "model" },
+    usage: {
+      inputTokens: 0,
+      inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      outputTokens: 0,
+      outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+      totalTokens: 0,
+    },
+    finishReason: "error",
   });
 
   it.each([
     [new TypeError("fetch failed"), "llm_network"],
+    [apiError(500), "llm_network"],
+    [new DOMException("aborted", "AbortError"), "llm_timeout"],
     [new DOMException("timeout", "TimeoutError"), "llm_timeout"],
-    [new APICallError({ message: "unauthorized", url: "https://api.groq.com", requestBodyValues: {}, statusCode: 401 }), "llm_auth"],
-    [new APICallError({ message: "limited", url: "https://api.groq.com", requestBodyValues: {}, statusCode: 429 }), "llm_rate_limit"],
+    [apiError(401), "llm_auth"],
+    [apiError(403), "llm_auth"],
+    [apiError(429), "llm_rate_limit"],
+    [apiError(408), "llm_timeout"],
+    [apiError(504), "llm_timeout"],
+    [noObjectError, "schema_validation"],
+    [new LoadAPIKeyError({ message: "missing key" }), "llm_configuration"],
     [new Error("unknown"), "llm_failure"],
   ] as const)("LLM 호출 실패 %#을 구분한다", async (error, kind) => {
     await expect(selectStageACandidates(input, async () => { throw error; })).rejects.toEqual(
