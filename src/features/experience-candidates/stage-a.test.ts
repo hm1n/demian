@@ -1,5 +1,5 @@
 import { APICallError, LoadAPIKeyError, NoObjectGeneratedError } from "ai";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
 import {
   buildStageAPayload,
@@ -49,6 +49,10 @@ const input: StageAInput = {
     },
   ],
 };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("Stage A 후보 선별", () => {
   it("기여 항목 매칭과 미분류 자동 추천을 한 경로에서 조합한다", async () => {
@@ -207,5 +211,35 @@ describe("Stage A 후보 선별", () => {
     await expect(selectStageACandidates(input, async () => { throw error; })).rejects.toEqual(
       expect.objectContaining<Partial<ExperienceCandidateOutputError>>({ kind })
     );
+  });
+
+  it("응답하지 않는 generator를 시한에 중단하고 llm_timeout으로 매핑한다", async () => {
+    vi.useFakeTimers();
+    const selection = selectStageACandidates(
+      input,
+      async (_payload, signal) => new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+      10
+    );
+    const assertion = expect(selection).rejects.toMatchObject({ kind: "llm_timeout" });
+    await vi.advanceTimersByTimeAsync(10);
+    await assertion;
+  });
+
+  it("정상 응답 뒤에는 중단 타이머를 제거한다", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    await selectStageACandidates(input, async (_payload, receivedSignal) => {
+      signal = receivedSignal;
+      return { decisions: input.commits.map(({ sha }) => ({
+        sha,
+        contributionItem: null,
+        recommended: false,
+      })) };
+    }, 10);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(signal?.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

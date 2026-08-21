@@ -13,6 +13,8 @@ import type { CommitDetail } from "@/lib/github/types";
 export const STAGE_A_MODEL = "llama-3.3-70b-versatile";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
+// route maxDuration 60초보다 먼저 JSON 오류를 반환하기 위한 미검증 초기값입니다.
+export const STAGE_A_TIMEOUT_MS = 55_000;
 
 export type StageACommit = Pick<
   CommitDetail,
@@ -42,7 +44,7 @@ interface StageAStructuredOutput {
 export type GenerateStageA = (payload: {
   readonly commits: readonly StageACommit[];
   readonly contributionItems: readonly string[];
-}) => Promise<unknown>;
+}, abortSignal: AbortSignal) => Promise<unknown>;
 
 const structuredOutputSchema = jsonSchema<StageAStructuredOutput>({
   type: "object",
@@ -172,27 +174,36 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   });
 }
 
-const generateWithGroq: GenerateStageA = async (payload) => {
+const generateWithGroq: GenerateStageA = async (payload, abortSignal) => {
   const { object } = await generateObject({
     model: createGroq()(STAGE_A_MODEL),
     schema: structuredOutputSchema,
     system:
       `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
     prompt: JSON.stringify(payload),
+    abortSignal,
   });
   return object;
 };
 
 export async function selectStageACandidates(
   input: StageAInput,
-  generate: GenerateStageA = generateWithGroq
+  generate: GenerateStageA = generateWithGroq,
+  timeoutMs = STAGE_A_TIMEOUT_MS
 ): Promise<StageACandidateOutput> {
   const payload = buildStageAPayload(input);
+  const abortController = new AbortController();
+  const timeout = setTimeout(
+    () => abortController.abort(new DOMException("Stage A timeout", "TimeoutError")),
+    timeoutMs
+  );
   let output: StageAStructuredOutput;
   try {
-    output = validateStructuredOutput(await generate(payload));
+    output = validateStructuredOutput(await generate(payload, abortController.signal));
   } catch (error) {
     throw mapLlmError(error);
+  } finally {
+    clearTimeout(timeout);
   }
 
   const allowedShas = new Set(payload.commits.map(({ sha }) => sha));

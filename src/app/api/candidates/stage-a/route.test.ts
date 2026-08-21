@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   encryptGitHubToken,
   GITHUB_SESSION_COOKIE,
@@ -34,6 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env[GITHUB_SESSION_KEY_ENV];
+  vi.useRealTimers();
 });
 
 describe("POST /api/candidates/stage-a", () => {
@@ -109,5 +110,20 @@ describe("POST /api/candidates/stage-a", () => {
     });
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual({ error: { kind, message: "safe message" } });
+  });
+
+  it("Groq 시한 중단을 JSON llm_timeout 504로 반환한다", async () => {
+    vi.useFakeTimers();
+    const responsePromise = handleStageA(
+      request(body),
+      async (_payload, signal) => new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+      10
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    const response = await responsePromise;
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ error: { kind: "llm_timeout" } });
   });
 });

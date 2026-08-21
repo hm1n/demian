@@ -70,7 +70,11 @@ function errorResponse(error: unknown): Response {
   return Response.json({ error: { kind: "server_error", message: "Stage A 분석에 실패했습니다." } }, { status: 500 });
 }
 
-export async function handleStageA(request: NextRequest, generate?: GenerateStageA): Promise<Response> {
+export async function handleStageA(
+  request: NextRequest,
+  generate?: GenerateStageA,
+  timeoutMs?: number
+): Promise<Response> {
   try {
     getGitHubTokenFromRequest(request);
     const declaredLength = Number(request.headers.get("content-length"));
@@ -92,7 +96,7 @@ export async function handleStageA(request: NextRequest, generate?: GenerateStag
     if (!isStageAInput(body)) {
       return Response.json({ error: { kind: "invalid_request", message: "Stage A 입력 형식이 올바르지 않습니다." } }, { status: 422 });
     }
-    return Response.json(await selectStageACandidates(body, generate));
+    return Response.json(await selectStageACandidates(body, generate, timeoutMs));
   } catch (error) {
     return errorResponse(error);
   }
