@@ -3,7 +3,14 @@ export type ExperienceCandidateOutputErrorKind =
   | "schema_validation"
   | "unknown_sha"
   | "unrelated_sha"
-  | "unknown_file_path";
+  | "unknown_file_path"
+  | "llm_network"
+  | "llm_auth"
+  | "llm_rate_limit"
+  | "llm_timeout"
+  | "llm_configuration"
+  | "llm_request"
+  | "llm_failure";
 
 export class ExperienceCandidateOutputError extends Error {
   readonly kind: ExperienceCandidateOutputErrorKind;
