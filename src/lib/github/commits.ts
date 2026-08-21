@@ -4,6 +4,16 @@ import type { CommitSummary, GitHubAuth } from "./types";
 export const GITHUB_API_BASE = "https://api.github.com";
 const PER_PAGE = 100;
 
+export interface AuthoredCommitsCursor {
+  headSha: string;
+  login: string;
+  page: number;
+}
+
+export interface AuthoredCommitsBatchResult extends AuthoredCommitsResult {
+  cursor: AuthoredCommitsCursor | null;
+}
+
 interface RawCommit {
   sha: string;
   commit: {
@@ -262,6 +272,72 @@ export async function fetchAuthoredCommits(auth: GitHubAuth): Promise<AuthoredCo
   }
 
   return { commits, repositoryHasCommits: true };
+}
+
+/** 고정한 head SHA에서 제한된 페이지 수만 조회한다. 커서는 route handler가 불투명 값으로 감싼다. */
+export async function fetchAuthoredCommitsBatch(
+  auth: GitHubAuth,
+  cursor: AuthoredCommitsCursor | null,
+  maxPages: number
+): Promise<AuthoredCommitsBatchResult> {
+  const { owner, repo, token } = auth;
+  let state = cursor;
+  if (state === null) {
+    const login = await fetchAuthenticatedUserLogin(token);
+    const { defaultBranch } = await fetchRepoInfo(auth);
+    const headSha = await resolveBranchHeadSha(auth, defaultBranch);
+    if (headSha === null) {
+      return { commits: [], repositoryHasCommits: false, cursor: null };
+    }
+    state = { headSha, login, page: 1 };
+  }
+
+  const commits: CommitSummary[] = [];
+  for (let offset = 0; offset < maxPages; offset += 1) {
+    const page = state.page + offset;
+    let response: Response;
+    try {
+      response = await githubFetch(
+        `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(state.headSha)}&author=${encodeURIComponent(state.login)}&per_page=${PER_PAGE}&page=${page}`,
+        token
+      );
+    } catch (error) {
+      if (commits.length === 0) throw error;
+      throw new GitHubFetchError("partial_failure", (error as Error).message, commits, { cause: error });
+    }
+    if (response.status === 409) {
+      if (commits.length === 0 && page === 1) {
+        return { commits: [], repositoryHasCommits: false, cursor: null };
+      }
+      const cause = new GitHubFetchError("server_error", "커밋 목록 조회 중 저장소 상태가 변경되어 실패했습니다 (409)");
+      throw new GitHubFetchError("partial_failure", cause.message, commits, { cause });
+    }
+    if (!response.ok) {
+      const cause = new GitHubFetchError(
+        await classifyErrorResponse(response),
+        `커밋 목록 조회에 실패했습니다 (${response.status})`
+      );
+      if (commits.length > 0) {
+        throw new GitHubFetchError("partial_failure", cause.message, commits, { cause });
+      }
+      throw cause;
+    }
+    try {
+      const batch = await parseJson<RawCommit[]>(response, "커밋 목록 응답을 해석하지 못했습니다");
+      commits.push(...batch.map(toCommitSummary));
+    } catch (error) {
+      if (commits.length === 0) throw error;
+      throw new GitHubFetchError("partial_failure", (error as Error).message, commits, { cause: error });
+    }
+    if (parseNextLink(response.headers.get("link")) === null) {
+      return { commits, repositoryHasCommits: true, cursor: null };
+    }
+  }
+  return {
+    commits,
+    repositoryHasCommits: true,
+    cursor: { ...state, page: state.page + maxPages },
+  };
 }
 
 /** PAT 소유자가 작성한 커밋 전체를 반환한다. */

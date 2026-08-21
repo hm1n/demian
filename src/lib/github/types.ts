@@ -39,6 +39,12 @@ export interface CommitDetail extends CommitSummary {
   pullRequests: PullRequestReference[];
 }
 
+export type CommitFileChangeWithoutPatch = Omit<CommitFileChange, "patch">;
+
+export type CommitDetailWithoutPatch = Omit<CommitDetail, "files"> & {
+  files: CommitFileChangeWithoutPatch[];
+};
+
 export interface RepositoryTreeEntry {
   path: string;
   type: "blob" | "tree" | "commit";

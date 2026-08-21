@@ -72,7 +72,7 @@ describe("RepositoryAnalysisView 기여 항목", () => {
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
     await submitRepository();
     expect(analyzeMock).toHaveBeenCalledWith(
-      { owner: "octocat", repo: "hello-world", token: GITHUB_TOKEN },
+      { owner: "octocat", repo: "hello-world", token: "" },
       expect.any(Function)
     );
   });
@@ -119,7 +119,7 @@ describe("RepositoryAnalysisView Empty", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: GITHUB_TOKEN });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "hm1n", repo: "demian", token: "" });
   });
 });
 
@@ -149,7 +149,7 @@ describe("RepositoryAnalysisView Error", () => {
     await submitRepository();
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
-    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world", token: GITHUB_TOKEN });
+    expect(analyzeMock.mock.calls[1][0]).toEqual({ owner: "octocat", repo: "hello-world", token: "" });
   });
 
   it("인증 재진행을 선택하면 쿠키와 기존 토큰을 지우고 새 인증 입력을 기다린다", async () => {
@@ -188,7 +188,7 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe(GITHUB_TOKEN);
+    expect(analyzeMock.mock.calls[0][0].token).toBe("");
   });
 
   it("세션 발급 500 응답은 토큰을 보존하고 재시도한다", async () => {
@@ -202,7 +202,7 @@ describe("RepositoryAnalysisView Error", () => {
     fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
 
     await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(1));
-    expect(analyzeMock.mock.calls[0][0].token).toBe(GITHUB_TOKEN);
+    expect(analyzeMock.mock.calls[0][0].token).toBe("");
   });
 
   it("세션 응답과 DOM에 입력한 토큰을 남기지 않는다", async () => {

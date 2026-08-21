@@ -45,8 +45,7 @@ export function RepositoryAnalysisView() {
   const [repo, setRepo] = useState("");
   const [contributionItems, setContributionItems] = useState("");
   const [token, setToken] = useState("");
-  // ponytail: #14에서 조회를 서버 route로 옮기면 이 과도기 PAT state를 삭제한다.
-  const [sessionToken, setSessionToken] = useState("");
+  const [hasSession, setHasSession] = useState(false);
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
@@ -85,23 +84,25 @@ export function RepositoryAnalysisView() {
       });
       return;
     }
-    setSessionToken(auth.token);
+    setHasSession(true);
     setToken("");
-    await analyzeRepository(auth, setState);
+    await analyzeRepository({ ...auth, token: "" }, setState);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
+    if (hasSession) analyzeRepository({ owner: owner.trim(), repo: repo.trim(), token: "" }, setState);
+    else startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
   }
 
   function retry() {
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: token || sessionToken });
+    if (hasSession) analyzeRepository({ owner: owner.trim(), repo: repo.trim(), token: "" }, setState);
+    else startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
   }
 
   async function reauthenticate() {
     await fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
-    setSessionToken("");
+    setHasSession(false);
     setToken("");
     setState(INITIAL_STATE);
     requestAnimationFrame(() => tokenInput.current?.focus());
@@ -142,7 +143,7 @@ export function RepositoryAnalysisView() {
           </label>
           <label className={styles.field}>
             GitHub token
-            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!sessionToken} />
+            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!hasSession} />
             <span className={styles.hint}>토큰은 암호화된 보안 쿠키에 저장하며 화면에 표시하지 않습니다.</span>
           </label>
           <button className={styles.button} type="submit" disabled={loading}>

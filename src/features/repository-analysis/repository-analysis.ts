@@ -1,8 +1,8 @@
 import { buildCandidateData } from "@/lib/github/candidate-data";
 import { filterCommitsForDetail } from "@/lib/github/commit-blacklist";
-import { fetchAuthoredCommits, type AuthoredCommitsResult } from "@/lib/github/commits";
-import { fetchRepositoryContributionData } from "@/lib/github/contributions";
+import type { AuthoredCommitsResult } from "@/lib/github/commits";
 import { GitHubFetchError, type GitHubFetchErrorKind } from "@/lib/github/errors";
+import { fetchAuthoredCommitsFromApi, fetchContributionsFromApi } from "@/lib/github/route-client";
 import type {
   CandidateDataOutput,
   CommitSummary,
@@ -54,9 +54,9 @@ interface AnalysisDependencies {
 }
 
 const defaultDependencies: AnalysisDependencies = {
-  fetchCommits: fetchAuthoredCommits,
+  fetchCommits: fetchAuthoredCommitsFromApi,
   filterCommits: filterCommitsForDetail,
-  fetchContributions: fetchRepositoryContributionData,
+  fetchContributions: fetchContributionsFromApi,
   buildData: buildCandidateData,
   yieldToBrowser: () => new Promise((resolve) => setTimeout(resolve, 0)),
 };
