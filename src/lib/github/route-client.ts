@@ -36,8 +36,12 @@ export async function fetchAuthoredCommitsFromApi(repository: RepositoryRef) {
     } while (cursor !== null);
     return { commits, repositoryHasCommits };
   } catch (error) {
-    if (commits.length === 0) throw error;
-    throw new GitHubFetchError("partial_failure", (error as Error).message, commits, { cause: error });
+    const partial = [
+      ...commits,
+      ...((error instanceof GitHubFetchError ? error.partialCommits : undefined) ?? []),
+    ] as CommitSummary[];
+    if (partial.length === 0) throw error;
+    throw new GitHubFetchError("partial_failure", (error as Error).message, partial, { cause: error });
   }
 }
 

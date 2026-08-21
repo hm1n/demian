@@ -1,5 +1,4 @@
 import {
-  CandidateDataFetchError,
   GitHubFetchError,
   RepositoryContributionFetchError,
   type GitHubFetchErrorKind,
@@ -98,7 +97,7 @@ export async function readApiResponse<T>(response: Response, detailError = false
   if (detailError) {
     throw new RepositoryContributionFetchError(errorBody.kind, errorBody.message, errorBody.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
   }
-  throw new CandidateDataFetchError(errorBody.kind, errorBody.message, errorBody.partialCommits as CommitDetail[] | undefined, cause ? { cause } : undefined);
+  throw new GitHubFetchError(errorBody.kind, errorBody.message, errorBody.partialCommits as CommitSummary[] | undefined, cause ? { cause } : undefined);
 }
 
 export async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit, detailError = false): Promise<T> {
