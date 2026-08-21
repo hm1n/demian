@@ -36,6 +36,7 @@ export async function classifyErrorResponse(response: Response): Promise<GitHubF
   if (response.status === 404) return "repo_not_found";
   if (response.status === 401) return "auth_revoked";
   if (response.status === 429) return "rate_limit";
+  if (response.status === 422) return "server_error";
   if (response.status === 403) {
     // 1차 rate limit: x-ratelimit-remaining이 0. 2차(secondary) rate limit: remaining이 남아 있고
     // retry-after 헤더도 없을 수 있어, 이때는 응답 본문 메시지로 판별한다. 다 놓치면 정상 유저가
@@ -92,6 +93,30 @@ function toCommitSummary(raw: RawCommit): CommitSummary {
 
 interface RepoInfo {
   defaultBranch: string;
+}
+
+export interface AuthoredCommitsResult {
+  commits: CommitSummary[];
+  repositoryHasCommits: boolean;
+}
+
+interface AuthenticatedUser {
+  login: string;
+}
+
+export async function fetchAuthenticatedUserLogin(token: string): Promise<string> {
+  const response = await githubFetch(`${GITHUB_API_BASE}/user`, token);
+  if (!response.ok) {
+    throw new GitHubFetchError(
+      await classifyErrorResponse(response),
+      `인증 사용자 정보를 가져오지 못했습니다 (${response.status})`
+    );
+  }
+  const data = await parseJson<AuthenticatedUser>(
+    response,
+    "인증 사용자 응답을 해석하지 못했습니다"
+  );
+  return data.login;
 }
 
 async function fetchRepoInfo({ owner, repo, token }: GitHubAuth): Promise<RepoInfo> {
@@ -159,21 +184,22 @@ async function resolveBranchHeadSha(
 }
 
 /**
- * 선택한 Repository의 기본 브랜치를 기준으로 전체 커밋을 페이지네이션 조회한다.
+ * 선택한 Repository의 기본 브랜치를 기준으로 PAT 소유자가 작성한 커밋을 페이지네이션 조회한다.
  * 커밋 수에는 임의의 상한을 두지 않는다.
  */
-export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]> {
+export async function fetchAuthoredCommits(auth: GitHubAuth): Promise<AuthoredCommitsResult> {
   const { owner, repo, token } = auth;
+  const login = await fetchAuthenticatedUserLogin(token);
   const { defaultBranch } = await fetchRepoInfo(auth);
   const headSha = await resolveBranchHeadSha(auth, defaultBranch);
   if (headSha === null) {
-    return [];
+    return { commits: [], repositoryHasCommits: false };
   }
 
   const commits: CommitSummary[] = [];
   let url: string | null = `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(
     headSha
-  )}&per_page=${PER_PAGE}`;
+  )}&author=${encodeURIComponent(login)}&per_page=${PER_PAGE}`;
 
   while (url) {
     let response: Response;
@@ -234,5 +260,10 @@ export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]
     url = parseNextLink(response.headers.get("link"));
   }
 
-  return commits;
+  return { commits, repositoryHasCommits: true };
+}
+
+/** PAT 소유자가 작성한 커밋 전체를 반환한다. */
+export async function fetchAllCommits(auth: GitHubAuth): Promise<CommitSummary[]> {
+  return (await fetchAuthoredCommits(auth)).commits;
 }

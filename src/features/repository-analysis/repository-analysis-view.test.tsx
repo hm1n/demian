@@ -54,6 +54,7 @@ describe("RepositoryAnalysisView Loading", () => {
 describe("RepositoryAnalysisView Empty", () => {
   it.each([
     ["no_commits", "분석할 커밋이 없습니다"],
+    ["no_author_commits", "본인이 작성한 커밋이 없습니다"],
     ["no_analyzable_commits", "이 저장소는 분석하기 어렵습니다"],
   ] as const)("%s를 별도 안내로 표시한다", (kind, title) => {
     mockState({ status: "empty", kind });

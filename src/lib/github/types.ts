@@ -81,7 +81,7 @@ export interface CandidateDataInput {
 
 /** 개발 경험 후보 생성 기능의 Repository 근거 입력입니다. */
 export interface CandidateDataOutput {
-  /** 제외 여부와 무관한 전체 커밋 메타데이터입니다. */
+  /** 블랙리스트 제외 여부와 무관한 인증 사용자 본인의 전체 커밋 메타데이터입니다. */
   readonly allCommits: readonly Readonly<CommitSummary>[];
   /** 블랙리스트에서 제외되지 않아 상세 조회한 커밋입니다. */
   readonly includedCommits: readonly ReadonlyCommitDetail[];

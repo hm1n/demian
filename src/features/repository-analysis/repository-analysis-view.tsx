@@ -126,14 +126,17 @@ function LoadingState({ loading }: { loading: LoadingPhase }) {
   );
 }
 
-function EmptyState({ kind, onSelectRepository }: { kind: "no_commits" | "no_analyzable_commits"; onSelectRepository: () => void }) {
+function EmptyState({ kind, onSelectRepository }: { kind: "no_commits" | "no_author_commits" | "no_analyzable_commits"; onSelectRepository: () => void }) {
   const noCommits = kind === "no_commits";
+  const noAuthorCommits = kind === "no_author_commits";
   return (
     <section className={styles.state} aria-live="polite">
-      <h2>{noCommits ? "분석할 커밋이 없습니다" : "이 저장소는 분석하기 어렵습니다"}</h2>
+      <h2>{noCommits ? "분석할 커밋이 없습니다" : noAuthorCommits ? "본인이 작성한 커밋이 없습니다" : "이 저장소는 분석하기 어렵습니다"}</h2>
       <p>
         {noCommits
           ? "기본 브랜치에 커밋이 확인되지 않았습니다. 커밋 이력이 있는 Repository를 선택해 주세요."
+          : noAuthorCommits
+            ? "기본 브랜치에는 커밋이 있지만 현재 GitHub 계정이 작성자로 연결된 커밋은 확인되지 않았습니다. 본인이 작성한 커밋이 있는 다른 Repository를 선택해 주세요."
           : "커밋은 있지만 병합, 문서, 의존성, 오타, 포맷팅 커밋을 제외하면 상세히 살펴볼 대상이 없습니다. 커밋 이력이 있는 다른 Repository를 선택해 주세요."}
       </p>
       <div className={styles.actions}>

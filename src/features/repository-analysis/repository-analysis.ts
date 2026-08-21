@@ -1,6 +1,6 @@
 import { buildCandidateData } from "@/lib/github/candidate-data";
 import { filterCommitsForDetail } from "@/lib/github/commit-blacklist";
-import { fetchAllCommits } from "@/lib/github/commits";
+import { fetchAuthoredCommits, type AuthoredCommitsResult } from "@/lib/github/commits";
 import { fetchRepositoryContributionData } from "@/lib/github/contributions";
 import { GitHubFetchError, type GitHubFetchErrorKind } from "@/lib/github/errors";
 import type {
@@ -21,7 +21,7 @@ export type LoadingPhase =
     }
   | { step: "deriving" };
 
-export type EmptyKind = "no_commits" | "no_analyzable_commits";
+export type EmptyKind = "no_commits" | "no_author_commits" | "no_analyzable_commits";
 export type RecoveryAction = "retry" | "reauthenticate" | "select_repository";
 
 export interface AnalysisError {
@@ -42,7 +42,7 @@ export type AnalysisState =
   | { status: "success"; data: CandidateDataOutput };
 
 interface AnalysisDependencies {
-  fetchCommits(auth: GitHubAuth): Promise<CommitSummary[]>;
+  fetchCommits(auth: GitHubAuth): Promise<AuthoredCommitsResult>;
   filterCommits(commits: readonly CommitSummary[]): CommitSummary[];
   fetchContributions(
     auth: GitHubAuth,
@@ -54,7 +54,7 @@ interface AnalysisDependencies {
 }
 
 const defaultDependencies: AnalysisDependencies = {
-  fetchCommits: fetchAllCommits,
+  fetchCommits: fetchAuthoredCommits,
   filterCommits: filterCommitsForDetail,
   fetchContributions: fetchRepositoryContributionData,
   buildData: buildCandidateData,
@@ -147,9 +147,12 @@ export async function analyzeRepository(
   onStateChange({ status: "loading", loading: { step: "commits" } });
 
   try {
-    const allCommits = await dependencies.fetchCommits(auth);
+    const { commits: allCommits, repositoryHasCommits } = await dependencies.fetchCommits(auth);
     if (allCommits.length === 0) {
-      onStateChange({ status: "empty", kind: "no_commits" });
+      onStateChange({
+        status: "empty",
+        kind: repositoryHasCommits ? "no_author_commits" : "no_commits",
+      });
       return;
     }
 

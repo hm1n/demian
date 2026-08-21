@@ -20,7 +20,7 @@ const CONTRIBUTIONS: RepositoryContributionData = {
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
-    fetchCommits: vi.fn().mockResolvedValue([COMMIT]),
+    fetchCommits: vi.fn().mockResolvedValue({ commits: [COMMIT], repositoryHasCommits: true }),
     filterCommits: vi.fn().mockReturnValue([COMMIT]),
     fetchContributions: vi.fn().mockImplementation(async (_auth, _commits, onProgress) => {
       onProgress({ phase: "commit_details", completed: 0, total: 1 });
@@ -55,11 +55,22 @@ describe("analyzeRepository", () => {
   });
 
   it("전체 커밋이 0개이면 상세 조회 없이 no_commits로 끝낸다", async () => {
-    const deps = dependencies({ fetchCommits: vi.fn().mockResolvedValue([]) });
+    const deps = dependencies({ fetchCommits: vi.fn().mockResolvedValue({ commits: [], repositoryHasCommits: false }) });
     const states: AnalysisState[] = [];
     await analyzeRepository(AUTH, (state) => states.push(state), deps);
 
     expect(states.at(-1)).toEqual({ status: "empty", kind: "no_commits" });
+    expect(deps.fetchContributions).not.toHaveBeenCalled();
+  });
+
+  it("저장소에는 커밋이 있지만 본인 커밋이 0개이면 no_author_commits로 끝낸다", async () => {
+    const deps = dependencies({
+      fetchCommits: vi.fn().mockResolvedValue({ commits: [], repositoryHasCommits: true }),
+    });
+    const states: AnalysisState[] = [];
+    await analyzeRepository(AUTH, (state) => states.push(state), deps);
+
+    expect(states.at(-1)).toEqual({ status: "empty", kind: "no_author_commits" });
     expect(deps.fetchContributions).not.toHaveBeenCalled();
   });
 
