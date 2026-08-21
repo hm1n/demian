@@ -13,10 +13,6 @@ const input: StageAInput = {
   commits: [
     {
       sha: "matched",
-      title: "인증 추가",
-      author: "me",
-      date: "2026-08-21",
-      parentCount: 1,
       message: "feat: 인증 구현",
       additions: 20,
       deletions: 2,
@@ -27,16 +23,10 @@ const input: StageAInput = {
         additions: 20,
         deletions: 2,
         changes: 22,
-        patch: "secret diff",
       }],
-      pullRequests: [],
     },
     {
       sha: "automatic",
-      title: "오류 처리",
-      author: "me",
-      date: "2026-08-21",
-      parentCount: 1,
       message: "fix: 오류 처리",
       additions: 5,
       deletions: 1,
@@ -48,20 +38,14 @@ const input: StageAInput = {
         deletions: 1,
         changes: 6,
       }],
-      pullRequests: [],
     },
     {
       sha: "unclassified",
-      title: "문서",
-      author: "me",
-      date: "2026-08-21",
-      parentCount: 1,
       message: "docs: 문서",
       additions: 1,
       deletions: 0,
       changedFiles: 1,
       files: [{ path: "README.md", status: "modified", additions: 1, deletions: 0, changes: 1 }],
-      pullRequests: [],
     },
   ],
 };
@@ -140,7 +124,14 @@ describe("Stage A 후보 선별", () => {
   });
 
   it("실제 LLM payload에서 patch와 불필요한 메타데이터를 제외한다", () => {
-    const payload = buildStageAPayload(input);
+    const taintedInput = {
+      ...input,
+      commits: [{
+        ...input.commits[0],
+        files: [{ ...input.commits[0].files[0], patch: "secret diff" }],
+      }],
+    } as unknown as StageAInput;
+    const payload = buildStageAPayload(taintedInput);
     expect(JSON.stringify(payload)).not.toContain("patch");
     expect(payload.commits[0]).toEqual({
       sha: "matched",
@@ -197,7 +188,7 @@ describe("Stage A 후보 선별", () => {
 
   it.each([
     [new TypeError("fetch failed"), "llm_network"],
-    [apiError(500), "llm_network"],
+    [apiError(500), "llm_failure"],
     [new DOMException("aborted", "AbortError"), "llm_timeout"],
     [new DOMException("timeout", "TimeoutError"), "llm_timeout"],
     [apiError(401), "llm_auth"],
@@ -205,6 +196,10 @@ describe("Stage A 후보 선별", () => {
     [apiError(429), "llm_rate_limit"],
     [apiError(408), "llm_timeout"],
     [apiError(504), "llm_timeout"],
+    [apiError(404), "llm_configuration"],
+    [apiError(400), "llm_request"],
+    [apiError(409), "llm_request"],
+    [apiError(422), "llm_request"],
     [noObjectError, "schema_validation"],
     [new LoadAPIKeyError({ message: "missing key" }), "llm_configuration"],
     [new Error("unknown"), "llm_failure"],

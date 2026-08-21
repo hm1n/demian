@@ -9,6 +9,14 @@ import { ExperienceCandidateOutputError } from "@/features/experience-candidates
 import { handleStageA, MAX_STAGE_A_BODY_BYTES } from "./route";
 
 const body = { commits: [], contributionItems: [] };
+const commit = {
+  sha: "sha",
+  message: "feat: 경량 입력",
+  additions: 1,
+  deletions: 0,
+  changedFiles: 1,
+  files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1 }],
+};
 
 function request(value: unknown, authenticated = true) {
   return new NextRequest("https://example.com/api/candidates/stage-a", {
@@ -60,6 +68,31 @@ describe("POST /api/candidates/stage-a", () => {
     expect(oversized.status).toBe(413);
   });
 
+  it("patch가 포함된 요청은 크기 상한이 아니라 계약 위반 422로 거부한다", async () => {
+    const response = await handleStageA(request({
+      commits: [{
+        ...commit,
+        files: [{ ...commit.files[0], patch: "x".repeat(1024 * 1024) }],
+      }],
+      contributionItems: [],
+    }));
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: { kind: "invalid_request" } });
+  });
+
+  it("patch를 제외한 경량 메시지·stat 요청은 정상 처리한다", async () => {
+    let received: unknown;
+    const response = await handleStageA(
+      request({ commits: [commit], contributionItems: [] }),
+      async (payload) => {
+        received = payload;
+        return { decisions: [{ sha: "sha", contributionItem: null, recommended: false }] };
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(received)).not.toContain("patch");
+  });
+
   it.each([
     ["schema_validation", 502],
     ["unknown_sha", 502],
@@ -68,6 +101,7 @@ describe("POST /api/candidates/stage-a", () => {
     ["llm_rate_limit", 503],
     ["llm_timeout", 504],
     ["llm_configuration", 500],
+    ["llm_request", 502],
     ["llm_failure", 502],
   ] as const)("%s 오류를 HTTP %i로 매핑한다", async (kind, status) => {
     const response = await handleStageA(request(body), async () => {

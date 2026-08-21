@@ -17,6 +17,7 @@ function isStageAInput(value: unknown): value is StageAInput {
   const isFile = (item: unknown) =>
     typeof item === "object" &&
     item !== null &&
+    !("patch" in item) &&
     typeof (item as { path?: unknown }).path === "string" &&
     typeof (item as { status?: unknown }).status === "string" &&
     isNumber((item as { additions?: unknown }).additions) &&
@@ -61,6 +62,7 @@ function errorResponse(error: unknown): Response {
       llm_rate_limit: 503,
       llm_timeout: 504,
       llm_configuration: 500,
+      llm_request: 502,
       llm_failure: 502,
     }[error.kind];
     return Response.json({ error: { kind: error.kind, message: error.message } }, { status });

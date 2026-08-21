@@ -8,13 +8,13 @@ import {
 } from "ai";
 import { ExperienceCandidateOutputError } from "./errors";
 import type { StageACandidate, StageACandidateOutput } from "./types";
-import type { CandidateDataOutput, CommitDetail } from "@/lib/github/types";
+import type { CommitDetail } from "@/lib/github/types";
 
 export const STAGE_A_MODEL = "llama-3.3-70b-versatile";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
 
-type StageACommit = Pick<
+export type StageACommit = Pick<
   CommitDetail,
   "sha" | "message" | "additions" | "deletions" | "changedFiles"
 > & {
@@ -25,7 +25,7 @@ type StageACommit = Pick<
 };
 
 export interface StageAInput {
-  readonly commits: CandidateDataOutput["includedCommits"];
+  readonly commits: readonly StageACommit[];
   readonly contributionItems: readonly string[];
 }
 
@@ -148,7 +148,17 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
-    return new ExperienceCandidateOutputError("llm_network", "LLM에 연결하지 못했습니다.", {
+    if (error.statusCode === 404) {
+      return new ExperienceCandidateOutputError("llm_configuration", "LLM 모델 설정이 올바르지 않습니다.", {
+        cause: error,
+      });
+    }
+    if (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 422) {
+      return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", {
+        cause: error,
+      });
+    }
+    return new ExperienceCandidateOutputError("llm_failure", "Stage A 분석에 실패했습니다.", {
       cause: error,
     });
   }
