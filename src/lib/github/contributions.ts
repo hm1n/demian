@@ -26,6 +26,7 @@ interface RawCommitDetail {
     author: { name: string; date: string } | null;
   };
   author: { login: string } | null;
+  parents?: Array<{ sha: string }>;
   stats?: { additions: number; deletions: number };
   files?: Array<{
     filename: string;
@@ -35,6 +36,43 @@ interface RawCommitDetail {
     changes: number;
     patch?: string;
   }>;
+}
+
+/** Stage B처럼 CommitSummary가 없는 흐름에서 SHA만으로 상세를 조회합니다. */
+export async function fetchCommitDetailBySha(auth: GitHubAuth, sha: string): Promise<CommitDetail> {
+  const { owner, repo, token } = auth;
+  const encodedSha = encodeURIComponent(sha);
+  const detail = await fetchAllCommitFiles(
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits/${encodedSha}`,
+    token,
+    sha
+  );
+  const pullRequests = await fetchAllPullRequests(
+    `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits/${encodedSha}/pulls?per_page=100`,
+    token,
+    sha
+  );
+  const files = detail.files ?? [];
+  return {
+    sha,
+    title: detail.commit.message.split("\n", 1)[0],
+    author: detail.author?.login ?? detail.commit.author?.name ?? "",
+    date: detail.commit.author?.date ?? "",
+    parentCount: detail.parents?.length ?? 0,
+    message: detail.commit.message,
+    additions: detail.stats?.additions ?? 0,
+    deletions: detail.stats?.deletions ?? 0,
+    changedFiles: files.length,
+    files: files.map((file) => ({
+      path: file.filename,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      changes: file.changes,
+      ...(file.patch === undefined ? {} : { patch: file.patch }),
+    })),
+    pullRequests: pullRequests.map(toPullRequest),
+  };
 }
 
 interface RawPullRequest {
