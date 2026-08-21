@@ -14,10 +14,15 @@
 
 ## 먼저 읽을 문서
 
+- `wiki/2026-08-21-경험후보-출력-스키마.md` : Stage A·B 경험 후보 출력의 검증 계약과 Repository 근거 무결성 경계
+- `wiki/2026-08-21-PAT-세션-쿠키-정책.md` : PAT 세션 쿠키의 암호화·보안 속성과 서버 공통 읽기 경계
 - `wiki/2026-08-20-repository-후보데이터-출력-스키마.md` : Repository 조회·분석 결과를 후보 생성 기능에 전달하는 출력 인터페이스와 책임 경계
 - `wiki/2026-08-20-repository-조회상태-정책.md` : Repository 조회의 Loading, Empty, Error 안내와 복구 정책
 
 ## 최근 산출물
 
-- `wiki/2026-08-20-repository-후보데이터-출력-스키마.md` : GitHub 이슈 #4 Repository 후보 데이터 출력 스키마
-- `wiki/2026-08-20-repository-조회상태-정책.md` : GitHub 이슈 #5 Repository 조회 상태와 복구 정책
+- `wiki/2026-08-21-경험후보-출력검증-후속-backlog.md` : 경험 후보의 인용 파일 경로 검증 후속 항목
+- `wiki/2026-08-21-경험후보-출력-스키마.md` : Stage A·B 경험 후보 출력과 근거 검증 계약
+- `wiki/2026-08-21-repository-작성자필터-후속-backlog.md` : Repository 조회 문구의 작성자 범위 명시 후속 항목
+- `wiki/2026-08-21-PAT-세션-후속-backlog.md` : 과도기 PAT 참조와 공백 PAT 복구 분류 후속 항목
+- `wiki/2026-08-21-PAT-세션-쿠키-정책.md` : PAT 세션 쿠키의 암호화와 서버 읽기 정책
