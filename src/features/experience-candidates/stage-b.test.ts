@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS } from "./stage-b";
+import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "./stage-b";
 import type { CommitDetail } from "@/lib/github/types";
 
 const candidates = [
@@ -28,9 +28,44 @@ describe("Stage B", () => {
     expect(output.candidates).toHaveLength(1);
   });
 
+  it("전체 patch 예산 이후에도 SHA와 파일 stat을 payload에 유지한다", () => {
+    const large = commits.map((commit, index) => ({
+      ...commit,
+      files: Array.from({ length: index === 0 ? STAGE_B_MAX_TOTAL_PATCH_CHARS / STAGE_B_MAX_PATCH_CHARS : 1 }, (_, fileIndex) => ({
+        ...commit.files[0],
+        path: `src/${commit.sha}-${fileIndex}.ts`,
+        patch: "x".repeat(STAGE_B_MAX_PATCH_CHARS),
+      })),
+    }));
+    const payload = buildStageBPayload(large, candidates);
+    expect(payload.commits[1]).toMatchObject({ sha: "b", files: [{ path: "src/b-0.ts", additions: 1 }] });
+    expect(payload.commits[1].files[0]).not.toHaveProperty("patch");
+    expect(payload.commits[1].files[0].patchTruncated).toBe(true);
+  });
+
+  it("후보 3개 계약과 부족 사유 계약을 검증한다", async () => {
+    const threeCandidates = [...candidates, { sha: "c", source: "automatic_recommendation" as const, contributionItem: null }];
+    const threeCommits = [...commits, { ...commits[1], sha: "c", files: [{ ...commits[1].files[0], path: "src/c.ts" }] }];
+    const output = await selectStageBCandidates(threeCommits, threeCandidates, async () => ({
+      candidates: threeCandidates.map(({ sha, source }) => ({ sha, relatedShas: [], evidence: "근거", citedFilePaths: [`src/${sha}.ts`], source })),
+      insufficientCandidatesReason: null,
+    }));
+    expect(output.candidates).toHaveLength(3);
+    await expect(selectStageBCandidates(commits, candidates, async () => ({ candidates: [], insufficientCandidatesReason: null }))).rejects.toMatchObject({ kind: "schema_validation" });
+  });
+
   it("입력 밖 SHA와 다른 PR 관련 SHA를 전체 거부한다", async () => {
     await expect(selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "z", relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "contribution_match" }], insufficientCandidatesReason: "부족" }))).rejects.toMatchObject({ kind: "unknown_sha" });
     await expect(selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "a", relatedShas: ["b"], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "contribution_match" }], insufficientCandidatesReason: "부족" }))).rejects.toMatchObject({ kind: "unrelated_sha" });
+  });
+
+  it("diff에 없는 인용 경로를 전체 거부한다", async () => {
+    await expect(selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/unknown.ts"], source: "contribution_match" }], insufficientCandidatesReason: "부족" }))).rejects.toMatchObject({ kind: "unknown_file_path" });
+  });
+
+  it("모델의 source를 Stage A 값으로 교정한다", async () => {
+    const output = await selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "automatic_recommendation" }], insufficientCandidatesReason: "부족" }));
+    expect(output.candidates[0].source).toBe("contribution_match");
   });
 
   it("시한 중단을 llm_timeout으로 보존한다", async () => {

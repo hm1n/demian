@@ -7,10 +7,13 @@ import type { CommitDetail } from "@/lib/github/types";
 
 export const STAGE_B_MODEL = "gemini-3.7-flash";
 // 확인 필요: 이슈 #19에서 실제 실행 시간과 토큰 사용량을 측정한 뒤 확정합니다.
+// Stage A 후보 전체가 입력되므로 INITIAL_STAGE_A_CANDIDATE_LIMIT과 같아야 정상 흐름이 422로 막히지 않습니다.
 export const STAGE_B_MAX_CANDIDATES = 20;
 export const STAGE_B_MAX_PATCH_CHARS = 4_000;
 export const STAGE_B_MAX_TOTAL_PATCH_CHARS = 60_000;
-export const STAGE_B_TIMEOUT_MS = 55_000;
+export const STAGE_B_TOTAL_BUDGET_MS = 55_000;
+// 확인 필요: 이슈 #19에서 실제 LLM 완주 시간을 측정한 뒤 확정합니다.
+export const STAGE_B_MIN_LLM_BUDGET_MS = 10_000;
 
 export type GenerateStageB = (payload: unknown, abortSignal: AbortSignal) => Promise<unknown>;
 
@@ -67,18 +70,23 @@ const generateWithGemini: GenerateStageB = async (payload, abortSignal) => {
   return object;
 };
 
-export async function selectStageBCandidates(commits: readonly CommitDetail[], candidates: readonly StageACandidate[], generate: GenerateStageB = generateWithGemini, timeoutMs = STAGE_B_TIMEOUT_MS): Promise<ExperienceCandidateOutput> {
+export async function selectStageBCandidates(commits: readonly CommitDetail[], candidates: readonly StageACandidate[], generate: GenerateStageB = generateWithGemini, timeoutMs = STAGE_B_TOTAL_BUDGET_MS): Promise<ExperienceCandidateOutput> {
   const payload = buildStageBPayload(commits, candidates);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new DOMException("Stage B timeout", "TimeoutError")), timeoutMs);
   try {
     const output = validateExperienceCandidateOutput(await generate(payload, controller.signal));
+    // ponytail: 인용은 입력 diff 경로로 제한합니다. 이슈 #32가 전체 트리 근거를 요구하면 fileTree를 입력에 추가합니다.
     assertCandidateEvidence(output, { commits, fileTree: [] });
     const sources = new Map(candidates.map(({ sha, source }) => [sha, source]));
-    if (output.candidates.some(({ sha, source }) => sources.get(sha) !== source)) {
-      throw new ExperienceCandidateOutputError("schema_validation", "최종 후보 source는 Stage A 결과와 일치해야 합니다.");
-    }
-    return output;
+    return {
+      ...output,
+      candidates: output.candidates.map((candidate) => ({
+        ...candidate,
+        // assertCandidateEvidence가 입력 밖 SHA를 이미 거부했으므로 source는 항상 존재합니다.
+        source: sources.get(candidate.sha)!,
+      })),
+    };
   } catch (error) {
     throw mapLlmError(error);
   } finally {
