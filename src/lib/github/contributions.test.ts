@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchRepositoryContributionData } from "./contributions";
+import { fetchCommitDetailBySha, fetchRepositoryContributionData } from "./contributions";
 import { GitHubFetchError } from "./errors";
 
 const AUTH = { owner: "octocat", repo: "hello-world", token: "test-token" };
@@ -68,6 +68,19 @@ afterEach(() => {
 });
 
 describe("fetchRepositoryContributionData", () => {
+  it("SHA만으로 조회하면 응답에서 title과 parentCount를 조립한다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ ...rawDetail(), parents: [{ sha: "parent" }] }))
+      .mockResolvedValueOnce(jsonResponse([]));
+
+    const result = await fetchCommitDetailBySha(AUTH, "sha-1");
+
+    expect(result.title).toBe("feat: first");
+    expect(result.parentCount).toBe(1);
+  });
+
   it("필터 통과 커밋의 diff, 파생 통계, PR, 파일 트리와 언어 통계를 수집한다", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
