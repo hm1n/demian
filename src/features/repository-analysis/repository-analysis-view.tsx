@@ -42,10 +42,32 @@ export function RepositoryAnalysisView() {
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
+  const sessionToken = useRef("");
   const loading = state.status === "loading";
 
-  function startAnalysis(auth: GitHubAuth) {
-    void analyzeRepository(auth, setState);
+  async function startAnalysis(auth: GitHubAuth) {
+    setState({ status: "loading", loading: { step: "commits" } });
+    try {
+      const response = await fetch("/api/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: auth.token }),
+      });
+      if (!response.ok) throw new Error("GitHub 인증 세션을 만들지 못했습니다.");
+      sessionToken.current = auth.token;
+      setToken("");
+      await analyzeRepository(auth, setState);
+    } catch {
+      setState({
+        status: "error",
+        error: {
+          kind: "server_error",
+          title: "GitHub 인증 세션을 만들지 못했습니다",
+          message: "잠시 후 GitHub 인증 정보를 다시 입력해 주세요.",
+          recovery: "reauthenticate",
+        },
+      });
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -54,10 +76,12 @@ export function RepositoryAnalysisView() {
   }
 
   function retry() {
-    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
+    startAnalysis({ owner: owner.trim(), repo: repo.trim(), token: sessionToken.current });
   }
 
-  function reauthenticate() {
+  async function reauthenticate() {
+    await fetch("/api/auth/session", { method: "DELETE" });
+    sessionToken.current = "";
     setToken("");
     setState(INITIAL_STATE);
     requestAnimationFrame(() => tokenInput.current?.focus());
@@ -93,7 +117,7 @@ export function RepositoryAnalysisView() {
           <label className={styles.field}>
             GitHub token
             <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required />
-            <span className={styles.hint}>토큰은 현재 조회 요청에만 사용하며 화면에 표시하지 않습니다.</span>
+            <span className={styles.hint}>토큰은 암호화된 보안 쿠키에 저장하며 화면에 표시하지 않습니다.</span>
           </label>
           <button className={styles.button} type="submit" disabled={loading}>
             {loading ? "Repository 분석 중" : "Repository 분석 시작"}
