@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import type { NextRequest } from "next/server";
 import { GitHubFetchError } from "./errors";
 
 export const GITHUB_SESSION_COOKIE = "github_session";
@@ -40,18 +41,8 @@ export function decryptGitHubToken(value: string): string {
   }
 }
 
-function cookieValue(request: Request, name: string): string | undefined {
-  const cookie = request.headers.get("cookie");
-  if (!cookie) return undefined;
-  for (const part of cookie.split(";")) {
-    const separator = part.indexOf("=");
-    if (separator !== -1 && part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
-  }
-  return undefined;
-}
-
-export function getGitHubTokenFromRequest(request: Request): string {
-  const encryptedToken = cookieValue(request, GITHUB_SESSION_COOKIE);
+export function getGitHubTokenFromRequest(request: NextRequest): string {
+  const encryptedToken = request.cookies.get(GITHUB_SESSION_COOKIE)?.value;
   if (!encryptedToken) throw new GitHubFetchError("auth_revoked", "GitHub 인증 세션이 없습니다.");
   return decryptGitHubToken(encryptedToken);
 }

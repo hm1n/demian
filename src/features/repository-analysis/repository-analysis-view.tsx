@@ -42,6 +42,7 @@ export function RepositoryAnalysisView() {
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
+  // ponytail: #14에서 조회를 서버 route로 옮기면 이 과도기 PAT 참조를 삭제한다.
   const sessionToken = useRef("");
   const loading = state.status === "loading";
 
@@ -80,11 +81,24 @@ export function RepositoryAnalysisView() {
   }
 
   async function reauthenticate() {
-    await fetch("/api/auth/session", { method: "DELETE" });
-    sessionToken.current = "";
-    setToken("");
-    setState(INITIAL_STATE);
-    requestAnimationFrame(() => tokenInput.current?.focus());
+    try {
+      const response = await fetch("/api/auth/session", { method: "DELETE" });
+      if (!response.ok) throw new Error("GitHub 인증 세션을 삭제하지 못했습니다.");
+      sessionToken.current = "";
+      setToken("");
+      setState(INITIAL_STATE);
+      requestAnimationFrame(() => tokenInput.current?.focus());
+    } catch {
+      setState({
+        status: "error",
+        error: {
+          kind: "server_error",
+          title: "GitHub 인증 세션을 삭제하지 못했습니다",
+          message: "잠시 후 GitHub 인증을 다시 시도해 주세요.",
+          recovery: "reauthenticate",
+        },
+      });
+    }
   }
 
   function selectRepository() {

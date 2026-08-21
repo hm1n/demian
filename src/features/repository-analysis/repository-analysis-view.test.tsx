@@ -106,6 +106,19 @@ describe("RepositoryAnalysisView Error", () => {
     expect(fetch).toHaveBeenLastCalledWith("/api/auth/session", { method: "DELETE" });
   });
 
+  it("쿠키 삭제가 실패하면 인증 화면을 초기화하지 않고 오류를 안내한다", async () => {
+    const error: AnalysisError = { kind: "auth_revoked", title: "인증 취소", message: "인증 필요", recovery: "reauthenticate" };
+    mockState({ status: "error", error });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
+
+    fireEvent.click(screen.getByRole("button", { name: "GitHub 인증 다시 하기" }));
+
+    expect(await screen.findByRole("heading", { name: "GitHub 인증 세션을 삭제하지 못했습니다" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-kind", "server_error");
+  });
+
   it("세션 응답과 DOM에 입력한 토큰을 남기지 않는다", async () => {
     mockState({ status: "empty", kind: "no_commits" });
     render(<RepositoryAnalysisView />);
