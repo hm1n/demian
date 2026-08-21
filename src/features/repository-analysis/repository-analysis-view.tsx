@@ -8,7 +8,7 @@ import styles from "./repository-analysis.module.css";
 const INITIAL_STATE: AnalysisState = { status: "idle" };
 
 // ponytail: 줄바꿈을 항목 경계로 고정합니다. 항목 안에 여러 줄 설명이 필요해질 때 구조화 입력으로 승격합니다.
-function parseContributionItems(value: string) {
+export function parseContributionItems(value: string) {
   return value.split("\n").map((item) => item.trim()).filter(Boolean);
 }
 
@@ -40,7 +40,7 @@ function loadingCopy(loading: LoadingPhase) {
   };
 }
 
-export function RepositoryAnalysisView({ onContributionItemsSubmit }: { onContributionItemsSubmit?: (items: readonly string[]) => void } = {}) {
+export function RepositoryAnalysisView() {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [contributionItems, setContributionItems] = useState("");
@@ -56,7 +56,6 @@ export function RepositoryAnalysisView({ onContributionItemsSubmit }: { onContri
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onContributionItemsSubmit?.(parseContributionItems(contributionItems));
     startAnalysis({ owner: owner.trim(), repo: repo.trim(), token });
   }
 

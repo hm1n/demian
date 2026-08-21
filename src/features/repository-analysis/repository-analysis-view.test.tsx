@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analyzeRepository, type AnalysisError, type AnalysisState } from "./repository-analysis";
-import { RepositoryAnalysisView } from "./repository-analysis-view";
+import { parseContributionItems, RepositoryAnalysisView } from "./repository-analysis-view";
 
 vi.mock("./repository-analysis", async (importOriginal) => {
   const original = await importOriginal<typeof import("./repository-analysis")>();
@@ -52,37 +52,36 @@ describe("RepositoryAnalysisView Loading", () => {
 });
 
 describe("RepositoryAnalysisView 기여 항목", () => {
-  it("입력한 기여 항목을 줄 단위 목록으로 전달한다", () => {
-    const onContributionItemsSubmit = vi.fn();
-    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
-    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현\n게시판 기능 구현" } });
-    submitRepository();
-    expect(onContributionItemsSubmit).toHaveBeenCalledWith(["푸시 알림 구현", "게시판 기능 구현"]);
+  it.each([
+    ["푸시 알림 구현\n게시판 기능 구현", ["푸시 알림 구현", "게시판 기능 구현"]],
+    ["", []],
+    ["  푸시 알림 구현  \n\n  ", ["푸시 알림 구현"]],
+  ])("입력 있음·없음·일부 상태를 줄 단위 목록으로 파싱한다", (value, expected) => {
+    expect(parseContributionItems(value)).toEqual(expected);
   });
 
-  it("기여 항목을 생략해도 기존 Repository 분석을 시작한다", () => {
-    const onContributionItemsSubmit = vi.fn();
-    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+  it("기여 항목 입력 여부와 무관하게 기존 Repository 분석을 시작한다", () => {
+    render(<RepositoryAnalysisView />);
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
     submitRepository();
-    expect(onContributionItemsSubmit).toHaveBeenCalledWith([]);
     expect(analyzeMock).toHaveBeenCalledWith(
       { owner: "octocat", repo: "hello-world", token: "token" },
       expect.any(Function)
     );
   });
 
-  it("일부 행만 입력하면 빈 행을 제외해 전달한다", () => {
-    const onContributionItemsSubmit = vi.fn();
-    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
-    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "  푸시 알림 구현  \n\n  " } });
+  it("오류 후 수정한 기여 항목을 재시도해도 현재 입력값을 유지한다", () => {
+    mockState({ status: "error", error: { kind: "network", title: "네트워크 실패", message: "연결 확인", recovery: "retry" } });
+    render(<RepositoryAnalysisView />);
     submitRepository();
-    expect(onContributionItemsSubmit).toHaveBeenCalledWith(["푸시 알림 구현"]);
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "게시판 기능 구현" } });
+    fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
+    expect(screen.getByLabelText(/^본인 기여 항목/)).toHaveValue("게시판 기능 구현");
   });
 
   it("다른 Repository를 선택하면 이전 Repository의 기여 항목을 지운다", () => {
-    const onContributionItemsSubmit = vi.fn();
     mockState({ status: "empty", kind: "no_commits" });
-    render(<RepositoryAnalysisView onContributionItemsSubmit={onContributionItemsSubmit} />);
+    render(<RepositoryAnalysisView />);
     fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
     submitRepository();
     fireEvent.click(screen.getByRole("button", { name: "다른 Repository 선택" }));
