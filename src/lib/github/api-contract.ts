@@ -5,9 +5,12 @@ import {
 } from "./errors";
 import type { CommitDetail, CommitSummary } from "./types";
 
+// 이슈 #19 실측(2026-08-24)으로 확정. 근거는 위키 측정 문서에 있다.
 export const GITHUB_BATCH_LIMITS = {
-  // 확인 필요: 이슈 #19에서 실제 실행 시간을 측정한 뒤 확정한다.
+  // 커밋 목록 1페이지(100개)당 약 550ms라 20페이지(=2000커밋)도 약 11초로 maxDuration 60초 안에 든다.
   commitPages: 20,
+  // 상세 조회는 커밋당 요청 2개·844ms(순차)라 20개는 약 16.9초다. 병렬화하면 병렬도 4에서
+  // 3.9초, 8에서 2.3초로 줄고 secondary rate limit은 관측되지 않았다.
   commitDetails: 20,
 } as const;
 

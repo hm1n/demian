@@ -5,15 +5,20 @@ import {
   jsonSchema,
   LoadAPIKeyError,
   NoObjectGeneratedError,
+  RetryError,
 } from "ai";
-import { ExperienceCandidateOutputError } from "./errors";
+import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
 import type { StageACandidate, StageACandidateOutput } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
-export const STAGE_A_MODEL = "llama-3.3-70b-versatile";
+// 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
+// 반환했습니다. 현재 서빙 중인 구조화 출력 가능 모델 중 입력 SHA 전수 응답 계약을 가장 잘
+// 지킨 모델입니다. 같은 조건에서 `openai/gpt-oss-20b`는 8개 입력에도 1/8만 응답했습니다.
+export const STAGE_A_MODEL = "openai/gpt-oss-120b";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
-// route maxDuration 60초보다 먼저 JSON 오류를 반환하기 위한 미검증 초기값입니다.
+// 이슈 #19 실측으로 확정: 성공 호출은 3.1~11.1초, 계약 위반으로 끝난 호출도 29.0초였습니다.
+// route maxDuration 60초보다 먼저 JSON 오류를 반환하는 시한으로 55초를 유지합니다.
 export const STAGE_A_TIMEOUT_MS = 55_000;
 
 export type StageACommit = Pick<
@@ -115,6 +120,10 @@ export function buildStageAPayload(input: StageAInput) {
 
 function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   if (error instanceof ExperienceCandidateOutputError) return error;
+  // SDK가 재시도한 실패는 `RetryError`로 감싸져 옵니다. `RetryError`는 `APICallError`가 아니므로
+  // 벗기지 않으면 429·413 같은 한도와 재시도 대상 서버 오류가 전부 llm_failure로 뭉개집니다.
+  // 이슈 #19 실측에서 실제로 한도 초과가 llm_failure로 보고됐습니다.
+  if (RetryError.isInstance(error)) return mapLlmError(error.lastError);
   if (NoObjectGeneratedError.isInstance(error)) {
     return new ExperienceCandidateOutputError(
       "schema_validation",
@@ -140,10 +149,25 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
-    if (error.statusCode === 429) {
+    // 413도 한도일 수 있다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
+    // 413 `rate_limit_exceeded`로 반환했다. 다만 상태 코드만으로 한도로 단정하면 요청·컨텍스트가
+    // 실제로 너무 큰 413에도 "기다렸다 재시도" 안내가 나가므로 본문으로 갈라 본다.
+    if (
+      error.statusCode === 429 ||
+      (error.statusCode === 413 && isRateLimitResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_rate_limit", "LLM 호출 한도에 도달했습니다.", {
         cause: error,
       });
+    }
+    // 한도가 아닌 413은 페이로드가 모델 한도를 넘은 것이다. 같은 입력으로 재시도해도 풀리지 않아
+    // 재시도 대상이 아닌 요청 오류로 분류한다.
+    if (error.statusCode === 413) {
+      return new ExperienceCandidateOutputError(
+        "llm_request",
+        "Stage A 입력이 LLM이 받을 수 있는 크기를 넘었습니다.",
+        { cause: error }
+      );
     }
     if (error.statusCode === 408 || error.statusCode === 504) {
       return new ExperienceCandidateOutputError("llm_timeout", "Stage A 분석 시간이 초과되었습니다.", {
@@ -174,17 +198,22 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   });
 }
 
-const generateWithGroq: GenerateStageA = async (payload, abortSignal) => {
-  const { object } = await generateObject({
-    model: createGroq()(STAGE_A_MODEL),
-    schema: structuredOutputSchema,
-    system:
-      `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
-    prompt: JSON.stringify(payload),
-    abortSignal,
-  });
-  return object;
-};
+/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
+export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
+  return async (payload, abortSignal) => {
+    const { object } = await generateObject({
+      model: createGroq()(model),
+      schema: structuredOutputSchema,
+      system:
+        `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
+      prompt: JSON.stringify(payload),
+      abortSignal,
+    });
+    return object;
+  };
+}
+
+const generateWithGroq: GenerateStageA = createStageAGenerate();
 
 export async function selectStageACandidates(
   input: StageAInput,

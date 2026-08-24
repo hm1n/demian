@@ -1,3 +1,4 @@
+import { APICallError, RetryError } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "./stage-b";
 import type { CommitDetail } from "@/lib/github/types";
@@ -28,19 +29,83 @@ describe("Stage B", () => {
     expect(output.candidates).toHaveLength(1);
   });
 
-  it("전체 patch 예산 이후에도 SHA와 파일 stat을 payload에 유지한다", () => {
-    const large = commits.map((commit, index) => ({
-      ...commit,
-      files: Array.from({ length: index === 0 ? STAGE_B_MAX_TOTAL_PATCH_CHARS / STAGE_B_MAX_PATCH_CHARS : 1 }, (_, fileIndex) => ({
-        ...commit.files[0],
-        path: `src/${commit.sha}-${fileIndex}.ts`,
-        patch: "x".repeat(STAGE_B_MAX_PATCH_CHARS),
-      })),
-    }));
+  it("후보 몫을 넘긴 파일의 patch를 생략하고 SHA와 파일 stat은 유지한다", () => {
+    const large = [
+      {
+        ...commits[0],
+        files: Array.from({ length: STAGE_B_MAX_TOTAL_PATCH_CHARS / STAGE_B_MAX_PATCH_CHARS }, (_, fileIndex) => ({
+          ...commits[0].files[0],
+          path: `src/a-${fileIndex}.ts`,
+          patch: "x".repeat(STAGE_B_MAX_PATCH_CHARS),
+        })),
+      },
+      commits[1],
+    ];
     const payload = buildStageBPayload(large, candidates);
-    expect(payload.commits[1]).toMatchObject({ sha: "b", files: [{ path: "src/b-0.ts", additions: 1 }] });
-    expect(payload.commits[1].files[0]).not.toHaveProperty("patch");
-    expect(payload.commits[1].files[0].patchTruncated).toBe(true);
+    const starved = payload.commits[0].files.filter((file) => !("patch" in file));
+    expect(starved.length).toBeGreaterThan(0);
+    expect(starved[0]).toMatchObject({ additions: 1, deletions: 0, changes: 1 });
+    // 예산 때문에 patch가 빠진 파일도 절단 표시를 받아야 모델이 전체 diff로 오해하지 않는다.
+    expect(starved.every((file) => file.patchTruncated === true)).toBe(true);
+  });
+
+  it("앞 후보가 몫을 다 써도 뒤 후보는 자기 몫의 patch를 받는다", () => {
+    const greedy = [
+      {
+        ...commits[0],
+        files: Array.from({ length: STAGE_B_MAX_TOTAL_PATCH_CHARS / STAGE_B_MAX_PATCH_CHARS }, (_, fileIndex) => ({
+          ...commits[0].files[0],
+          path: `src/a-${fileIndex}.ts`,
+          patch: "x".repeat(STAGE_B_MAX_PATCH_CHARS),
+        })),
+      },
+      {
+        ...commits[1],
+        files: [{ ...commits[1].files[0], patch: "y".repeat(STAGE_B_MAX_PATCH_CHARS) }],
+      },
+    ];
+    const payload = buildStageBPayload(greedy, candidates);
+    const usedByFirst = payload.commits[0].files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0);
+    expect(usedByFirst).toBe(STAGE_B_MAX_TOTAL_PATCH_CHARS / 2);
+    expect(payload.commits[1].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
+  });
+
+  it("후보 수가 늘어도 모든 후보가 자기 몫을 받고 총량 상한을 넘지 않는다", () => {
+    const count = 20;
+    const many = Array.from({ length: count }, (_, index) => ({
+      ...commits[0],
+      sha: `sha-${index}`,
+      files: [{ ...commits[0].files[0], path: `src/${index}.ts`, patch: "x".repeat(STAGE_B_MAX_PATCH_CHARS) }],
+    }));
+    const manyCandidates = many.map(({ sha }) => ({
+      sha,
+      source: "automatic_recommendation" as const,
+      contributionItem: null,
+    }));
+    const payload = buildStageBPayload(many, manyCandidates);
+    const perCandidate = payload.commits.map((commit) =>
+      commit.files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0)
+    );
+    const share = Math.floor(STAGE_B_MAX_TOTAL_PATCH_CHARS / count);
+    expect(perCandidate).toEqual(Array.from({ length: count }, () => share));
+    expect(perCandidate.reduce((sum, chars) => sum + chars, 0)).toBeLessThanOrEqual(
+      STAGE_B_MAX_TOTAL_PATCH_CHARS
+    );
+  });
+
+  it("몫을 다 쓰지 않은 후보의 잔액을 뒤 후보로 이월한다", () => {
+    const frugal = [
+      { ...commits[0], files: [{ ...commits[0].files[0], patch: "x".repeat(10) }] },
+      {
+        ...commits[1],
+        files: [{ ...commits[1].files[0], patch: "y".repeat(STAGE_B_MAX_PATCH_CHARS) }],
+      },
+    ];
+    const payload = buildStageBPayload(frugal, candidates);
+    expect(payload.commits[0].files[0].patch).toHaveLength(10);
+    // 잔액이 이월돼도 파일별 상한은 그대로 적용된다.
+    expect(payload.commits[1].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
+    expect(payload.commits[1].files[0]).not.toHaveProperty("patchTruncated");
   });
 
   it("후보 3개 계약과 부족 사유 계약을 검증한다", async () => {
@@ -66,6 +131,63 @@ describe("Stage B", () => {
   it("모델의 source를 Stage A 값으로 교정한다", async () => {
     const output = await selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "automatic_recommendation" }], insufficientCandidatesReason: "부족" }));
     expect(output.candidates[0].source).toBe("contribution_match");
+  });
+
+  // 이슈 #19 실측: provider가 분당 토큰 한도 초과를 429가 아니라 413으로 반환한다.
+  // 413을 한도로 분류하지 않으면 일반 실패(502)로 새어 재시도 가능 여부를 알 수 없다.
+  const rateLimitBody = '{"error":{"code":"rate_limit_exceeded","type":"tokens"}}';
+  const tooLargeBody = '{"error":{"code":"request_too_large","type":"invalid_request_error"}}';
+  // 413은 상태 코드만으로는 갈리지 않는다. 한도 초과 413은 기다리면 풀리지만, 요청·컨텍스트가
+  // 너무 큰 413은 같은 페이로드로 몇 번을 기다려도 풀리지 않는다. 본문으로 판별해야 한다.
+  it.each([
+    { statusCode: 429, responseBody: "", kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
+    { statusCode: 413, responseBody: "", kind: "llm_request" },
+  ] as const)("상태 코드 $statusCode를 본문에 따라 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
+    const error = new APICallError({
+      message: "provider error",
+      url: "https://example.test",
+      requestBodyValues: {},
+      statusCode,
+      responseHeaders: {},
+      responseBody,
+    });
+    await expect(
+      selectStageBCandidates(commits, candidates, async () => {
+        throw error;
+      })
+    ).rejects.toMatchObject({ kind });
+  });
+
+  // 이슈 #19 실측: SDK가 재시도한 실패는 `RetryError`로 감싸져 오고, `RetryError`는
+  // `APICallError`가 아니다. 벗기지 않으면 한도 초과가 llm_failure로 뭉개진다.
+  it.each([
+    { statusCode: 429, responseBody: "", kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
+    { statusCode: 401, responseBody: "", kind: "llm_auth" },
+    { statusCode: 404, responseBody: "", kind: "llm_configuration" },
+  ] as const)("재시도로 감싸인 $statusCode도 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
+    const wrapped = new RetryError({
+      message: "failed after 3 attempts",
+      reason: "maxRetriesExceeded",
+      errors: [
+        new APICallError({
+          message: "provider error",
+          url: "https://example.test",
+          requestBodyValues: {},
+          statusCode,
+          responseHeaders: {},
+          responseBody,
+        }),
+      ],
+    });
+    await expect(
+      selectStageBCandidates(commits, candidates, async () => {
+        throw wrapped;
+      })
+    ).rejects.toMatchObject({ kind });
   });
 
   it("시한 중단을 llm_timeout으로 보존한다", async () => {
