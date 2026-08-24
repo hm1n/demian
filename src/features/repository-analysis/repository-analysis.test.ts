@@ -235,6 +235,28 @@ describe("generateCandidates", () => {
     expect(last.candidates.insufficientCandidatesReason).toBe("후보로 판단할 수 있는 커밋이 1개뿐입니다.");
   });
 
+  it("후보가 3개이면 부족 사유 없이 성공 상태로 끝낸다", async () => {
+    const candidate = { relatedShas: [], evidence: "근거입니다.", citedFilePaths: [], source: "automatic_recommendation" } as const;
+    const deps = dependencies({
+      fetchStageBCandidates: vi.fn().mockResolvedValue({
+        candidates: [
+          { ...candidate, sha: "sha-1" },
+          { ...candidate, sha: "sha-2" },
+          { ...candidate, sha: "sha-3" },
+        ],
+        insufficientCandidatesReason: null,
+        diffs: [],
+      }),
+    });
+    const states: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => states.push(state), deps);
+
+    const last = states.at(-1);
+    if (last?.status !== "success") throw new Error("unreachable");
+    expect(last.candidates.candidates).toHaveLength(3);
+    expect(last.candidates.insufficientCandidatesReason).toBeNull();
+  });
+
   it("Stage A 실패는 Stage A부터 재시도할 수 있는 retryPoint를 남긴다", async () => {
     const deps = dependencies({
       fetchStageACandidates: vi.fn().mockRejectedValue(new CandidateRequestError("stage_a", "llm_failure", "실패")),

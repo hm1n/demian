@@ -366,4 +366,26 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
 
     expect(screen.getByRole("button", { name: "Repository 다시 선택" })).toBeInTheDocument();
   });
+
+  it("인증 재진행 후에는 retryPoint를 버리고 처음부터 다시 분석한다", async () => {
+    const error: AnalysisError = {
+      kind: "diff_refetch_failure",
+      causeKind: "auth_revoked",
+      title: "후보의 diff·PR 근거를 다시 조회하지 못했습니다",
+      message: "인증을 다시 진행해 주세요.",
+      recovery: "reauthenticate",
+    };
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.click(screen.getByRole("button", { name: "GitHub 인증 다시 하기" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+
+    fillRepository();
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(generateMock).not.toHaveBeenCalled();
+  });
 });
