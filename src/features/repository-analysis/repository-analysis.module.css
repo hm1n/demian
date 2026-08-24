@@ -25,6 +25,11 @@
 .progressBar { height: 100%; border-radius: inherit; background: #6d63e8; transition: width 180ms ease; }
 .indeterminate { width: 38%; animation: loading 1.2s ease-in-out infinite alternate; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.candidateList { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.candidateList li { display: grid; gap: 6px; border: 1px solid #ecebf0; border-radius: 12px; padding: 14px 16px; }
+.candidateList strong { color: #282632; font-size: 14px; font-family: ui-monospace, monospace; }
+.candidateList span { color: #5b52d6; font-size: 12px; font-weight: 700; }
+.candidateList p { color: #696773; font-size: 14px; line-height: 1.6; }
 .summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .metric { border-radius: 12px; background: #f5f4fa; padding: 16px; }
 .metric strong, .metric span { display: block; }

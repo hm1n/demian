@@ -3,15 +3,28 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { analyzeRepository, type AnalysisError, type AnalysisState } from "./repository-analysis";
+import {
+  analyzeRepository,
+  generateCandidates,
+  type AnalysisError,
+  type AnalysisState,
+  type CandidateRetryPoint,
+} from "./repository-analysis";
 import { parseContributionItems, RepositoryAnalysisView } from "./repository-analysis-view";
 
 vi.mock("./repository-analysis", async (importOriginal) => {
   const original = await importOriginal<typeof import("./repository-analysis")>();
-  return { ...original, analyzeRepository: vi.fn() };
+  return { ...original, analyzeRepository: vi.fn(), generateCandidates: vi.fn() };
 });
 
 const analyzeMock = vi.mocked(analyzeRepository);
+const generateMock = vi.mocked(generateCandidates);
+
+const RETRY_POINT: CandidateRetryPoint = {
+  repository: { owner: "octocat", repo: "hello-world" },
+  contributionItems: [],
+  data: { allCommits: [], includedCommits: [], repository: { fileTree: [], treeTruncated: false, languages: {} } },
+};
 const GITHUB_TOKEN = "github_pat_secret_value";
 
 function fillRepository() {
@@ -27,11 +40,12 @@ async function submitRepository() {
 }
 
 function mockState(state: AnalysisState) {
-  analyzeMock.mockImplementation(async (_auth, onStateChange) => onStateChange(state));
+  analyzeMock.mockImplementation(async (_auth, _items, onStateChange) => onStateChange(state));
 }
 
 beforeEach(() => {
   analyzeMock.mockReset();
+  generateMock.mockReset();
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     callback(0);
@@ -49,7 +63,9 @@ describe("RepositoryAnalysisView Loading", () => {
     [{ status: "loading", loading: { step: "commits" } }, "1단계", "전체 커밋을 조회하고 있습니다"],
     [{ status: "loading", loading: { step: "details", completed: 2, total: 5, phase: "commit_details" } }, "2단계", "5개 중 2개를 확인했습니다."],
     [{ status: "loading", loading: { step: "deriving" } }, "3단계", "파생 지표를 계산하고 있습니다"],
-  ] as const)("세 단계 중 %s 상태를 구분해 표시한다", async (state, step, copy) => {
+    [{ status: "loading", loading: { step: "stage_a" } }, "4단계", "경험 후보를 1차 선별하고 있습니다"],
+    [{ status: "loading", loading: { step: "stage_b" } }, "5·6단계", "diff·PR 근거를 수집하고 최종 후보를 판단하고 있습니다"],
+  ] as const)("각 단계의 %s 상태를 구분해 표시한다", async (state, step, copy) => {
     mockState(state);
     render(<RepositoryAnalysisView />);
     await submitRepository();
@@ -67,12 +83,13 @@ describe("RepositoryAnalysisView 기여 항목", () => {
     expect(parseContributionItems(value)).toEqual(expected);
   });
 
-  it("기여 항목 입력 여부와 무관하게 기존 Repository 분석을 시작한다", async () => {
+  it("기여 항목을 줄 단위 목록으로 파싱해 분석 파이프라인에 전달한다", async () => {
     render(<RepositoryAnalysisView />);
-    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현" } });
+    fireEvent.change(screen.getByLabelText(/^본인 기여 항목/), { target: { value: "푸시 알림 구현\n게시판 기능 구현" } });
     await submitRepository();
     expect(analyzeMock).toHaveBeenCalledWith(
       { owner: "octocat", repo: "hello-world" },
+      ["푸시 알림 구현", "게시판 기능 구현"],
       expect.any(Function)
     );
   });
@@ -101,6 +118,7 @@ describe("RepositoryAnalysisView Empty", () => {
     ["no_commits", "분석할 커밋이 없습니다"],
     ["no_author_commits", "본인이 작성한 커밋이 없습니다"],
     ["no_analyzable_commits", "이 저장소는 분석하기 어렵습니다"],
+    ["no_stage_a_candidates", "설명할 만한 경험 후보를 찾지 못했습니다"],
   ] as const)("%s를 별도 안내로 표시한다", async (kind, title) => {
     mockState({ status: "empty", kind });
     render(<RepositoryAnalysisView />);
@@ -233,5 +251,158 @@ describe("RepositoryAnalysisView Error", () => {
     await submitRepository();
     expect(screen.getByLabelText(/^GitHub token/)).toHaveValue("");
     expect(document.body.textContent).not.toContain(GITHUB_TOKEN);
+  });
+});
+
+describe("RepositoryAnalysisView 후보 생성 상태", () => {
+  it("최종 후보 0개 Empty에 서버가 보낸 부족 사유와 기준 유지 안내를 함께 표시한다", async () => {
+    mockState({ status: "empty", kind: "no_final_candidates", reason: "실제 diff 근거로 설명할 수 있는 커밋이 없습니다." });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("heading", { name: "최종 경험 후보를 만들지 못했습니다" })).toBeInTheDocument();
+    expect(screen.getByText("실제 diff 근거로 설명할 수 있는 커밋이 없습니다.")).toBeInTheDocument();
+    expect(screen.getByText(/기준을 완화하거나 후보를 임의로 채우지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다른 Repository 선택" })).toBeInTheDocument();
+  });
+
+  it("후보가 3개 미만인 성공 상태에 생성 개수와 부족 사유를 안내한다", async () => {
+    mockState({
+      status: "success",
+      data: RETRY_POINT.data,
+      candidates: {
+        candidates: [
+          { sha: "a1b2c3d4e5", relatedShas: [], evidence: "상태 머신을 구현했습니다.", citedFilePaths: [], source: "contribution_match" },
+          { sha: "f6e5d4c3b2", relatedShas: [], evidence: "오류 계약을 정의했습니다.", citedFilePaths: [], source: "automatic_recommendation" },
+        ],
+        insufficientCandidatesReason: "나머지 커밋은 diff 근거가 부족합니다.",
+        diffs: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByText(/경험 후보 2개를 선정했습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/나머지 커밋은 diff 근거가 부족합니다/)).toBeInTheDocument();
+    expect(screen.getByText(/기준을 완화하거나 후보를\s*임의로 채우지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByText("기여 항목 일치")).toBeInTheDocument();
+    expect(screen.getByText("자동 추천")).toBeInTheDocument();
+    expect(screen.getByText("상태 머신을 구현했습니다.")).toBeInTheDocument();
+  });
+
+  it("후보가 3개이면 부족 사유 안내 없이 후보 목록을 표시한다", async () => {
+    const candidate = { relatedShas: [], evidence: "근거입니다.", citedFilePaths: [], source: "automatic_recommendation" } as const;
+    mockState({
+      status: "success",
+      data: RETRY_POINT.data,
+      candidates: {
+        candidates: [
+          { ...candidate, sha: "sha-a-40" },
+          { ...candidate, sha: "sha-b-40" },
+          { ...candidate, sha: "sha-c-40" },
+        ],
+        insufficientCandidatesReason: null,
+        diffs: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByText(/경험 후보 3개를 선정했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/후보를 3개 채우지 않은 이유/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [{ kind: "llm_call_failure", title: "LLM 호출에 실패했습니다", message: "잠시 후", recovery: "retry" }],
+    [{ kind: "llm_schema_violation", title: "LLM 응답이 출력 계약을 지키지 않았습니다", message: "버림", recovery: "retry" }],
+    [{ kind: "llm_hallucination_rejected", title: "실제 Repository 근거와 맞지 않는 판단을 거부했습니다", message: "버림", recovery: "retry" }],
+  ] as AnalysisError[][])("후보 생성 오류 %s에 후보 생성 재시도 버튼을 표시한다", async (error) => {
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-kind", error.kind);
+    expect(screen.getByRole("button", { name: "후보 생성 다시 시도" })).toBeInTheDocument();
+  });
+
+  it("retryPoint가 있는 오류의 재시도는 전체 재조회 대신 실패한 단계부터 다시 시작한다", async () => {
+    const error: AnalysisError = { kind: "llm_call_failure", title: "실패", message: "재시도", recovery: "retry" };
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.click(screen.getByRole("button", { name: "후보 생성 다시 시도" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalledWith(RETRY_POINT, expect.any(Function)));
+    expect(analyzeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("diff 재조회 실패는 원인에 맞는 복구 동작을 표시한다", async () => {
+    const error: AnalysisError = {
+      kind: "diff_refetch_failure",
+      causeKind: "auth_revoked",
+      title: "후보의 diff·PR 근거를 다시 조회하지 못했습니다",
+      message: "인증을 다시 진행해 주세요.",
+      recovery: "reauthenticate",
+    };
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-kind", "diff_refetch_failure");
+    expect(screen.getByRole("button", { name: "GitHub 인증 다시 하기" })).toBeInTheDocument();
+  });
+
+  it("요청 크기 초과는 Repository 재선택으로 복구한다", async () => {
+    const error: AnalysisError = {
+      kind: "request_too_large",
+      title: "분석 데이터가 요청 한도를 초과했습니다",
+      message: "더 작은 Repository를 선택해 주세요.",
+      recovery: "select_repository",
+    };
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("button", { name: "Repository 다시 선택" })).toBeInTheDocument();
+  });
+
+  it("계약 위반 오류는 retryPoint 없이 전체 조회 재시도로 처음부터 입력을 다시 구성한다", async () => {
+    const error: AnalysisError = {
+      kind: "server_error",
+      title: "후보 생성 요청이 서버 계약과 맞지 않았습니다",
+      message: "같은 입력을 그대로 다시 보내지 않고 Repository 조회부터 다시 구성해 재시도합니다.",
+      recovery: "retry",
+    };
+    mockState({ status: "error", error });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("인증 재진행 후에는 retryPoint를 버리고 처음부터 다시 분석한다", async () => {
+    const error: AnalysisError = {
+      kind: "diff_refetch_failure",
+      causeKind: "auth_revoked",
+      title: "후보의 diff·PR 근거를 다시 조회하지 못했습니다",
+      message: "인증을 다시 진행해 주세요.",
+      recovery: "reauthenticate",
+    };
+    mockState({ status: "error", error, retryPoint: RETRY_POINT });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.click(screen.getByRole("button", { name: "GitHub 인증 다시 하기" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+
+    fillRepository();
+    fireEvent.click(screen.getByRole("button", { name: "Repository 분석 시작" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(generateMock).not.toHaveBeenCalled();
   });
 });

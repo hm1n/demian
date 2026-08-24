@@ -39,3 +39,23 @@ export interface StageACandidateOutput {
   readonly candidates: readonly StageACandidate[];
   readonly unclassifiedShas: readonly string[];
 }
+
+export interface CandidateDiffFile {
+  readonly path: string;
+  readonly status: string;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly changes: number;
+  readonly patch?: string;
+  readonly patchTruncated?: boolean;
+}
+
+export interface CandidateDiff {
+  readonly sha: string;
+  readonly files: readonly CandidateDiffFile[];
+}
+
+/** `/api/candidates/stage-b` 응답으로, 최종 후보와 근거 diff를 함께 전달합니다. */
+export interface StageBCandidateResult extends ExperienceCandidateOutput {
+  readonly diffs: readonly CandidateDiff[];
+}
