@@ -70,6 +70,11 @@ Stage B 안에서 LLM 단계만 재시도하는 것은 불가능하다. 서버�
 4.5MB 초과(`body_too_large`)는 `request_too_large`로 표시하고 재시도로 해결되지 않으므로
 `select_repository`로 복구한다. 새 `RecoveryAction`은 추가하지 않았다.
 
+계약 위반(`invalid_request` 422)의 오류 상태에는 retryPoint를 남기지 않는다. Codex 리뷰 P2 반영:
+retryPoint는 요청 입력을 그대로 보존하므로(Stage B는 캐시된 Stage A 결과까지) 단계 재시도가 매번
+동일한 무효 페이로드를 재전송해 무한 루프가 된다. retryPoint가 없으면 재시도가 전체 재분석이 되어
+Repository 조회부터 입력을 새로 구성한다.
+
 ### Stage A 빈 후보 Empty에 재시도를 제공하지 않는 이유
 
 `no_stage_a_candidates`와 `no_final_candidates` Empty에는 "다른 Repository 선택"만 제공한다.
