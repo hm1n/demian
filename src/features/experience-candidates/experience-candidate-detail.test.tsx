@@ -63,6 +63,7 @@ function renderDetail(
         normalizedCitedFilePaths: [...new Set(selectedCandidate.citedFilePaths)],
       }}
       onBack={vi.fn()}
+      onConfirm={vi.fn()}
     />
   );
 }
