@@ -3,8 +3,18 @@ import {
   EVIDENCE_VERIFIABILITY_NOTICE,
   VERIFIABILITY_LABEL,
 } from "./evidence-verifiability";
-import type { ExperienceEvidenceSnapshot } from "./types";
+import type { EvidenceSnapshotCommit, ExperienceEvidenceSnapshot } from "./types";
 import styles from "./experience-interview-entry.module.css";
+
+/**
+ * Stage B가 이미 자르거나 뺀 patch도 여기서 알려야 합니다. 상세 화면은 이 사실을 표시하는데
+ * 확정 화면이 빠뜨리면 근거가 온전한 것처럼 보입니다. 이슈 #46이 만든 표시를 회귀시키지 않기
+ * 위해 스냅샷 상한 절단과 상위 단계 절단을 함께 봅니다.
+ */
+const hasIncompletePatch = (commits: readonly EvidenceSnapshotCommit[]) =>
+  commits.some((commit) =>
+    commit.files.some((file) => file.patchTruncated || file.patchOmittedReason !== null)
+  );
 
 interface ExperienceInterviewEntryProps {
   snapshot: ExperienceEvidenceSnapshot;
@@ -71,6 +81,11 @@ export function ExperienceInterviewEntry({ snapshot, onBack }: ExperienceIntervi
           근거 입력 상한 추정 {patchBudget.maxInputTokens.toLocaleString("ko-KR")}토큰에 맞춰 코드
           변경 내역 일부를 잘랐습니다. patch에 실제로 실은 분량은{" "}
           {patchBudget.patchBytes.toLocaleString("ko-KR")}바이트입니다.
+        </p>
+      ) : hasIncompletePatch([representativeCommit, ...relatedCommits]) ? (
+        <p className={styles.warning}>
+          앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함되었습니다. 남은 diff만으로 전체
+          변경을 확인한 것으로 단정할 수 없습니다.
         </p>
       ) : null}
     </section>
