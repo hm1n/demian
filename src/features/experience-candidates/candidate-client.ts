@@ -2,11 +2,22 @@ import type {
   CandidateDiff,
   ExperienceCandidateSource,
   StageACandidate,
+  StageACheckpoint,
+  StageAChunkOutput,
   StageACandidateOutput,
+  StageAProgress,
   StageBCandidateResult,
 } from "./types";
 import { validateExperienceCandidateOutput } from "./schema";
 import type { ReadonlyCommitDetail, RepositoryRef } from "@/lib/github/types";
+import {
+  INITIAL_STAGE_A_CANDIDATE_LIMIT,
+  STAGE_A_CHUNK_MAX_BYTES,
+  STAGE_A_CHUNK_MAX_FILES,
+  STAGE_A_CHUNK_SIZE,
+  STAGE_A_RESET_SAFETY_MS,
+  STAGE_A_TOKEN_RESERVE,
+} from "./stage-a";
 
 export type CandidateStage = "stage_a" | "stage_b";
 
@@ -52,11 +63,15 @@ export class CandidateRequestError extends Error {
     readonly stage: CandidateStage,
     readonly kind: CandidateRequestErrorKind,
     message: string,
-    options?: ErrorOptions
+    options?: ErrorOptions & { checkpoint?: StageACheckpoint; retryable?: boolean }
   ) {
     super(message, options);
     this.name = "CandidateRequestError";
+    this.checkpoint = options?.checkpoint;
+    this.retryable = options?.retryable ?? true;
   }
+  readonly checkpoint?: StageACheckpoint;
+  readonly retryable: boolean;
 }
 
 async function postCandidateApi(stage: CandidateStage, url: string, body: unknown): Promise<unknown> {
@@ -80,22 +95,25 @@ async function postCandidateApi(stage: CandidateStage, url: string, body: unknow
   const error =
     typeof payload === "object" && payload !== null && "error" in payload &&
     typeof payload.error === "object" && payload.error !== null
-      ? (payload.error as { kind?: unknown; message?: unknown })
+      ? (payload.error as { kind?: unknown; message?: unknown; retryable?: unknown })
       : undefined;
   const kind =
     typeof error?.kind === "string" && (KNOWN_ERROR_KINDS as readonly string[]).includes(error.kind)
       ? (error.kind as CandidateRequestErrorKind)
       : "server_error";
   const message = typeof error?.message === "string" ? error.message : "후보 생성 요청에 실패했습니다.";
-  throw new CandidateRequestError(stage, kind, message);
+  throw new CandidateRequestError(stage, kind, message, { retryable: error?.retryable !== false });
 }
 
 /** Stage A 계약이 허용하는 경량 필드만 남깁니다. patch는 입력 계약 위반(422)이라 전송하지 않습니다. */
 export function toStageARequest(
   commits: readonly ReadonlyCommitDetail[],
-  contributionItems: readonly string[]
+  contributionItems: readonly string[],
+  mode: "initial" | "reduce" = "initial",
+  candidateLimit?: number
 ) {
   return {
+    mode,
     commits: commits.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
       sha,
       message,
@@ -111,6 +129,7 @@ export function toStageARequest(
       })),
     })),
     contributionItems: [...contributionItems],
+    ...(candidateLimit === undefined ? {} : { candidateLimit }),
   };
 }
 
@@ -128,23 +147,149 @@ function isStageACandidate(value: unknown): value is StageACandidate {
 
 export async function fetchStageACandidatesFromApi(
   commits: readonly ReadonlyCommitDetail[],
-  contributionItems: readonly string[]
+  contributionItems: readonly string[],
+  onProgress: (progress: StageAProgress) => void = () => undefined,
+  checkpoint?: StageACheckpoint,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 ): Promise<StageACandidateOutput> {
-  const payload = await postCandidateApi(
-    "stage_a",
-    "/api/candidates/stage-a",
-    toStageARequest(commits, contributionItems)
-  );
-  const output = payload as Partial<StageACandidateOutput>;
+  const processed = new Set(checkpoint?.processedShas ?? []);
+  let candidates = [...(checkpoint?.candidates ?? [])];
+  const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
+  const pending = commits.filter(({ sha }) => !processed.has(sha));
+  const splitCommits = (items: readonly ReadonlyCommitDetail[]) => {
+    const result: ReadonlyCommitDetail[][] = [];
+    for (const commit of items) {
+      const current = result.at(-1) ?? [];
+      const proposed = [...current, commit];
+      const bytes = new TextEncoder().encode(JSON.stringify(toStageARequest(proposed, contributionItems))).length;
+      const files = proposed.reduce((sum, item) => sum + item.files.length, 0);
+      if (
+        current.length > 0 &&
+        (proposed.length > STAGE_A_CHUNK_SIZE || bytes > STAGE_A_CHUNK_MAX_BYTES || files > STAGE_A_CHUNK_MAX_FILES)
+      ) {
+        result.push([commit]);
+      } else if (result.length === 0 || current.length === 0) {
+        result.push(proposed);
+      } else {
+        result[result.length - 1] = proposed;
+      }
+    }
+    return result;
+  };
+  const chunks = splitCommits(pending);
+
+  const requestChunk = async (
+    chunk: readonly ReadonlyCommitDetail[],
+    mode: "initial" | "reduce",
+    limit?: number
+  ) => {
+    const payload = await postCandidateApi(
+      "stage_a", "/api/candidates/stage-a", toStageARequest(chunk, contributionItems, mode, limit)
+    );
+    const output = payload as Partial<StageAChunkOutput>;
+    if (!isStageAChunkOutput(payload)) {
+      throw new CandidateRequestError("stage_a", "invalid_response", "Stage A 응답 형식이 올바르지 않습니다.");
+    }
+    return output as StageAChunkOutput;
+  };
+
+  try {
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const output = await requestChunk(chunk, "initial");
+      candidates.push(...output.candidates);
+      unclassifiedShas.push(...output.unclassifiedShas);
+      chunk.forEach(({ sha }) => processed.add(sha));
+      onProgress({ completed: processed.size, total: commits.length, waitingForRateLimit: false });
+      const moreRequests = index + 1 < chunks.length || candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT;
+      if (moreRequests && !output.rateLimit) {
+        throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
+      }
+      if (moreRequests && output.rateLimit && output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
+        onProgress({ completed: processed.size, total: commits.length, waitingForRateLimit: true });
+        await wait(output.rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
+      }
+    }
+
+    for (let round = 0; candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT && round < 6; round += 1) {
+      const next: StageACandidate[] = [];
+      let lastRateLimit: StageAChunkOutput["rateLimit"] = null;
+      const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
+      const reductionChunks = splitCommits(
+        commits.filter(({ sha }) => candidateBySha.has(sha))
+      );
+      for (let index = 0; index < reductionChunks.length; index += 1) {
+        const chunk = reductionChunks[index];
+        const group = chunk.map(({ sha }) => candidateBySha.get(sha)!);
+        if (group.length === 1) {
+          next.push(group[0]);
+          continue;
+        }
+        const output = await requestChunk(chunk, "reduce", Math.max(1, Math.floor(group.length / 2)));
+        next.push(...output.candidates);
+        unclassifiedShas.push(...output.unclassifiedShas);
+        lastRateLimit = output.rateLimit;
+        if (index + 1 < reductionChunks.length && !output.rateLimit) {
+          throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
+        }
+        if (
+          index + 1 < reductionChunks.length &&
+          output.rateLimit &&
+          output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE
+        ) {
+          onProgress({ completed: commits.length, total: commits.length, waitingForRateLimit: true });
+          await wait(output.rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
+        }
+      }
+      candidates = next;
+      if (candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
+        if (!lastRateLimit) {
+          throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
+        }
+        if (lastRateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
+          onProgress({ completed: commits.length, total: commits.length, waitingForRateLimit: true });
+          await wait(lastRateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
+        }
+      }
+    }
+  } catch (cause) {
+    if (cause instanceof CandidateRequestError) {
+      throw new CandidateRequestError(cause.stage, cause.kind, cause.message, {
+        cause,
+        retryable: cause.retryable,
+        checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] },
+      });
+    }
+    throw cause;
+  }
+
+  if (candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
+    throw new CandidateRequestError(
+      "stage_a", "schema_validation",
+      `재판단 6회 뒤에도 후보 ${candidates.length}개가 남아 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개로 줄지 않았습니다.`,
+      { checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] } }
+    );
+  }
+  return { candidates, unclassifiedShas };
+}
+
+function isStageAChunkOutput(payload: unknown): payload is StageAChunkOutput {
+  const output = payload as Partial<StageAChunkOutput>;
   if (
     typeof payload !== "object" || payload === null ||
     !Array.isArray(output.candidates) || !output.candidates.every(isStageACandidate) ||
     !Array.isArray(output.unclassifiedShas) ||
-    !output.unclassifiedShas.every((sha) => typeof sha === "string")
+    !output.unclassifiedShas.every((sha) => typeof sha === "string") ||
+    !(output.rateLimit === null || (
+      typeof output.rateLimit === "object" && output.rateLimit !== null &&
+      typeof output.rateLimit.remainingTokens === "number" &&
+      typeof output.rateLimit.resetAfterMs === "number" &&
+      typeof output.rateLimit.usedTokens === "number"
+    ))
   ) {
-    throw new CandidateRequestError("stage_a", "invalid_response", "Stage A 응답 형식이 올바르지 않습니다.");
+    return false;
   }
-  return { candidates: output.candidates, unclassifiedShas: output.unclassifiedShas };
+  return true;
 }
 
 function isCandidateDiff(value: unknown): value is CandidateDiff {

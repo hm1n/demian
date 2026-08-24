@@ -38,7 +38,9 @@ function loadingCopy(loading: LoadingPhase) {
     return {
       step: "4단계",
       title: "경험 후보를 1차 선별하고 있습니다",
-      description: "커밋 메시지와 변경 통계를 근거로 설명할 가치가 있는 커밋을 고르고 있습니다.",
+      description: loading.waitingForRateLimit
+        ? `${loading.total}개 중 ${loading.completed}개를 판단했습니다. 다음 청크를 위해 LLM 토큰 한도 초기화를 기다리고 있습니다.`
+        : `${loading.total}개 중 ${loading.completed}개를 판단했고 ${loading.total - loading.completed}개가 남았습니다.`,
     };
   }
   if (loading.step === "stage_b") {
@@ -205,7 +207,9 @@ export function RepositoryAnalysisView() {
 
 function LoadingState({ loading }: { loading: LoadingPhase }) {
   const copy = loadingCopy(loading);
-  const progress = loading.step === "details" && loading.total > 0 ? (loading.completed / loading.total) * 100 : null;
+  const progress = (loading.step === "details" || loading.step === "stage_a") && loading.total > 0
+    ? (loading.completed / loading.total) * 100
+    : null;
   return (
     <section className={styles.state} role="status" aria-live="polite">
       <span className={styles.step}>{copy.step}</span>
