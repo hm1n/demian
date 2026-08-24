@@ -140,7 +140,9 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
-    if (error.statusCode === 429) {
+    // 413도 한도다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
+    // 413 `rate_limit_exceeded`로 반환했고, 이 코드가 없어 일반 실패로 분류됐다.
+    if (error.statusCode === 429 || error.statusCode === 413) {
       return new ExperienceCandidateOutputError("llm_rate_limit", "LLM 호출 한도에 도달했습니다.", {
         cause: error,
       });

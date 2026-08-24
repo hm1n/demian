@@ -198,6 +198,8 @@ describe("Stage A 후보 선별", () => {
     [apiError(401), "llm_auth"],
     [apiError(403), "llm_auth"],
     [apiError(429), "llm_rate_limit"],
+    // Groq는 분당 토큰 한도 초과를 413으로 반환한다(이슈 #19 실측). 한도로 분류해야 한다.
+    [apiError(413), "llm_rate_limit"],
     [apiError(408), "llm_timeout"],
     [apiError(504), "llm_timeout"],
     [apiError(404), "llm_configuration"],

@@ -1,3 +1,4 @@
+import { APICallError } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "./stage-b";
 import type { CommitDetail } from "@/lib/github/types";
@@ -66,6 +67,27 @@ describe("Stage B", () => {
   it("모델의 source를 Stage A 값으로 교정한다", async () => {
     const output = await selectStageBCandidates(commits, candidates, async () => ({ candidates: [{ sha: "a", relatedShas: [], evidence: "근거", citedFilePaths: ["src/a.ts"], source: "automatic_recommendation" }], insufficientCandidatesReason: "부족" }));
     expect(output.candidates[0].source).toBe("contribution_match");
+  });
+
+  // 이슈 #19 실측: provider가 분당 토큰 한도 초과를 429가 아니라 413으로 반환한다.
+  // 413을 한도로 분류하지 않으면 일반 실패(502)로 새어 재시도 가능 여부를 알 수 없다.
+  it.each([
+    [429, "llm_rate_limit"],
+    [413, "llm_rate_limit"],
+  ] as const)("한도 상태 코드 %i를 %s로 매핑한다", async (statusCode, kind) => {
+    const error = new APICallError({
+      message: "rate limit",
+      url: "https://example.test",
+      requestBodyValues: {},
+      statusCode,
+      responseHeaders: {},
+      responseBody: "",
+    });
+    await expect(
+      selectStageBCandidates(commits, candidates, async () => {
+        throw error;
+      })
+    ).rejects.toMatchObject({ kind });
   });
 
   it("시한 중단을 llm_timeout으로 보존한다", async () => {
