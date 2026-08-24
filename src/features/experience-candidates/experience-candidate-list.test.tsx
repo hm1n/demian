@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 import type { ExperienceCandidate, StageBCandidateResult } from "./types";
-import { ExperienceCandidateList } from "./experience-candidate-list";
+import { createExperienceCandidateListItems, ExperienceCandidateList } from "./experience-candidate-list";
 
 const commit = (sha: string, title: string, pullRequests: ReadonlyCommitDetail["pullRequests"] = []): ReadonlyCommitDetail => ({
   sha,
@@ -43,6 +43,24 @@ function renderList(candidateItems: readonly ExperienceCandidate[], commits: rea
 afterEach(cleanup);
 
 describe("ExperienceCandidateList", () => {
+  it("화면 표시 모델의 각 후보에 Repository 근거 출처를 담는다", () => {
+    const commits = [commit("a", "상태 머신 구현")];
+    const data: CandidateDataOutput = {
+      allCommits: commits,
+      includedCommits: commits,
+      repository: { fileTree: [], treeTruncated: false, languages: {} },
+    };
+    const candidates: StageBCandidateResult = {
+      candidates: [candidate("a")],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    };
+
+    expect(createExperienceCandidateListItems(data, candidates)[0]).toMatchObject({ origin: "repository" });
+    render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
+    expect(screen.getByText("Repository 근거")).toBeInTheDocument();
+  });
+
   it("후보 3개의 제목과 출처를 표시하고 부족 사유는 숨긴다", () => {
     const commits = [commit("a", "상태 머신 구현"), commit("b", "오류 계약 정의"), commit("c", "응답 검증 추가")];
     renderList(commits.map(({ sha }) => candidate(sha)), commits, null);
@@ -67,6 +85,18 @@ describe("ExperienceCandidateList", () => {
 
     expect(screen.getByText("관련 커밋 0개")).toBeInTheDocument();
     expect(screen.getByText("인용 파일 0개")).toBeInTheDocument();
+    expect(screen.getByText("PR 정보 없음")).toBeInTheDocument();
+  });
+
+  it("대표 SHA를 커밋 색인에서 찾지 못하면 목록과 상세에서 계약 파손을 드러낸다", () => {
+    renderList([candidate("abcdef123456")], [], "하나뿐입니다.");
+
+    expect(screen.getByText("커밋 색인 실패 · abcdef1")).toBeInTheDocument();
+    expect(screen.getByText("커밋 색인 실패")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /커밋 색인 실패 · abcdef1/ }));
+    expect(screen.getByRole("heading", { name: "커밋 색인 실패 · abcdef1" })).toBeInTheDocument();
+    expect(screen.getByText("대표 커밋을 커밋 색인에서 찾지 못했습니다.")).toBeInTheDocument();
   });
 
   it("후보 상세에 진입했다가 목록으로 돌아온다", () => {

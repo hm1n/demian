@@ -1,11 +1,25 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { StageBCandidateResult } from "./types";
+import type { EvidenceOrigin, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
 import type { CandidateDataOutput } from "@/lib/github/types";
 import styles from "./experience-candidate-list.module.css";
 
-export type EvidenceOrigin = "repository";
+const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
+  repository: "Repository 근거",
+};
+
+export function createExperienceCandidateListItems(
+  data: CandidateDataOutput,
+  candidates: StageBCandidateResult
+): readonly ExperienceCandidateListItem[] {
+  const commitsBySha = new Map(data.includedCommits.map((commit) => [commit.sha, commit]));
+  return candidates.candidates.map((candidate) => ({
+    candidate,
+    commit: commitsBySha.get(candidate.sha) ?? null,
+    origin: "repository",
+  }));
+}
 
 interface ExperienceCandidateListProps {
   data: CandidateDataOutput;
@@ -15,22 +29,21 @@ interface ExperienceCandidateListProps {
 
 export function ExperienceCandidateList({ data, candidates, onSelectRepository }: ExperienceCandidateListProps) {
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
-  const commitsBySha = useMemo(
-    () => new Map(data.includedCommits.map((commit) => [commit.sha, commit])),
-    [data.includedCommits]
-  );
-  const selectedCandidate = candidates.candidates.find((candidate) => candidate.sha === selectedSha);
+  const items = useMemo(() => createExperienceCandidateListItems(data, candidates), [data, candidates]);
+  const selectedItem = items.find(({ candidate }) => candidate.sha === selectedSha);
 
-  if (selectedCandidate) {
-    const commit = commitsBySha.get(selectedCandidate.sha);
+  if (selectedItem) {
+    const { candidate, commit } = selectedItem;
+    const indexedTitle = commit?.title ?? `커밋 색인 실패 · ${candidate.sha.slice(0, 7)}`;
     return (
       <section className={styles.state} aria-live="polite">
         <button className={styles.backButton} type="button" onClick={() => setSelectedSha(null)}>
           ← 후보 목록으로
         </button>
         <p className={styles.eyebrow}>경험 후보 상세</p>
-        <h2>{commit?.title ?? selectedCandidate.sha.slice(0, 7)}</h2>
-        <p>{selectedCandidate.evidence}</p>
+        <h2>{indexedTitle}</h2>
+        {commit === null ? <p className={styles.detailNotice}>대표 커밋을 커밋 색인에서 찾지 못했습니다.</p> : null}
+        <p>{candidate.evidence}</p>
         <p className={styles.detailNotice}>코드 변경 내역과 파일·관련 커밋 상세는 다음 단계에서 제공됩니다.</p>
       </section>
     );
@@ -47,24 +60,23 @@ export function ExperienceCandidateList({ data, candidates, onSelectRepository }
         </p>
       ) : null}
       <ul className={styles.candidateList}>
-        {candidates.candidates.map((candidate) => {
-          const commit = commitsBySha.get(candidate.sha);
-          const evidenceOrigin: EvidenceOrigin = "repository";
+        {items.map(({ candidate, commit, origin }) => {
+          const indexedTitle = commit?.title ?? `커밋 색인 실패 · ${candidate.sha.slice(0, 7)}`;
           return (
             <li key={candidate.sha}>
               <button type="button" onClick={() => setSelectedSha(candidate.sha)}>
-                <span className={styles.title}>{commit?.title ?? candidate.sha.slice(0, 7)}</span>
+                <span className={styles.title}>{indexedTitle}</span>
                 <span className={styles.badges}>
                   <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
-                  <span>{evidenceOrigin === "repository" ? "Repository 근거" : evidenceOrigin}</span>
+                  <span>{EVIDENCE_ORIGIN_LABEL[origin]}</span>
                 </span>
                 <span className={styles.evidence}>{candidate.evidence}</span>
                 <span className={styles.metrics}>
                   <span>인용 파일 {candidate.citedFilePaths.length}개</span>
                   <span>관련 커밋 {candidate.relatedShas.length}개</span>
-                  {commit?.pullRequests.map((pullRequest) => (
-                    <span key={pullRequest.number}>PR #{pullRequest.number}</span>
-                  ))}
+                  {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (
+                    <span>PR 정보 없음</span>
+                  ) : commit.pullRequests.map((pullRequest) => <span key={pullRequest.number}>PR #{pullRequest.number}</span>)}
                 </span>
               </button>
             </li>
