@@ -10,10 +10,14 @@ import { ExperienceCandidateOutputError } from "./errors";
 import type { StageACandidate, StageACandidateOutput } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
-export const STAGE_A_MODEL = "llama-3.3-70b-versatile";
+// 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
+// 반환했습니다. 현재 서빙 중인 구조화 출력 가능 모델 중 입력 SHA 전수 응답 계약을 가장 잘
+// 지킨 모델입니다. 같은 조건에서 `openai/gpt-oss-20b`는 8개 입력에도 1/8만 응답했습니다.
+export const STAGE_A_MODEL = "openai/gpt-oss-120b";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
-// route maxDuration 60초보다 먼저 JSON 오류를 반환하기 위한 미검증 초기값입니다.
+// 이슈 #19 실측으로 확정: 성공 호출은 3.1~11.1초, 계약 위반으로 끝난 호출도 29.0초였습니다.
+// route maxDuration 60초보다 먼저 JSON 오류를 반환하는 시한으로 55초를 유지합니다.
 export const STAGE_A_TIMEOUT_MS = 55_000;
 
 export type StageACommit = Pick<
