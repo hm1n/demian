@@ -7,7 +7,7 @@ import {
   NoObjectGeneratedError,
   RetryError,
 } from "ai";
-import { ExperienceCandidateOutputError } from "./errors";
+import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
 import type { StageACandidate, StageACandidateOutput } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
@@ -149,12 +149,25 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
-    // 413도 한도다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
-    // 413 `rate_limit_exceeded`로 반환했고, 이 코드가 없어 일반 실패로 분류됐다.
-    if (error.statusCode === 429 || error.statusCode === 413) {
+    // 413도 한도일 수 있다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
+    // 413 `rate_limit_exceeded`로 반환했다. 다만 상태 코드만으로 한도로 단정하면 요청·컨텍스트가
+    // 실제로 너무 큰 413에도 "기다렸다 재시도" 안내가 나가므로 본문으로 갈라 본다.
+    if (
+      error.statusCode === 429 ||
+      (error.statusCode === 413 && isRateLimitResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_rate_limit", "LLM 호출 한도에 도달했습니다.", {
         cause: error,
       });
+    }
+    // 한도가 아닌 413은 페이로드가 모델 한도를 넘은 것이다. 같은 입력으로 재시도해도 풀리지 않아
+    // 재시도 대상이 아닌 요청 오류로 분류한다.
+    if (error.statusCode === 413) {
+      return new ExperienceCandidateOutputError(
+        "llm_request",
+        "Stage A 입력이 LLM이 받을 수 있는 크기를 넘었습니다.",
+        { cause: error }
+      );
     }
     if (error.statusCode === 408 || error.statusCode === 504) {
       return new ExperienceCandidateOutputError("llm_timeout", "Stage A 분석 시간이 초과되었습니다.", {

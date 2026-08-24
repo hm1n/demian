@@ -135,17 +135,23 @@ describe("Stage B", () => {
 
   // 이슈 #19 실측: provider가 분당 토큰 한도 초과를 429가 아니라 413으로 반환한다.
   // 413을 한도로 분류하지 않으면 일반 실패(502)로 새어 재시도 가능 여부를 알 수 없다.
+  const rateLimitBody = '{"error":{"code":"rate_limit_exceeded","type":"tokens"}}';
+  const tooLargeBody = '{"error":{"code":"request_too_large","type":"invalid_request_error"}}';
+  // 413은 상태 코드만으로는 갈리지 않는다. 한도 초과 413은 기다리면 풀리지만, 요청·컨텍스트가
+  // 너무 큰 413은 같은 페이로드로 몇 번을 기다려도 풀리지 않는다. 본문으로 판별해야 한다.
   it.each([
-    [429, "llm_rate_limit"],
-    [413, "llm_rate_limit"],
-  ] as const)("한도 상태 코드 %i를 %s로 매핑한다", async (statusCode, kind) => {
+    { statusCode: 429, responseBody: "", kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
+    { statusCode: 413, responseBody: "", kind: "llm_request" },
+  ] as const)("상태 코드 $statusCode를 본문에 따라 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
     const error = new APICallError({
-      message: "rate limit",
+      message: "provider error",
       url: "https://example.test",
       requestBodyValues: {},
       statusCode,
       responseHeaders: {},
-      responseBody: "",
+      responseBody,
     });
     await expect(
       selectStageBCandidates(commits, candidates, async () => {
@@ -157,11 +163,12 @@ describe("Stage B", () => {
   // 이슈 #19 실측: SDK가 재시도한 실패는 `RetryError`로 감싸져 오고, `RetryError`는
   // `APICallError`가 아니다. 벗기지 않으면 한도 초과가 llm_failure로 뭉개진다.
   it.each([
-    [429, "llm_rate_limit"],
-    [413, "llm_rate_limit"],
-    [401, "llm_auth"],
-    [404, "llm_configuration"],
-  ] as const)("재시도로 감싸인 %i도 %s로 매핑한다", async (statusCode, kind) => {
+    { statusCode: 429, responseBody: "", kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
+    { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
+    { statusCode: 401, responseBody: "", kind: "llm_auth" },
+    { statusCode: 404, responseBody: "", kind: "llm_configuration" },
+  ] as const)("재시도로 감싸인 $statusCode도 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
     const wrapped = new RetryError({
       message: "failed after 3 attempts",
       reason: "maxRetriesExceeded",
@@ -172,7 +179,7 @@ describe("Stage B", () => {
           requestBodyValues: {},
           statusCode,
           responseHeaders: {},
-          responseBody: "",
+          responseBody,
         }),
       ],
     });

@@ -1,6 +1,6 @@
 import { createGoogle } from "@ai-sdk/google";
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
-import { ExperienceCandidateOutputError } from "./errors";
+import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
@@ -115,12 +115,25 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
-    // 413도 한도다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
+    // 413도 한도일 수 있다. 이슈 #19 실측에서 Groq는 분당 토큰(TPM) 한도 초과를 429가 아니라
     // 413 `rate_limit_exceeded`로 반환했다. Stage B의 provider는 다르지만 같은 계약을 유지한다.
-    if (error.statusCode === 429 || error.statusCode === 413) {
+    // 상태 코드만으로 한도로 단정하면 페이로드가 실제로 너무 큰 413에도 재시도 안내가 나가므로
+    // 본문으로 갈라 본다. Stage B는 diff를 싣기 때문에 요청 과대 413이 실제로 가능하다.
+    if (
+      error.statusCode === 429 ||
+      (error.statusCode === 413 && isRateLimitResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError(
         "llm_rate_limit",
         "LLM 호출 한도에 도달했습니다.",
+        { cause: error }
+      );
+    }
+    // 한도가 아닌 413은 같은 입력으로 재시도해도 풀리지 않는다. 재시도 대상이 아닌 요청 오류다.
+    if (error.statusCode === 413) {
+      return new ExperienceCandidateOutputError(
+        "llm_request",
+        "Stage B 입력이 LLM이 받을 수 있는 크기를 넘었습니다.",
         { cause: error }
       );
     }
