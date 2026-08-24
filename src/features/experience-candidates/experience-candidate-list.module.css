@@ -1,0 +1,26 @@
+.state { display: grid; gap: 12px; margin-top: 24px; border-top: 1px solid #ecebf0; padding-top: 24px; }
+.state h2 { color: #1f1e28; font-size: 20px; letter-spacing: -.02em; }
+.state p { color: #696773; font-size: 14px; line-height: 1.65; }
+.eyebrow { color: #5b52d6 !important; font-size: 12px !important; font-weight: 750; text-transform: uppercase; }
+.candidateList { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.candidateList button { width: 100%; display: grid; gap: 10px; border: 1px solid #ecebf0; border-radius: 12px; background: #fff; padding: 16px; cursor: pointer; text-align: left; }
+.candidateList button:hover { border-color: #8a82e9; }
+.candidateList button:focus-visible, .backButton:focus-visible, .secondaryButton:focus-visible { outline: 3px solid rgba(109, 99, 232, .25); outline-offset: 2px; }
+.title { color: #282632; font-size: 15px; font-weight: 750; }
+.badges, .metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+.badges span { border-radius: 999px; background: #eeecff; color: #5148c7; font-size: 11px; font-weight: 700; padding: 4px 8px; }
+.evidence { color: #696773; font-size: 14px; line-height: 1.6; }
+.state .evidenceNotice { color: #777580; font-size: 12px; line-height: 1.5; }
+.metrics span { color: #777580; font-size: 12px; }
+.metrics span + span::before { content: "·"; margin-right: 6px; }
+.insufficientReason { display: grid; gap: 3px; border-left: 3px solid #8a82e9; padding-left: 12px; }
+.insufficientReason strong { color: #383743; }
+.summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.summary div { border-radius: 12px; background: #f5f4fa; padding: 16px; }
+.summary strong, .summary span { display: block; }
+.summary strong { color: #282632; font-size: 24px; }
+.summary span { margin-top: 4px; color: #777580; font-size: 12px; }
+.secondaryButton, .backButton { min-height: 44px; border: 1px solid #d7d5df; border-radius: 10px; background: #fff; color: #34333d; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
+.backButton { width: fit-content; border: 0; padding: 0; }
+.detailNotice { border-radius: 10px; background: #f5f4fa; padding: 12px 14px; }
+@media (max-width: 560px) { .summary { grid-template-columns: 1fr; } .secondaryButton { width: 100%; } }

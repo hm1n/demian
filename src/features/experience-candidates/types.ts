@@ -1,10 +1,12 @@
 import type {
   CommitFileChange,
   PullRequestReference,
+  ReadonlyCommitDetail,
   RepositoryTreeEntry,
 } from "@/lib/github/types";
 
 export type ExperienceCandidateSource = "contribution_match" | "automatic_recommendation";
+export type EvidenceOrigin = "repository";
 
 export interface ExperienceCandidate {
   readonly sha: string;
@@ -12,6 +14,14 @@ export interface ExperienceCandidate {
   readonly evidence: string;
   readonly citedFilePaths: readonly string[];
   readonly source: ExperienceCandidateSource;
+}
+
+export interface ExperienceCandidateListItem {
+  readonly candidate: ExperienceCandidate;
+  readonly commit: ReadonlyCommitDetail | null;
+  readonly origin: EvidenceOrigin;
+  readonly normalizedRelatedShas: readonly string[];
+  readonly normalizedCitedFilePaths: readonly string[];
 }
 
 export interface ExperienceCandidateOutput {

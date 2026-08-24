@@ -2,6 +2,7 @@
 
 import { type FormEvent, useRef, useState } from "react";
 import type { RepositoryRef } from "@/lib/github/types";
+import { ExperienceCandidateList } from "@/features/experience-candidates/experience-candidate-list";
 import {
   analyzeRepository,
   generateCandidates,
@@ -195,7 +196,7 @@ export function RepositoryAnalysisView() {
           />
         ) : null}
         {state.status === "success" ? (
-          <SuccessState data={state.data} candidates={state.candidates} onSelectRepository={selectRepository} />
+          <ExperienceCandidateList data={state.data} candidates={state.candidates} onSelectRepository={selectRepository} />
         ) : null}
       </main>
     </div>
@@ -290,35 +291,3 @@ function ErrorState({ error, retryLabel, onRetry, onReauthenticate, onSelectRepo
   );
 }
 
-type SuccessProps = Extract<AnalysisState, { status: "success" }>;
-
-function SuccessState({ data, candidates, onSelectRepository }: Pick<SuccessProps, "data" | "candidates"> & { onSelectRepository: () => void }) {
-  return (
-    <section className={styles.state} aria-live="polite">
-      <h2>경험 후보를 준비했습니다</h2>
-      <p>실제 diff와 PR 소속을 근거로 경험 후보 {candidates.candidates.length}개를 선정했습니다.</p>
-      {candidates.insufficientCandidatesReason ? (
-        <p>
-          후보를 3개 채우지 않은 이유: {candidates.insufficientCandidatesReason} 기준을 완화하거나 후보를
-          임의로 채우지 않습니다.
-        </p>
-      ) : null}
-      <ul className={styles.candidateList}>
-        {candidates.candidates.map((candidate) => (
-          <li key={candidate.sha}>
-            <strong>{candidate.sha.slice(0, 7)}</strong>
-            <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
-            <p>{candidate.evidence}</p>
-          </li>
-        ))}
-      </ul>
-      <div className={styles.summary}>
-        <div className={styles.metric}><strong>{data.allCommits.length}</strong><span>전체 커밋</span></div>
-        <div className={styles.metric}><strong>{data.includedCommits.length}</strong><span>상세 조회 커밋</span></div>
-      </div>
-      <div className={styles.actions}>
-        <button className={styles.secondaryButton} type="button" onClick={onSelectRepository}>다른 Repository 선택</button>
-      </div>
-    </section>
-  );
-}
