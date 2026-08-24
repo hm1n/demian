@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import type { EvidenceOrigin, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
 import type { CandidateDataOutput } from "@/lib/github/types";
+import type { RepositoryRef } from "@/lib/github/types";
+import { ExperienceCandidateDetail } from "./experience-candidate-detail";
 import styles from "./experience-candidate-list.module.css";
 
 const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
@@ -26,31 +28,26 @@ export function createExperienceCandidateListItems(
 }
 
 interface ExperienceCandidateListProps {
+  repository: RepositoryRef;
   data: CandidateDataOutput;
   candidates: StageBCandidateResult;
   onSelectRepository: () => void;
 }
 
-export function ExperienceCandidateList({ data, candidates, onSelectRepository }: ExperienceCandidateListProps) {
+export function ExperienceCandidateList({ repository, data, candidates, onSelectRepository }: ExperienceCandidateListProps) {
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const items = useMemo(() => createExperienceCandidateListItems(data, candidates), [data, candidates]);
   const selectedItem = items.find(({ candidate }) => candidate.sha === selectedSha);
 
   if (selectedItem) {
-    const { candidate, commit } = selectedItem;
-    const indexedTitle = commit?.title ?? `커밋 색인 실패 · ${candidate.sha.slice(0, 7)}`;
     return (
-      <section className={styles.state} aria-live="polite">
-        <button className={styles.backButton} type="button" onClick={() => setSelectedSha(null)}>
-          ← 후보 목록으로
-        </button>
-        <p className={styles.eyebrow}>경험 후보 상세</p>
-        <h2>{indexedTitle}</h2>
-        {commit === null ? <p className={styles.detailNotice}>대표 커밋을 커밋 색인에서 찾지 못했습니다.</p> : null}
-        <p>{candidate.evidence}</p>
-        <p className={styles.evidenceNotice}>{EVIDENCE_SUMMARY_NOTICE}</p>
-        <p className={styles.detailNotice}>코드 변경 내역과 파일·관련 커밋 상세는 다음 단계에서 제공됩니다.</p>
-      </section>
+      <ExperienceCandidateDetail
+        repository={repository}
+        data={data}
+        candidates={candidates}
+        item={selectedItem}
+        onBack={() => setSelectedSha(null)}
+      />
     );
   }
 

@@ -70,10 +70,16 @@ export function RepositoryAnalysisView() {
   const [contributionItems, setContributionItems] = useState("");
   const [token, setToken] = useState("");
   const [hasSession, setHasSession] = useState(false);
+  const [analyzedRepository, setAnalyzedRepository] = useState<RepositoryRef | null>(null);
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
   const tokenInput = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
+
+  function analyze(repository: RepositoryRef) {
+    setAnalyzedRepository(repository);
+    return analyzeRepository(repository, parseContributionItems(contributionItems), setState);
+  }
 
   async function startAnalysis(repository: RepositoryRef, newToken: string) {
     setState({ status: "loading", loading: { step: "commits" } });
@@ -110,13 +116,13 @@ export function RepositoryAnalysisView() {
     }
     setHasSession(true);
     setToken("");
-    await analyzeRepository(repository, parseContributionItems(contributionItems), setState);
+    await analyze(repository);
   }
 
   function runAnalysis() {
     const repository = { owner: owner.trim(), repo: repo.trim() };
     if (token) return startAnalysis(repository, token);
-    if (hasSession) return analyzeRepository(repository, parseContributionItems(contributionItems), setState);
+    if (hasSession) return analyze(repository);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -125,7 +131,10 @@ export function RepositoryAnalysisView() {
   }
 
   function retry() {
-    if (state.status === "error" && state.retryPoint) return generateCandidates(state.retryPoint, setState);
+    if (state.status === "error" && state.retryPoint) {
+      setAnalyzedRepository(state.retryPoint.repository);
+      return generateCandidates(state.retryPoint, setState);
+    }
     runAnalysis();
   }
 
@@ -133,6 +142,7 @@ export function RepositoryAnalysisView() {
     await fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
     setHasSession(false);
     setToken("");
+    setAnalyzedRepository(null);
     setState(INITIAL_STATE);
     requestAnimationFrame(() => tokenInput.current?.focus());
   }
@@ -141,6 +151,7 @@ export function RepositoryAnalysisView() {
     setOwner("");
     setRepo("");
     setContributionItems("");
+    setAnalyzedRepository(null);
     setState(INITIAL_STATE);
     requestAnimationFrame(() => ownerInput.current?.focus());
   }
@@ -197,8 +208,13 @@ export function RepositoryAnalysisView() {
             onSelectRepository={selectRepository}
           />
         ) : null}
-        {state.status === "success" ? (
-          <ExperienceCandidateList data={state.data} candidates={state.candidates} onSelectRepository={selectRepository} />
+        {state.status === "success" && analyzedRepository ? (
+          <ExperienceCandidateList
+            repository={analyzedRepository}
+            data={state.data}
+            candidates={state.candidates}
+            onSelectRepository={selectRepository}
+          />
         ) : null}
       </main>
     </div>

@@ -290,6 +290,30 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
     expect(screen.getByText("상태 머신을 구현했습니다.")).toBeInTheDocument();
   });
 
+  it("입력 필드를 수정해도 상세 링크는 분석한 Repository를 유지한다", async () => {
+    const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    mockState({
+      status: "success",
+      data: RETRY_POINT.data,
+      candidates: {
+        candidates: [{ sha, relatedShas: [], evidence: "근거입니다.", citedFilePaths: [], source: "automatic_recommendation" }],
+        insufficientCandidatesReason: "하나뿐입니다.",
+        diffs: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "wrong-owner" } });
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "wrong-repo" } });
+    fireEvent.click(screen.getByRole("button", { name: /커밋 색인 실패 · aaaaaaa/ }));
+
+    expect(screen.getByRole("link", { name: "대표 커밋 aaaaaaa" })).toHaveAttribute(
+      "href",
+      `https://github.com/octocat/hello-world/commit/${sha}`
+    );
+  });
+
   it("후보가 3개이면 부족 사유 안내 없이 후보 목록을 표시한다", async () => {
     const candidate = { relatedShas: [], evidence: "근거입니다.", citedFilePaths: [], source: "automatic_recommendation" } as const;
     mockState({

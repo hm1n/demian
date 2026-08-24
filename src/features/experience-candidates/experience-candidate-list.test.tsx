@@ -37,7 +37,7 @@ function renderList(candidateItems: readonly ExperienceCandidate[], commits: rea
     repository: { fileTree: [], treeTruncated: false, languages: {} },
   };
   const candidates: StageBCandidateResult = { candidates: candidateItems, insufficientCandidatesReason: reason, diffs: [] };
-  render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
+  render(<ExperienceCandidateList repository={{ owner: "hm1n", repo: "demian" }} data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
 }
 
 afterEach(cleanup);
@@ -57,7 +57,7 @@ describe("ExperienceCandidateList", () => {
     };
 
     expect(createExperienceCandidateListItems(data, candidates)[0]).toMatchObject({ origin: "repository" });
-    render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
+    render(<ExperienceCandidateList repository={{ owner: "hm1n", repo: "demian" }} data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
     expect(screen.getByText("출처: Repository")).toBeInTheDocument();
   });
 
@@ -117,7 +117,7 @@ describe("ExperienceCandidateList", () => {
       normalizedRelatedShas: ["related-b", "related-a"],
       normalizedCitedFilePaths: ["src/b.ts", "src/a.ts"],
     });
-    render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
+    render(<ExperienceCandidateList repository={{ owner: "hm1n", repo: "demian" }} data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
     expect(screen.getByText("관련 커밋 2개")).toBeInTheDocument();
     expect(screen.getByText("인용 파일 2개")).toBeInTheDocument();
   });
@@ -138,7 +138,7 @@ describe("ExperienceCandidateList", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /상세 전환/ }));
     expect(screen.getByRole("heading", { name: "상세 전환" })).toBeInTheDocument();
-    expect(screen.getByText(/코드 변경 내역과 파일·관련 커밋 상세는 다음 단계/)).toBeInTheDocument();
+    expect(screen.getByText("표시할 코드 변경 내역이 없습니다")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "← 후보 목록으로" }));
     expect(screen.getByText(/경험 후보 1개를 선정했습니다/)).toBeInTheDocument();
