@@ -63,7 +63,7 @@ describe("RepositoryAnalysisView Loading", () => {
     [{ status: "loading", loading: { step: "commits" } }, "1단계", "전체 커밋을 조회하고 있습니다"],
     [{ status: "loading", loading: { step: "details", completed: 2, total: 5, phase: "commit_details" } }, "2단계", "5개 중 2개를 확인했습니다."],
     [{ status: "loading", loading: { step: "deriving" } }, "3단계", "파생 지표를 계산하고 있습니다"],
-    [{ status: "loading", loading: { step: "stage_a" } }, "4단계", "경험 후보를 1차 선별하고 있습니다"],
+      [{ status: "loading", loading: { step: "stage_a", completed: 2, total: 5, waitingForRateLimit: false } }, "4단계", "경험 후보를 1차 선별하고 있습니다"],
     [{ status: "loading", loading: { step: "stage_b" } }, "5·6단계", "diff·PR 근거를 수집하고 최종 후보를 판단하고 있습니다"],
   ] as const)("각 단계의 %s 상태를 구분해 표시한다", async (state, step, copy) => {
     mockState(state);

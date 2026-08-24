@@ -10,6 +10,7 @@
  *   parallel  상세 조회 병렬도별 소요 시간과 secondary rate limit 관측
  *   commit    단일 커밋 상세 조회. changedFiles 3000 상한 왜곡 관측용
  *   stage-a   실제 Groq 호출 소요 시간과 선정 결과 (GROQ_API_KEY 필요)
+ *   stage-a-chunks  Stage A 12개 청크 분할·재판단 완주 측정
  *   stage-b   실제 Gemini 호출 소요 시간과 선정 결과 (GOOGLE_GENERATIVE_AI_API_KEY 필요)
  *
  * 옵션:
@@ -35,7 +36,12 @@ import {
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
   selectStageACandidates,
   STAGE_A_MODEL,
+  STAGE_A_CHUNK_SIZE,
+  STAGE_A_CHUNK_MAX_BYTES,
+  STAGE_A_CHUNK_MAX_FILES,
   STAGE_A_TIMEOUT_MS,
+  STAGE_A_RESET_SAFETY_MS,
+  STAGE_A_TOKEN_RESERVE,
 } from "../src/features/experience-candidates/stage-a";
 import {
   buildStageBPayload,
@@ -49,6 +55,7 @@ import {
 import type { CommitDetail, CommitSummary, GitHubAuth } from "../src/lib/github/types";
 import type { GenerateStageA } from "../src/features/experience-candidates/stage-a";
 import type { StageACandidate } from "../src/features/experience-candidates/types";
+import { ExperienceCandidateOutputError } from "../src/features/experience-candidates/errors";
 
 const [owner, repo, phase = "commits", ...rest] = process.argv.slice(2);
 const token = process.env.GITHUB_TOKEN;
@@ -180,7 +187,17 @@ async function fetchDetailsCached(targets: readonly CommitSummary[]) {
     }
     console.log(`[cache] 캐시 미스 ${targets.length - picked.length}건, 전체 재조회`);
   }
-  const { details } = await fetchDetailsSequential(targets);
+  const concurrency = numericOption("concurrency", 1);
+  const queue = [...targets];
+  const detailsBySha = new Map<string, CommitDetail>();
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    for (;;) {
+      const commit = queue.shift();
+      if (commit === undefined) return;
+      detailsBySha.set(commit.sha, await fetchCommitDetail(auth, commit));
+    }
+  }));
+  const details = targets.map(({ sha }) => detailsBySha.get(sha)!);
   writeFileSync(cachePath, JSON.stringify(details));
   console.log(`[cache] 상세 ${details.length}건 저장`);
   return details;
@@ -405,6 +422,154 @@ ${describeLlmFailure(error)}`);
   }
 }
 
+async function runStageAChunks() {
+  const { included } = await loadCommits();
+  const targets = included.slice(0, numericOption("limit", included.length));
+  const details = await fetchDetailsCached(targets);
+  let candidates: StageACandidate[] = [];
+  const unclassified = new Set<string>();
+  let calls = 0;
+  let totalTokens = 0;
+  let recoveryCalls = 0;
+  const recoveredShaSet = new Set<string>();
+  let failedShas = 0;
+  let rateLimitFailures = 0;
+  const startedAt = ms();
+  const split = (items: readonly CommitDetail[]) => {
+    const result: CommitDetail[][] = [];
+    for (const commit of items) {
+      const current = result.at(-1) ?? [];
+      const proposed = [...current, commit];
+      const bytes = new TextEncoder().encode(JSON.stringify(buildStageAPayload({
+        commits: proposed,
+        contributionItems: [],
+      }))).length;
+      const files = proposed.reduce((sum, item) => sum + item.files.length, 0);
+      if (current.length > 0 && (proposed.length > STAGE_A_CHUNK_SIZE ||
+        bytes > STAGE_A_CHUNK_MAX_BYTES || files > STAGE_A_CHUNK_MAX_FILES)) {
+        result.push([commit]);
+      } else if (result.length === 0 || current.length === 0) {
+        result.push(proposed);
+      } else {
+        result[result.length - 1] = proposed;
+      }
+    }
+    return result;
+  };
+
+  const call = async (chunk: readonly CommitDetail[], mode: "initial" | "reduce", limit?: number) => {
+    const callStartedAt = ms();
+    const input = {
+      mode,
+      commits: chunk,
+      contributionItems: [],
+      ...(limit === undefined ? {} : { candidateLimit: limit }),
+    } as const;
+    const recover = async (current: typeof input, attempts = 2): ReturnType<typeof selectStageACandidates> => {
+      try {
+        return await selectStageACandidates(current);
+      } catch (error) {
+        if (!(error instanceof ExperienceCandidateOutputError) || !error.missingShas?.length ||
+          !error.partialOutput) throw error;
+        if (attempts === 0) {
+          failedShas += error.missingShas.length;
+          console.log(`[stage-a-chunks] 복구 실패 호출=${calls + 1} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
+          throw error;
+        }
+        recoveryCalls += 1;
+        console.log(`[stage-a-chunks] 누락 복구 호출=${calls + 1} 남은시도=${attempts} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
+        const missing = new Set(error.missingShas);
+        const recovered = await recover({
+          ...current,
+          commits: current.commits.filter(({ sha }) => missing.has(sha)),
+          ...(current.candidateLimit === undefined ? {} : {
+            candidateLimit: Math.max(1, current.candidateLimit - error.partialOutput.candidates.length),
+          }),
+        }, attempts - 1);
+        error.missingShas.forEach((sha) => recoveredShaSet.add(sha));
+        return {
+          candidates: [...error.partialOutput.candidates, ...recovered.candidates],
+          unclassifiedShas: [...error.partialOutput.unclassifiedShas, ...recovered.unclassifiedShas],
+          rateLimit: recovered.rateLimit,
+        };
+      }
+    };
+    let output: Awaited<ReturnType<typeof selectStageACandidates>>;
+    for (;;) {
+      try {
+        output = await recover(input);
+        break;
+      } catch (error) {
+        let cause: unknown = error;
+        let retryAfterMs: number | null = null;
+        while (cause instanceof Error) {
+          if (APICallError.isInstance(cause)) {
+            const match = cause.responseBody?.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+            if (match) retryAfterMs = Number(match[1] ?? 0) * 60_000 + Number(match[2]) * 1_000;
+          }
+          cause = (cause as { cause?: unknown }).cause;
+        }
+        if (retryAfterMs === null) throw error;
+        rateLimitFailures += 1;
+        console.log(`[stage-a-chunks] provider 한도 대기=${round(retryAfterMs)}ms 발생=${rateLimitFailures}`);
+        await new Promise((resolve) => setTimeout(resolve, retryAfterMs + STAGE_A_RESET_SAFETY_MS));
+      }
+    }
+    calls += 1;
+    totalTokens += output.rateLimit?.usedTokens ?? 0;
+    console.log(
+      `[stage-a-chunks] 호출=${calls} mode=${mode} 입력=${chunk.length} 후보=${output.candidates.length} ` +
+      `소요=${round(ms() - callStartedAt)}ms 토큰=${output.rateLimit?.usedTokens ?? 0} ` +
+      `잔여=${output.rateLimit?.remainingTokens ?? -1} reset=${output.rateLimit?.resetAfterMs ?? -1}ms`
+    );
+    return output;
+  };
+  const pause = async (rateLimit: Awaited<ReturnType<typeof call>>["rateLimit"]) => {
+    if (rateLimit && rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
+      await new Promise((resolve) => setTimeout(resolve, rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS));
+    }
+  };
+
+  const initialChunks = split(details);
+  for (let index = 0; index < initialChunks.length; index += 1) {
+    const output = await call(initialChunks[index], "initial");
+    candidates.push(...output.candidates);
+    output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
+    if (index + 1 < initialChunks.length || candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
+      await pause(output.rateLimit);
+    }
+  }
+
+  for (let roundIndex = 0; candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT && roundIndex < 6; roundIndex += 1) {
+    const next: StageACandidate[] = [];
+    const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
+    const chunks = split(details.filter(({ sha }) => candidateBySha.has(sha)));
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const group = chunk.map(({ sha }) => candidateBySha.get(sha)!);
+      if (group.length === 1) { next.push(group[0]); continue; }
+      const output = await call(
+        chunk,
+        "reduce",
+        Math.max(1, Math.floor(group.length / 2))
+      );
+      next.push(...output.candidates);
+      output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
+      if (index + 1 < chunks.length) await pause(output.rateLimit);
+    }
+    console.log(`[stage-a-chunks] 재판단 라운드=${roundIndex + 1} ${candidates.length}->${next.length}`);
+    candidates = next;
+  }
+
+  const finalShas = new Set([...candidates.map(({ sha }) => sha), ...unclassified]);
+  console.log(
+    `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} 총소요=${round(ms() - startedAt)}ms ` +
+    `총토큰=${totalTokens} 최종후보=${candidates.length} 누락=${details.length - finalShas.size} ` +
+    `중복=${finalShas.size - details.length} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
+    `판단실패=${failedShas} provider한도=${rateLimitFailures}`
+  );
+}
+
 /**
  * Stage A를 건너뛰고 캐시한 상세를 그대로 후보로 써서 Stage B만 측정한다.
  * Stage A 출력이 실행마다 흔들려(실측) Stage B 소요·품질을 반복 비교할 수 없기 때문이다.
@@ -521,6 +686,7 @@ const phases: Record<string, () => Promise<unknown>> = {
   details: runDetails,
   parallel: runParallel,
   "stage-a": runStageA,
+  "stage-a-chunks": runStageAChunks,
   "stage-b": runStageB,
 };
 

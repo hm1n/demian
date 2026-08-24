@@ -8,7 +8,7 @@ import {
 import { ExperienceCandidateOutputError } from "@/features/experience-candidates/errors";
 import { handleStageA, MAX_STAGE_A_BODY_BYTES } from "./route";
 
-const body = { commits: [], contributionItems: [] };
+const body = { mode: "initial", commits: [], contributionItems: [] };
 const commit = {
   sha: "sha",
   message: "feat: 경량 입력",
@@ -52,7 +52,7 @@ describe("POST /api/candidates/stage-a", () => {
   it("성공 응답은 Stage A 계약만 반환한다", async () => {
     const response = await handleStageA(request(body), async () => ({ decisions: [] }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ candidates: [], unclassifiedShas: [] });
+    expect(await response.json()).toEqual({ candidates: [], unclassifiedShas: [], rateLimit: null });
   });
 
   it("잘못된 JSON, 입력 계약, 4.5MB 초과를 서로 다른 요청 오류로 거부한다", async () => {
@@ -84,7 +84,7 @@ describe("POST /api/candidates/stage-a", () => {
   it("patch를 제외한 경량 메시지·stat 요청은 정상 처리한다", async () => {
     let received: unknown;
     const response = await handleStageA(
-      request({ commits: [commit], contributionItems: [] }),
+      request({ mode: "initial", commits: [commit], contributionItems: [] }),
       async (payload) => {
         received = payload;
         return { decisions: [{ sha: "sha", contributionItem: null, recommended: false }] };
@@ -92,6 +92,46 @@ describe("POST /api/candidates/stage-a", () => {
     );
     expect(response.status).toBe(200);
     expect(JSON.stringify(received)).not.toContain("patch");
+  });
+
+  it("8개를 넘는 단일 청크는 LLM 호출 전에 422로 거부한다", async () => {
+    const generate = vi.fn();
+    const response = await handleStageA(request({
+      mode: "initial",
+      commits: Array.from({ length: 9 }, (_, index) => ({ ...commit, sha: `sha-${index}` })),
+      contributionItems: [],
+    }), generate);
+    expect(response.status).toBe(422);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("누락된 SHA만 최대 2회 축소 재호출해 전수 계약을 복구한다", async () => {
+    const commits = [commit, { ...commit, sha: "sha-2" }];
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ decisions: [
+        { sha: "sha", contributionItem: null, recommended: false },
+      ] })
+      .mockResolvedValueOnce({ decisions: [
+        { sha: "sha-2", contributionItem: null, recommended: false },
+      ] });
+
+    const response = await handleStageA(request({ mode: "initial", commits, contributionItems: [] }), generate);
+
+    expect(response.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[1][0].commits.map(({ sha }: { sha: string }) => sha)).toEqual(["sha-2"]);
+    expect(await response.json()).toMatchObject({ unclassifiedShas: ["sha", "sha-2"] });
+  });
+
+  it("단일 SHA를 세 번 누락하면 판단 실패 수와 재시도 불가를 반환한다", async () => {
+    const generate = vi.fn().mockResolvedValue({ decisions: [] });
+    const response = await handleStageA(request({ mode: "initial", commits: [commit], contributionItems: [] }), generate);
+
+    expect(response.status).toBe(502);
+    expect(generate).toHaveBeenCalledTimes(3);
+    expect(await response.json()).toMatchObject({ error: {
+      kind: "schema_validation", failedCount: 1, retryable: false,
+    } });
   });
 
   it.each([

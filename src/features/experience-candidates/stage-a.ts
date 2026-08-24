@@ -8,7 +8,7 @@ import {
   RetryError,
 } from "ai";
 import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
-import type { StageACandidate, StageACandidateOutput } from "./types";
+import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
 // 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
@@ -20,6 +20,11 @@ export const UNCLASSIFIED_LABEL = "미분류";
 // 이슈 #19 실측으로 확정: 성공 호출은 3.1~11.1초, 계약 위반으로 끝난 호출도 29.0초였습니다.
 // route maxDuration 60초보다 먼저 JSON 오류를 반환하는 시한으로 55초를 유지합니다.
 export const STAGE_A_TIMEOUT_MS = 55_000;
+export const STAGE_A_CHUNK_SIZE = 8;
+export const STAGE_A_CHUNK_MAX_BYTES = 6_000;
+export const STAGE_A_CHUNK_MAX_FILES = 32;
+export const STAGE_A_TOKEN_RESERVE = 6_000;
+export const STAGE_A_RESET_SAFETY_MS = 1_000;
 
 export type StageACommit = Pick<
   CommitDetail,
@@ -32,8 +37,10 @@ export type StageACommit = Pick<
 };
 
 export interface StageAInput {
+  readonly mode?: "initial" | "reduce";
   readonly commits: readonly StageACommit[];
   readonly contributionItems: readonly string[];
+  readonly candidateLimit?: number;
 }
 
 interface StageADecision {
@@ -44,11 +51,13 @@ interface StageADecision {
 
 interface StageAStructuredOutput {
   readonly decisions: readonly StageADecision[];
+  readonly __rateLimit?: StageARateLimit | null;
 }
 
 export type GenerateStageA = (payload: {
   readonly commits: readonly StageACommit[];
   readonly contributionItems: readonly string[];
+  readonly candidateLimit?: number;
 }, abortSignal: AbortSignal) => Promise<unknown>;
 
 const structuredOutputSchema = jsonSchema<StageAStructuredOutput>({
@@ -115,6 +124,7 @@ export function buildStageAPayload(input: StageAInput) {
       })),
     })),
     contributionItems: [...input.contributionItems],
+    ...(input.mode === "reduce" ? { candidateLimit: input.candidateLimit } : {}),
   };
 }
 
@@ -201,15 +211,27 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
 /** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
 export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
   return async (payload, abortSignal) => {
-    const { object } = await generateObject({
+    const { object, response, usage } = await generateObject({
       model: createGroq()(model),
       schema: structuredOutputSchema,
       system:
-        `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
+        `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${payload.candidateLimit ?? INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
       prompt: JSON.stringify(payload),
       abortSignal,
     });
-    return object;
+    const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);
+    const reset = response.headers?.["x-ratelimit-reset-tokens"];
+    const match = reset?.match(/^(\d+(?:\.\d+)?)(ms|s|m)$/);
+    const resetAfterMs = match
+      ? Number(match[1]) * ({ ms: 1, s: 1_000, m: 60_000 }[match[2]] ?? 0)
+      : Number.NaN;
+    return {
+      ...object,
+      __rateLimit:
+        Number.isFinite(remaining) && Number.isFinite(resetAfterMs)
+          ? { remainingTokens: remaining, resetAfterMs, usedTokens: usage.totalTokens ?? 0 }
+          : null,
+    };
   };
 }
 
@@ -219,7 +241,7 @@ export async function selectStageACandidates(
   input: StageAInput,
   generate: GenerateStageA = generateWithGroq,
   timeoutMs = STAGE_A_TIMEOUT_MS
-): Promise<StageACandidateOutput> {
+): Promise<StageAChunkOutput> {
   const payload = buildStageAPayload(input);
   const abortController = new AbortController();
   const timeout = setTimeout(
@@ -251,13 +273,6 @@ export async function selectStageACandidates(
       "Stage A 응답에 같은 SHA가 두 번 이상 포함되어 있습니다."
     );
   }
-  if (returnedShas.length !== allowedShas.size) {
-    throw new ExperienceCandidateOutputError(
-      "schema_validation",
-      "Stage A 응답은 입력된 모든 커밋 SHA를 정확히 한 번 포함해야 합니다."
-    );
-  }
-
   const contributionItems = new Set(input.contributionItems);
   const candidates = output.decisions.flatMap<StageACandidate>((decision) => {
     if (
@@ -281,18 +296,34 @@ export async function selectStageACandidates(
     return [];
   });
 
-  if (candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
+  const candidateLimit = input.candidateLimit ?? INITIAL_STAGE_A_CANDIDATE_LIMIT;
+  if (candidates.length > candidateLimit) {
     throw new ExperienceCandidateOutputError(
       "schema_validation",
-      `Stage A 후보는 초기 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개를 넘을 수 없습니다.`
+      `Stage A 후보는 요청 상한 ${candidateLimit}개를 넘을 수 없습니다.`
     );
   }
 
   const candidateShas = new Set(candidates.map(({ sha }) => sha));
+  const unclassifiedShas = payload.commits
+    .map(({ sha }) => sha)
+    .filter((sha) => !candidateShas.has(sha));
+  const missingShas = payload.commits
+    .map(({ sha }) => sha)
+    .filter((sha) => !returnedShas.includes(sha));
+  if (missingShas.length > 0) {
+    throw new ExperienceCandidateOutputError(
+      "schema_validation",
+      "Stage A 응답은 입력된 모든 커밋 SHA를 정확히 한 번 포함해야 합니다.",
+      { missingShas, partialOutput: {
+        candidates,
+        unclassifiedShas: unclassifiedShas.filter((sha) => !missingShas.includes(sha)),
+      } }
+    );
+  }
   return {
     candidates,
-    unclassifiedShas: payload.commits
-      .map(({ sha }) => sha)
-      .filter((sha) => !candidateShas.has(sha)),
+    unclassifiedShas,
+    rateLimit: output.__rateLimit ?? null,
   };
 }

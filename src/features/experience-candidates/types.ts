@@ -40,6 +40,26 @@ export interface StageACandidateOutput {
   readonly unclassifiedShas: readonly string[];
 }
 
+export interface StageARateLimit {
+  readonly remainingTokens: number;
+  readonly resetAfterMs: number;
+  readonly usedTokens: number;
+}
+
+export interface StageAChunkOutput extends StageACandidateOutput {
+  readonly rateLimit: StageARateLimit | null;
+}
+
+export interface StageACheckpoint extends StageACandidateOutput {
+  readonly processedShas: readonly string[];
+}
+
+export interface StageAProgress {
+  readonly completed: number;
+  readonly total: number;
+  readonly waitingForRateLimit: boolean;
+}
+
 export interface CandidateDiffFile {
   readonly path: string;
   readonly status: string;

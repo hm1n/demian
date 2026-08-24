@@ -15,16 +15,24 @@ export type ExperienceCandidateOutputErrorKind =
 export class ExperienceCandidateOutputError extends Error {
   readonly kind: ExperienceCandidateOutputErrorKind;
   readonly unknownShas?: readonly string[];
+  readonly missingShas?: readonly string[];
+  readonly partialOutput?: import("./types").StageACandidateOutput;
 
   constructor(
     kind: ExperienceCandidateOutputErrorKind,
     message: string,
-    options?: ErrorOptions & { unknownShas?: readonly string[] }
+    options?: ErrorOptions & {
+      unknownShas?: readonly string[];
+      missingShas?: readonly string[];
+      partialOutput?: import("./types").StageACandidateOutput;
+    }
   ) {
     super(message, options);
     this.name = "ExperienceCandidateOutputError";
     this.kind = kind;
     this.unknownShas = options?.unknownShas;
+    this.missingShas = options?.missingShas;
+    this.partialOutput = options?.partialOutput;
   }
 }
 

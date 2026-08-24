@@ -2,7 +2,11 @@ import type { NextRequest } from "next/server";
 import { getGitHubTokenFromRequest } from "@/lib/github/auth-session";
 import { GitHubFetchError } from "@/lib/github/errors";
 import { ExperienceCandidateOutputError } from "@/features/experience-candidates/errors";
+import type { StageAChunkOutput } from "@/features/experience-candidates/types";
 import {
+  STAGE_A_CHUNK_SIZE,
+  STAGE_A_CHUNK_MAX_BYTES,
+  STAGE_A_CHUNK_MAX_FILES,
   selectStageACandidates,
   type GenerateStageA,
   type StageAInput,
@@ -34,15 +38,21 @@ function isStageAInput(value: unknown): value is StageAInput {
     Array.isArray((item as { files?: unknown }).files) &&
     (item as { files: unknown[] }).files.every(isFile);
 
+  const input = value as StageAInput;
   return (
     typeof value === "object" &&
     value !== null &&
     Array.isArray((value as StageAInput).commits) &&
-    (value as StageAInput).commits.every(isCommit) &&
+    input.commits.every(isCommit) &&
+    input.commits.length <= STAGE_A_CHUNK_SIZE &&
     Array.isArray((value as StageAInput).contributionItems) &&
-    (value as StageAInput).contributionItems.every(
+    input.contributionItems.every(
       (item) => typeof item === "string" && item.length > 0
-    )
+    ) &&
+    (input.mode === "initial" || input.mode === "reduce") &&
+    (input.mode !== "reduce" ||
+      (Number.isInteger(input.candidateLimit) && input.candidateLimit! >= 1 &&
+        input.candidateLimit! < input.commits.length))
   );
 }
 
@@ -65,7 +75,14 @@ function errorResponse(error: unknown): Response {
       llm_request: 502,
       llm_failure: 502,
     }[error.kind];
-    return Response.json({ error: { kind: error.kind, message: error.message } }, { status });
+    return Response.json({ error: {
+      kind: error.kind,
+      message: error.missingShas
+        ? `${error.message} ${error.missingShas.length}개 커밋을 3회 판단했지만 완료하지 못했습니다.`
+        : error.message,
+      ...(error.missingShas ? { failedCount: error.missingShas.length } : {}),
+      ...(error.missingShas?.length === 1 ? { retryable: false } : {}),
+    } }, { status });
   }
   return Response.json({ error: { kind: "server_error", message: "Stage A 분석에 실패했습니다." } }, { status: 500 });
 }
@@ -93,10 +110,49 @@ export async function handleStageA(
     } catch {
       return Response.json({ error: { kind: "invalid_json", message: "요청 본문은 JSON이어야 합니다." } }, { status: 400 });
     }
-    if (!isStageAInput(body)) {
+    if (
+      !isStageAInput(body) ||
+      new TextEncoder().encode(text).byteLength > STAGE_A_CHUNK_MAX_BYTES ||
+      body.commits.reduce((sum, commit) => sum + commit.files.length, 0) > STAGE_A_CHUNK_MAX_FILES
+    ) {
       return Response.json({ error: { kind: "invalid_request", message: "Stage A 입력 형식이 올바르지 않습니다." } }, { status: 422 });
     }
-    return Response.json(await selectStageACandidates(body, generate, timeoutMs));
+    const selectWithRecovery = async (
+      input: StageAInput,
+      attemptsLeft = 2
+    ): Promise<StageAChunkOutput> => {
+      try {
+        return await selectStageACandidates(input, generate, timeoutMs);
+      } catch (error) {
+        if (
+          !(error instanceof ExperienceCandidateOutputError) ||
+          !error.missingShas?.length || !error.partialOutput || attemptsLeft === 0
+        ) {
+          if (error instanceof ExperienceCandidateOutputError && error.missingShas?.length === 1) {
+            throw new ExperienceCandidateOutputError(
+              error.kind,
+              "단일 커밋을 세 번 판단했지만 모델이 판단 결과를 반환하지 못했습니다. 같은 입력을 다시 보내도 해결된다고 보장할 수 없습니다.",
+              { missingShas: error.missingShas, partialOutput: error.partialOutput, cause: error }
+            );
+          }
+          throw error;
+        }
+        const missing = new Set(error.missingShas);
+        const recovered = await selectWithRecovery({
+          ...input,
+          commits: input.commits.filter(({ sha }) => missing.has(sha)),
+          ...(input.candidateLimit === undefined
+            ? {}
+            : { candidateLimit: Math.max(1, input.candidateLimit - error.partialOutput.candidates.length) }),
+        }, attemptsLeft - 1);
+        return {
+          candidates: [...error.partialOutput.candidates, ...recovered.candidates],
+          unclassifiedShas: [...error.partialOutput.unclassifiedShas, ...recovered.unclassifiedShas],
+          rateLimit: recovered.rateLimit,
+        };
+      }
+    };
+    return Response.json(await selectWithRecovery(body));
   } catch (error) {
     return errorResponse(error);
   }

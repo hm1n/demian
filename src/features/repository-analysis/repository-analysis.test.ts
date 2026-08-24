@@ -89,7 +89,9 @@ describe("analyzeRepository", () => {
   it("기여 항목과 상세 조회 커밋을 Stage A 선별에 전달한다", async () => {
     const deps = dependencies();
     await analyzeRepository(AUTH, ["푸시 알림 구현"], vi.fn(), deps);
-    expect(deps.fetchStageACandidates).toHaveBeenCalledWith(CONTRIBUTIONS.commits, ["푸시 알림 구현"]);
+    expect(deps.fetchStageACandidates).toHaveBeenCalledWith(
+      CONTRIBUTIONS.commits, ["푸시 알림 구현"], expect.any(Function), undefined
+    );
     expect(deps.fetchStageBCandidates).toHaveBeenCalledWith(AUTH, STAGE_A_OUTPUT.candidates);
   });
 
@@ -288,6 +290,36 @@ describe("generateCandidates", () => {
     if (last?.status !== "error") throw new Error("unreachable");
     expect(last.retryPoint).toEqual(retryPoint);
     expect(last.retryPoint?.stageA).toBeUndefined();
+  });
+
+  it("Stage A 부분 완료 실패는 처리하지 못한 커밋 수와 체크포인트를 보존한다", async () => {
+    const checkpoint = { candidates: [], unclassifiedShas: [], processedShas: [] };
+    const deps = dependencies({
+      fetchStageACandidates: vi.fn().mockRejectedValue(
+        new CandidateRequestError("stage_a", "llm_failure", "실패", { checkpoint })
+      ),
+    });
+    const states: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => states.push(state), deps);
+
+    const failed = states.at(-1);
+    if (failed?.status !== "error") throw new Error("unreachable");
+    expect(failed.error.message).toContain("1개는 아직 판단하지 못했습니다");
+    expect(failed.retryPoint?.stageACheckpoint).toEqual(checkpoint);
+  });
+
+  it("단일 커밋 판단 실패는 같은 입력 retryPoint를 남기지 않는다", async () => {
+    const deps = dependencies({
+      fetchStageACandidates: vi.fn().mockRejectedValue(
+        new CandidateRequestError("stage_a", "schema_validation", "판단 실패 1개", { retryable: false })
+      ),
+    });
+    const states: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => states.push(state), deps);
+    const failed = states.at(-1);
+    expect(failed).toMatchObject({ status: "error", error: { kind: "llm_schema_violation" } });
+    if (failed?.status !== "error") throw new Error("unreachable");
+    expect(failed.retryPoint).toBeUndefined();
   });
 
   it("Stage B 실패의 retryPoint로 재시도하면 Stage A를 건너뛰고 Stage B부터 다시 실행한다", async () => {

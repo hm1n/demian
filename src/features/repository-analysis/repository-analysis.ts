@@ -5,6 +5,7 @@ import {
   type CandidateStage,
 } from "@/features/experience-candidates/candidate-client";
 import type {
+  StageACheckpoint,
   StageACandidateOutput,
   StageBCandidateResult,
 } from "@/features/experience-candidates/types";
@@ -30,7 +31,7 @@ export type LoadingPhase =
       phase: ContributionFetchProgress["phase"];
     }
   | { step: "deriving" }
-  | { step: "stage_a" }
+  | { step: "stage_a"; completed: number; total: number; waitingForRateLimit: boolean }
   // 서버가 diff·PR 수집(5단계)과 판단(6단계)을 한 요청으로 처리해 클라이언트는 경계를 관측할 수 없습니다.
   // 시간 같은 대리 지표로 가짜 전환을 만들지 않고 두 단계를 하나의 Loading으로 표현합니다.
   | { step: "stage_b" };
@@ -66,6 +67,7 @@ export interface CandidateRetryPoint {
   readonly contributionItems: readonly string[];
   readonly data: CandidateDataOutput;
   readonly stageA?: StageACandidateOutput;
+  readonly stageACheckpoint?: StageACheckpoint;
 }
 
 export type AnalysisState =
@@ -247,10 +249,19 @@ export async function generateCandidates(
 ): Promise<void> {
   const { repository, contributionItems, data } = retryPoint;
   let stageA = retryPoint.stageA;
+  let stageACheckpoint = retryPoint.stageACheckpoint;
   try {
     if (!stageA) {
-      onStateChange({ status: "loading", loading: { step: "stage_a" } });
-      stageA = await dependencies.fetchStageACandidates(data.includedCommits, contributionItems);
+      onStateChange({ status: "loading", loading: {
+        step: "stage_a", completed: stageACheckpoint?.processedShas.length ?? 0,
+        total: data.includedCommits.length, waitingForRateLimit: false,
+      } });
+      stageA = await dependencies.fetchStageACandidates(
+        data.includedCommits,
+        contributionItems,
+        (progress) => onStateChange({ status: "loading", loading: { step: "stage_a", ...progress } }),
+        stageACheckpoint
+      );
     }
     if (stageA.candidates.length === 0) {
       onStateChange({ status: "empty", kind: "no_stage_a_candidates" });
@@ -269,16 +280,33 @@ export async function generateCandidates(
     }
     onStateChange({ status: "success", data, candidates });
   } catch (error) {
+    if (error instanceof CandidateRequestError && error.checkpoint) {
+      stageACheckpoint = error.checkpoint;
+    }
     // 계약 위반(422)은 보존한 입력을 그대로 다시 보내면 반드시 같은 결과라 retryPoint를 남기지 않습니다.
     // retryPoint가 없으면 재시도가 전체 재분석이 되어 입력을 처음부터 다시 구성합니다.
     const samePayloadAlwaysFails =
-      error instanceof CandidateRequestError && error.kind === "invalid_request";
+      error instanceof CandidateRequestError &&
+      (error.kind === "invalid_request" || error.retryable === false);
+    const visibleError =
+      error instanceof CandidateRequestError && !stageA && stageACheckpoint
+        ? new CandidateRequestError(
+            error.stage,
+            error.kind,
+            `${error.message} 전체 ${data.includedCommits.length}개 중 ${stageACheckpoint.processedShas.length}개를 판단했고 ${data.includedCommits.length - stageACheckpoint.processedShas.length}개는 아직 판단하지 못했습니다.`,
+            { cause: error, checkpoint: stageACheckpoint }
+          )
+        : error;
     onStateChange({
       status: "error",
-      error: toCandidateGenerationError(error, stageA ? "stage_b" : "stage_a"),
+      error: toCandidateGenerationError(visibleError, stageA ? "stage_b" : "stage_a"),
       ...(samePayloadAlwaysFails
         ? {}
-        : { retryPoint: { repository, contributionItems, data, ...(stageA ? { stageA } : {}) } }),
+        : { retryPoint: {
+            repository, contributionItems, data,
+            ...(stageA ? { stageA } : {}),
+            ...(!stageA && stageACheckpoint ? { stageACheckpoint } : {}),
+          } }),
     });
   }
 }
