@@ -129,6 +129,62 @@ describe("ExperienceCandidateDetail", () => {
     expect(screen.queryByRole("link", { name: "후보 상세 구현" })).not.toBeInTheDocument();
   });
 
+  it("evidence 문장은 확인 불가로, 파일·diff·관련 커밋·PR 정보는 확인 가능으로 구분해 안내한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(screen.getByText("확인 불가 · AI가 작성한 해석입니다")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "확인 가능 · 변경 파일, 코드 변경 내역, PR 정보는 Repository 응답 값이고, 관련 커밋은 대표 커밋과 같은 PR에 속한다는 관계까지 확인됩니다"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("관련 커밋 목록이 있으면 AI가 고른 결과이고 PR 소속 관계까지만 확인됨을 안내한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(
+      screen.getByText(
+        "AI 선택 · 대표 커밋과 같은 PR에 속한다는 관계까지만 확인되고, 근거로서 관련 있다는 판단은 확인 불가입니다"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("관련 커밋이 없으면 AI 선택 안내를 표시하지 않는다", () => {
+    renderDetail({
+      candidates: [{ ...candidate, relatedShas: [] }],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(
+      screen.queryByText(/대표 커밋과 같은 PR에 속한다는 관계까지만 확인되고/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("Repository로 확인할 수 없는 고정 목록을 항상 표시한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(screen.getByRole("heading", { name: "Repository로 확인할 수 없는 항목" })).toBeInTheDocument();
+    expect(screen.getByText("성능 개선 폭")).toBeInTheDocument();
+    expect(screen.getByText("사용자 영향")).toBeInTheDocument();
+    expect(screen.getByText("다른 대안과의 비교")).toBeInTheDocument();
+    expect(screen.getByText("협업·논의 배경")).toBeInTheDocument();
+    expect(screen.getByText("커밋 메시지에 적힌 수치·비교·의도가 실제로 그러했는지")).toBeInTheDocument();
+  });
+
   it("관련 커밋과 diff가 없으면 안내하되 파일 목록과 PR 정보는 유지한다", () => {
     renderDetail({
       candidates: [{ ...candidate, relatedShas: [] }],

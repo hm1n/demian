@@ -10,6 +10,9 @@
 .commitLink, .relatedList a, .prList a { color: #5148c7; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
 .notice, .warning, .empty { border-radius: 10px; background: #f5f4fa; padding: 12px 14px; }
 .detail .warning { background: #fff4d8; color: #725414; }
+.unverifiableList { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: #725414; font-size: 13px; line-height: 1.55; }
+.detail .verifiedNotice { border-radius: 10px; background: #e4f5ea; color: #1e7d43; font-size: 12px; padding: 10px 12px; }
+.detail .aiSelectionNotice { border-radius: 10px; background: #eee6ff; color: #5b3fa6; font-size: 12px; padding: 10px 12px; margin: 0; }
 .empty { display: grid; gap: 4px; }
 .empty strong { color: #383743; }
 .section { display: grid; gap: 10px; border-top: 1px solid #ecebf0; padding-top: 18px; }
