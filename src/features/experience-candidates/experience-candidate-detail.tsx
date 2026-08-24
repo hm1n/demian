@@ -1,5 +1,10 @@
 import type { CandidateDataOutput, RepositoryRef } from "@/lib/github/types";
 import type { CandidateDiffFile, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
+import {
+  EVIDENCE_VERIFIABILITY_NOTICE,
+  REPOSITORY_UNVERIFIABLE_ITEMS,
+  REPOSITORY_VERIFIED_NOTICE,
+} from "./evidence-verifiability";
 import styles from "./experience-candidate-detail.module.css";
 
 interface ExperienceCandidateDetailProps {
@@ -38,7 +43,18 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
         대표 커밋 {candidate.sha.slice(0, 7)}
       </a>
       <p>{candidate.evidence}</p>
-      <p className={styles.evidenceNotice}>AI 작성 요약 · 확인 가능·불가 구분은 후속 제공</p>
+      <p className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</p>
+
+      <section className={styles.section} aria-labelledby="unverifiable-heading">
+        <h3 id="unverifiable-heading">Repository로 확인할 수 없는 항목</h3>
+        <ul className={styles.unverifiableList}>
+          {REPOSITORY_UNVERIFIABLE_ITEMS.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </section>
+
+      <p className={styles.verifiedNotice}>{REPOSITORY_VERIFIED_NOTICE}</p>
 
       <section className={styles.section} aria-labelledby="changed-files-heading">
         <h3 id="changed-files-heading">변경 파일 {commit?.files.length ?? 0}개</h3>

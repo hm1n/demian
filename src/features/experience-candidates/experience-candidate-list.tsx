@@ -4,14 +4,13 @@ import { useMemo, useState } from "react";
 import type { EvidenceOrigin, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
 import type { CandidateDataOutput } from "@/lib/github/types";
 import type { RepositoryRef } from "@/lib/github/types";
+import { EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
 import { ExperienceCandidateDetail } from "./experience-candidate-detail";
 import styles from "./experience-candidate-list.module.css";
 
 const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
   repository: "출처: Repository",
 };
-
-const EVIDENCE_SUMMARY_NOTICE = "AI 작성 요약 · 확인 가능·불가 구분은 후속 제공";
 
 export function createExperienceCandidateListItems(
   data: CandidateDataOutput,
@@ -66,15 +65,20 @@ export function ExperienceCandidateList({ repository, data, candidates, onSelect
           const indexedTitle = commit?.title ?? `커밋 색인 실패 · ${candidate.sha.slice(0, 7)}`;
           return (
             <li key={candidate.sha}>
-              <button type="button" onClick={() => setSelectedSha(candidate.sha)}>
+              <button
+                type="button"
+                aria-label={`${indexedTitle} · ${EVIDENCE_ORIGIN_LABEL[origin]}`}
+                onClick={() => setSelectedSha(candidate.sha)}
+              >
                 <span className={styles.title}>{indexedTitle}</span>
                 <span className={styles.badges}>
                   <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
                   <span>{EVIDENCE_ORIGIN_LABEL[origin]}</span>
                 </span>
                 <span className={styles.evidence}>{candidate.evidence}</span>
-                <span className={styles.evidenceNotice}>{EVIDENCE_SUMMARY_NOTICE}</span>
+                <span className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</span>
                 <span className={styles.metrics}>
+                  <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
                   <span>인용 파일 {normalizedCitedFilePaths.length}개</span>
                   <span>관련 커밋 {normalizedRelatedShas.length}개</span>
                   {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (

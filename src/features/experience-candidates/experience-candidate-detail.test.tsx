@@ -129,6 +129,34 @@ describe("ExperienceCandidateDetail", () => {
     expect(screen.queryByRole("link", { name: "후보 상세 구현" })).not.toBeInTheDocument();
   });
 
+  it("evidence 문장은 확인 불가로, 파일·diff·관련 커밋·PR 정보는 확인 가능으로 구분해 안내한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(screen.getByText("확인 불가 · AI가 작성한 해석입니다")).toBeInTheDocument();
+    expect(
+      screen.getByText("확인 가능 · 변경 파일, 코드 변경 내역, 관련 커밋, PR 정보는 Repository 응답 값입니다")
+    ).toBeInTheDocument();
+  });
+
+  it("Repository로 확인할 수 없는 고정 목록을 항상 표시한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(screen.getByRole("heading", { name: "Repository로 확인할 수 없는 항목" })).toBeInTheDocument();
+    expect(screen.getByText("성능 개선 폭")).toBeInTheDocument();
+    expect(screen.getByText("사용자 영향")).toBeInTheDocument();
+    expect(screen.getByText("다른 대안과의 비교")).toBeInTheDocument();
+    expect(screen.getByText("협업·논의 배경")).toBeInTheDocument();
+    expect(screen.getByText("커밋 메시지에 적힌 수치·비교·의도가 실제로 그러했는지")).toBeInTheDocument();
+  });
+
   it("관련 커밋과 diff가 없으면 안내하되 파일 목록과 PR 정보는 유지한다", () => {
     renderDetail({
       candidates: [{ ...candidate, relatedShas: [] }],

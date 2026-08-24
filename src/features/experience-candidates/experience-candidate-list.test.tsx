@@ -61,11 +61,19 @@ describe("ExperienceCandidateList", () => {
     expect(screen.getByText("출처: Repository")).toBeInTheDocument();
   });
 
-  it("출처 배지가 검증을 주장하지 않고 근거 문장의 작성 주체와 후속 범위를 안내한다", () => {
+  it("출처 배지가 검증을 주장하지 않고 근거 문장이 확인 불가임을 안내한다", () => {
     renderList([candidate("a")], [commit("a", "상태 머신 구현")], "하나뿐입니다.");
 
     expect(screen.queryByText("Repository 근거")).not.toBeInTheDocument();
-    expect(screen.getByText("AI 작성 요약 · 확인 가능·불가 구분은 후속 제공")).toBeInTheDocument();
+    expect(screen.getByText("확인 불가 · AI가 작성한 해석입니다")).toBeInTheDocument();
+  });
+
+  it("출처(origin)와 검증 여부(확인 가능·불가)를 서로 다른 축으로 표시한다", () => {
+    renderList([candidate("a")], [commit("a", "상태 머신 구현")], "하나뿐입니다.");
+
+    expect(screen.getByText("출처: Repository")).toBeInTheDocument();
+    expect(screen.getByText("확인 가능")).toBeInTheDocument();
+    expect(screen.getByText("확인 불가 · AI가 작성한 해석입니다")).toBeInTheDocument();
   });
 
   it("후보 3개의 제목과 출처를 표시하고 부족 사유는 숨긴다", () => {
@@ -131,6 +139,12 @@ describe("ExperienceCandidateList", () => {
     fireEvent.click(screen.getByRole("button", { name: /커밋 색인 실패 · abcdef1/ }));
     expect(screen.getByRole("heading", { name: "커밋 색인 실패 · abcdef1" })).toBeInTheDocument();
     expect(screen.getByText("대표 커밋을 커밋 색인에서 찾지 못했습니다.")).toBeInTheDocument();
+  });
+
+  it("카드 버튼의 접근성 이름은 제목과 출처만 담고 근거 문장·안내·지표까지 이어 붙이지 않는다", () => {
+    renderList([candidate("a")], [commit("a", "접근성 이름 검증")], "하나뿐입니다.");
+
+    expect(screen.getByRole("button", { name: "접근성 이름 검증 · 출처: Repository" })).toBeInTheDocument();
   });
 
   it("후보 상세에 진입했다가 목록으로 돌아온다", () => {

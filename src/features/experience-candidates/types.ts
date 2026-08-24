@@ -7,6 +7,8 @@ import type {
 
 export type ExperienceCandidateSource = "contribution_match" | "automatic_recommendation";
 export type EvidenceOrigin = "repository";
+/** 출처(origin) 축과 다른 별도 축입니다. 검증 여부만 나타내고 근거가 어디서 왔는지는 나타내지 않습니다. */
+export type VerifiabilityStatus = "verified" | "unverifiable";
 
 export interface ExperienceCandidate {
   readonly sha: string;
