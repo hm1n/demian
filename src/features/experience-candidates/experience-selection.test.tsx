@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 import type { CandidateDiff, ExperienceCandidate, StageBCandidateResult } from "./types";
 import { ExperienceCandidateList } from "./experience-candidate-list";
-import { EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS } from "./evidence-snapshot";
+import {
+  EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN,
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+} from "./evidence-snapshot";
 
 const CONFIRM_LABEL = "이 경험으로 인터뷰 시작";
 const BACK_LABEL = "← 후보 목록으로";
@@ -77,7 +80,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     expect(screen.getByText("인터뷰 대상 확정")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "재시도 큐 도입" })).toBeInTheDocument();
     expect(screen.getByText("질문은 아직 생성되지 않습니다")).toBeInTheDocument();
-    expect(screen.getByText("변경 파일 1개")).toBeInTheDocument();
+    expect(screen.getByText(/대표 커밋 변경 파일 1개/)).toBeInTheDocument();
   });
 
   it("목록으로 돌아가 다른 경험을 확정하면 확정 상태가 교체된다", () => {
@@ -172,9 +175,11 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     expect(citedItem).toHaveTextContent("AI 선택");
     expect(citedItem).not.toHaveTextContent("확인 가능");
 
-    const changedFilesItem = screen.getByText(/변경 파일 2개/);
+    // 관련 커밋 파일까지 합친 개수를 확인 가능으로 표시하면 AI 선택이 Repository 사실로 보입니다.
+    const changedFilesItem = screen.getByText(/대표 커밋 변경 파일 1개/);
     expect(changedFilesItem).toHaveTextContent("확인 가능");
     expect(changedFilesItem).not.toHaveTextContent("AI 선택");
+    expect(screen.queryByText(/^변경 파일 2개$/)).not.toBeInTheDocument();
   });
 
   it("근거 상한 때문에 patch를 자르면 확정 화면이 그 사실을 알린다", () => {
@@ -191,7 +196,9 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
               additions: 10,
               deletions: 2,
               changes: 12,
-              patch: "x".repeat(EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS + 1),
+              patch: "x".repeat(
+                EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN
+              ),
             },
           ],
         },
@@ -201,6 +208,20 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     fireEvent.click(screen.getByRole("button", { name: /상한 절단/ }));
     fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
 
-    expect(screen.getByText(/코드 변경 내역\s*일부를 잘랐습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/코드\s*변경 내역 일부를 잘랐습니다/)).toBeInTheDocument();
+  });
+
+  it("근거가 입력 상한을 넘으면 무엇이 부족한지 알린다", () => {
+    renderList(
+      [candidate("aaa")],
+      [{ ...commit("aaa", "거대한 커밋 메시지"), message: "긴 커밋 메시지 ".repeat(5_000) }]
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /거대한 커밋 메시지/ }));
+    fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveAttribute("data-selection-error", "evidence_input_too_large");
+    expect(alert).toHaveTextContent("코드 변경 내역을 모두 빼도");
   });
 });

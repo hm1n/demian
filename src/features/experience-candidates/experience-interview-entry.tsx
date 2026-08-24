@@ -11,10 +11,6 @@ interface ExperienceInterviewEntryProps {
   onBack: () => void;
 }
 
-const changedFileCount = (snapshot: ExperienceEvidenceSnapshot) =>
-  snapshot.representativeCommit.files.length +
-  snapshot.relatedCommits.reduce((total, commit) => total + commit.files.length, 0);
-
 /**
  * 확정 이후의 임시 자리 화면입니다. **인터뷰 화면 본체가 아닙니다.**
  *
@@ -47,10 +43,15 @@ export function ExperienceInterviewEntry({ snapshot, onBack }: ExperienceIntervi
         자리입니다.
       </p>
 
+      {/*
+        `확인 가능`은 대표 커밋의 변경 파일 개수에만 붙입니다. 관련 커밋 파일까지 합치면 AI가 고른
+        관련 커밋 선택에 따라 값이 달라지는데도 Repository 사실처럼 보입니다. PR #57 1차 리뷰 P2가
+        이 경계를 지적했습니다.
+      */}
       <ul className={styles.metrics}>
         <li>
           <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
-          변경 파일 {changedFileCount(snapshot)}개
+          대표 커밋 변경 파일 {representativeCommit.files.length}개
         </li>
         <li>
           <span className={styles.aiSelectionTag}>{AI_SELECTION_LABEL}</span>
@@ -67,9 +68,9 @@ export function ExperienceInterviewEntry({ snapshot, onBack }: ExperienceIntervi
 
       {patchBudget.truncatedByBudget ? (
         <p className={styles.warning}>
-          근거 상한 {patchBudget.maxTotalChars.toLocaleString("ko-KR")}자에 맞춰 코드 변경 내역
-          일부를 잘랐습니다. 실제로 실은 분량은 {patchBudget.usedChars.toLocaleString("ko-KR")}
-          자입니다.
+          근거 입력 상한 추정 {patchBudget.maxInputTokens.toLocaleString("ko-KR")}토큰에 맞춰 코드
+          변경 내역 일부를 잘랐습니다. patch에 실제로 실은 분량은{" "}
+          {patchBudget.patchBytes.toLocaleString("ko-KR")}바이트입니다.
         </p>
       ) : null}
     </section>
