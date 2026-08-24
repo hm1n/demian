@@ -9,9 +9,8 @@ import type { CommitDetail } from "@/lib/github/types";
 // 다만 "high demand" 일시 실패가 잦아 성공률이 낮았습니다. 근거는 위키 측정 문서에 있습니다.
 export const STAGE_B_MODEL = "gemini-3.7-flash";
 // Stage A 후보 전체가 입력되므로 INITIAL_STAGE_A_CANDIDATE_LIMIT과 같아야 정상 흐름이 422로 막히지 않습니다.
-// 이슈 #19 실측: 이 값이 20이면 patch 예산을 앞쪽 9개가 다 써서 11개가 diff 없이 판단됩니다.
-// 상한 자체가 아니라 `buildStageBPayload`의 순차 배분이 원인이라 값은 유지하고 배분 방식을
-// 후속 과제로 분리했습니다. 근거는 위키 측정 문서에 있습니다.
+// 이슈 #19 실측으로 확정: 20개 전원이 patch 예산을 받습니다. 선착순 배분이던 시절에는 앞쪽 9개가
+// 예산을 다 써서 11개가 diff 없이 판단됐고, `buildStageBPayload`의 균등 배분으로 해소했습니다.
 export const STAGE_B_MAX_CANDIDATES = 20;
 // 이슈 #19 실측으로 확정: 파일별 patch는 중앙 1,257자, p90 5,235자, 최대 44,013자였고
 // 4,000자는 279개 파일 중 40개(14%)만 절단합니다.
@@ -25,31 +24,30 @@ export const STAGE_B_MIN_LLM_BUDGET_MS = 20_000;
 
 export type GenerateStageB = (payload: unknown, abortSignal: AbortSignal) => Promise<unknown>;
 
+/**
+ * patch 예산을 후보별로 균등 배분합니다. 선착순으로 나눠주면 앞쪽 후보가 예산을 다 써서 뒤쪽
+ * 후보는 diff 없이 판단됩니다. 이슈 #19 실측에서 후보 20개 중 11개가 patch를 한 글자도 받지
+ * 못했고, 그 상태에서 모델이 **patch를 못 받은 후보를 실제로 최종 선정했습니다**(20개 중 9번과
+ * 17번). "실제 diff와 PR 소속만 근거로" 고르라는 지시를 주면서 근거를 주지 않은 셈입니다.
+ *
+ * 배분 규칙입니다.
+ * - 후보별 몫은 `STAGE_B_MAX_TOTAL_PATCH_CHARS`를 후보 수로 나눈 내림값입니다.
+ * - 파일별 `STAGE_B_MAX_PATCH_CHARS` 상한은 후보의 몫 안에서 적용합니다. 몫이 파일 상한보다
+ *   작으면 몫이 실질 상한이 됩니다.
+ * - 몫을 다 쓰지 않은 후보의 잔액은 뒤 후보로 이월합니다. 이월은 앞에서 뒤로만 흐르므로 어떤
+ *   후보도 자기 몫보다 적게 받지 않습니다.
+ */
 export function buildStageBPayload(commits: readonly CommitDetail[], candidates: readonly StageACandidate[]) {
-  let used = 0;
+  const share =
+    commits.length === 0 ? 0 : Math.floor(STAGE_B_MAX_TOTAL_PATCH_CHARS / commits.length);
+  let carried = 0;
   const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
   return {
-    commits: commits.map((commit) => ({
-      sha: commit.sha,
-      message: commit.message,
-      additions: commit.additions,
-      deletions: commit.deletions,
-      changedFiles: commit.changedFiles,
-      source: candidateBySha.get(commit.sha)!.source,
-      contributionItem: candidateBySha.get(commit.sha)!.contributionItem,
-      pullRequests: commit.pullRequests.map(
-        ({ number, title, state, baseBranch, headBranch }) => ({
-          number,
-          title,
-          state,
-          baseBranch,
-          headBranch,
-        })
-      ),
-      files: commit.files.map((file) => {
-        const available = Math.max(0, STAGE_B_MAX_TOTAL_PATCH_CHARS - used);
+    commits: commits.map((commit) => {
+      let available = share + carried;
+      const files = commit.files.map((file) => {
         const patch = file.patch?.slice(0, Math.min(STAGE_B_MAX_PATCH_CHARS, available));
-        used += patch?.length ?? 0;
+        available -= patch?.length ?? 0;
         return {
           path: file.path,
           status: file.status,
@@ -59,12 +57,32 @@ export function buildStageBPayload(commits: readonly CommitDetail[], candidates:
           ...(patch ? { patch } : {}),
           ...(file.patch !== undefined && patch?.length !== file.patch.length ? { patchTruncated: true } : {}),
         };
-      }),
-    })),
+      });
+      carried = available;
+      return {
+        sha: commit.sha,
+        message: commit.message,
+        additions: commit.additions,
+        deletions: commit.deletions,
+        changedFiles: commit.changedFiles,
+        source: candidateBySha.get(commit.sha)!.source,
+        contributionItem: candidateBySha.get(commit.sha)!.contributionItem,
+        pullRequests: commit.pullRequests.map(
+          ({ number, title, state, baseBranch, headBranch }) => ({
+            number,
+            title,
+            state,
+            baseBranch,
+            headBranch,
+          })
+        ),
+        files,
+      };
+    }),
   };
 }
 
-function mapLlmError(error: unknown) {
+function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   if (error instanceof ExperienceCandidateOutputError) return error;
   if (NoObjectGeneratedError.isInstance(error)) {
     return new ExperienceCandidateOutputError(
