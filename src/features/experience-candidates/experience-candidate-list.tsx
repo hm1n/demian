@@ -20,6 +20,8 @@ export function createExperienceCandidateListItems(
     candidate,
     commit: commitsBySha.get(candidate.sha) ?? null,
     origin: "repository",
+    normalizedRelatedShas: [...new Set(candidate.relatedShas.filter((sha) => sha !== candidate.sha))],
+    normalizedCitedFilePaths: [...new Set(candidate.citedFilePaths)],
   }));
 }
 
@@ -63,7 +65,7 @@ export function ExperienceCandidateList({ data, candidates, onSelectRepository }
         </p>
       ) : null}
       <ul className={styles.candidateList}>
-        {items.map(({ candidate, commit, origin }) => {
+        {items.map(({ candidate, commit, origin, normalizedRelatedShas, normalizedCitedFilePaths }) => {
           const indexedTitle = commit?.title ?? `커밋 색인 실패 · ${candidate.sha.slice(0, 7)}`;
           return (
             <li key={candidate.sha}>
@@ -76,8 +78,8 @@ export function ExperienceCandidateList({ data, candidates, onSelectRepository }
                 <span className={styles.evidence}>{candidate.evidence}</span>
                 <span className={styles.evidenceNotice}>{EVIDENCE_SUMMARY_NOTICE}</span>
                 <span className={styles.metrics}>
-                  <span>인용 파일 {candidate.citedFilePaths.length}개</span>
-                  <span>관련 커밋 {candidate.relatedShas.length}개</span>
+                  <span>인용 파일 {normalizedCitedFilePaths.length}개</span>
+                  <span>관련 커밋 {normalizedRelatedShas.length}개</span>
                   {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (
                     <span>PR 정보 없음</span>
                   ) : commit.pullRequests.map((pullRequest) => <span key={pullRequest.number}>PR #{pullRequest.number}</span>)}

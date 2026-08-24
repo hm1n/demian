@@ -95,6 +95,33 @@ describe("ExperienceCandidateList", () => {
     expect(screen.getByText("PR 정보 없음")).toBeInTheDocument();
   });
 
+  it("관련 SHA와 인용 파일을 원본 순서대로 중복 제거하고 대표 SHA는 관련 커밋에서 제외한다", () => {
+    const commits = [commit("representative", "근거 정규화")];
+    const candidateItem = candidate("representative", {
+      relatedShas: ["related-b", "representative", "related-a", "related-b"],
+      citedFilePaths: ["src/b.ts", "src/a.ts", "src/b.ts"],
+    });
+    const data: CandidateDataOutput = {
+      allCommits: commits,
+      includedCommits: commits,
+      repository: { fileTree: [], treeTruncated: false, languages: {} },
+    };
+    const candidates: StageBCandidateResult = {
+      candidates: [candidateItem],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    };
+
+    expect(createExperienceCandidateListItems(data, candidates)[0]).toMatchObject({
+      candidate: candidateItem,
+      normalizedRelatedShas: ["related-b", "related-a"],
+      normalizedCitedFilePaths: ["src/b.ts", "src/a.ts"],
+    });
+    render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
+    expect(screen.getByText("관련 커밋 2개")).toBeInTheDocument();
+    expect(screen.getByText("인용 파일 2개")).toBeInTheDocument();
+  });
+
   it("대표 SHA를 커밋 색인에서 찾지 못하면 목록과 상세에서 계약 파손을 드러낸다", () => {
     renderList([candidate("abcdef123456")], [], "하나뿐입니다.");
 

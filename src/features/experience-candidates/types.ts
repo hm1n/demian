@@ -20,6 +20,8 @@ export interface ExperienceCandidateListItem {
   readonly candidate: ExperienceCandidate;
   readonly commit: ReadonlyCommitDetail | null;
   readonly origin: EvidenceOrigin;
+  readonly normalizedRelatedShas: readonly string[];
+  readonly normalizedCitedFilePaths: readonly string[];
 }
 
 export interface ExperienceCandidateOutput {
