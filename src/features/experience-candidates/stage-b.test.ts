@@ -1,4 +1,4 @@
-import { APICallError } from "ai";
+import { APICallError, RetryError } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "./stage-b";
 import type { CommitDetail } from "@/lib/github/types";
@@ -150,6 +150,35 @@ describe("Stage B", () => {
     await expect(
       selectStageBCandidates(commits, candidates, async () => {
         throw error;
+      })
+    ).rejects.toMatchObject({ kind });
+  });
+
+  // 이슈 #19 실측: SDK가 재시도한 실패는 `RetryError`로 감싸져 오고, `RetryError`는
+  // `APICallError`가 아니다. 벗기지 않으면 한도 초과가 llm_failure로 뭉개진다.
+  it.each([
+    [429, "llm_rate_limit"],
+    [413, "llm_rate_limit"],
+    [401, "llm_auth"],
+    [404, "llm_configuration"],
+  ] as const)("재시도로 감싸인 %i도 %s로 매핑한다", async (statusCode, kind) => {
+    const wrapped = new RetryError({
+      message: "failed after 3 attempts",
+      reason: "maxRetriesExceeded",
+      errors: [
+        new APICallError({
+          message: "provider error",
+          url: "https://example.test",
+          requestBodyValues: {},
+          statusCode,
+          responseHeaders: {},
+          responseBody: "",
+        }),
+      ],
+    });
+    await expect(
+      selectStageBCandidates(commits, candidates, async () => {
+        throw wrapped;
       })
     ).rejects.toMatchObject({ kind });
   });

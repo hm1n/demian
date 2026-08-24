@@ -1,4 +1,4 @@
-import { APICallError, LoadAPIKeyError, NoObjectGeneratedError } from "ai";
+import { APICallError, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
 import {
@@ -178,6 +178,11 @@ describe("Stage A 후보 선별", () => {
     requestBodyValues: {},
     statusCode,
   });
+  const retried = (statusCode: number) => new RetryError({
+    message: "failed after 3 attempts",
+    reason: "maxRetriesExceeded",
+    errors: [apiError(statusCode)],
+  });
   const noObjectError = new NoObjectGeneratedError({
     response: { id: "response", timestamp: new Date(), modelId: "model" },
     usage: {
@@ -206,6 +211,11 @@ describe("Stage A 후보 선별", () => {
     [apiError(400), "llm_request"],
     [apiError(409), "llm_request"],
     [apiError(422), "llm_request"],
+    // 이슈 #19 실측: SDK가 재시도한 실패는 RetryError로 감싸져 오고 APICallError가 아니다.
+    // 벗기지 않으면 한도 초과가 llm_failure로 뭉개진다.
+    [retried(429), "llm_rate_limit"],
+    [retried(413), "llm_rate_limit"],
+    [retried(404), "llm_configuration"],
     [noObjectError, "schema_validation"],
     [new LoadAPIKeyError({ message: "missing key" }), "llm_configuration"],
     [new Error("unknown"), "llm_failure"],

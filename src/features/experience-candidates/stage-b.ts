@@ -1,5 +1,5 @@
 import { createGoogle } from "@ai-sdk/google";
-import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError } from "ai";
+import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import { ExperienceCandidateOutputError } from "./errors";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
@@ -84,6 +84,10 @@ export function buildStageBPayload(commits: readonly CommitDetail[], candidates:
 
 function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   if (error instanceof ExperienceCandidateOutputError) return error;
+  // SDK가 재시도한 실패는 `RetryError`로 감싸져 옵니다. `RetryError`는 `APICallError`가 아니므로
+  // 벗기지 않으면 429·413 같은 한도와 재시도 대상 서버 오류가 전부 llm_failure로 뭉개집니다.
+  // 이슈 #19 실측에서 Gemini 한도 초과와 과부하가 실제로 llm_failure로 보고됐습니다.
+  if (RetryError.isInstance(error)) return mapLlmError(error.lastError);
   if (NoObjectGeneratedError.isInstance(error)) {
     return new ExperienceCandidateOutputError(
       "schema_validation",
