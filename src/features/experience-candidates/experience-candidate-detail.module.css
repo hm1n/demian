@@ -23,4 +23,5 @@
 .diffList summary { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; cursor: pointer; padding: 12px; }
 .diffList summary span { flex: 1 1 260px; overflow-wrap: anywhere; }
 .diffList pre { max-width: 100%; margin: 0; background: #1f1e28; color: #f4f2fb; overflow: auto; padding: 14px; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+.detail .truncatedNotice { margin: 0; border-top: 1px solid #e2e0e8; color: #725414; padding: 12px; }
 @media (max-width: 560px) { .fileList li, .relatedList li, .prList li { align-items: flex-start; flex-direction: column; } }

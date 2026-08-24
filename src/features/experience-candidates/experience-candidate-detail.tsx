@@ -50,7 +50,7 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
                 <li key={file.path}>
                   <span>{file.path}</span>
                   <small>{fileStats(file)}</small>
-                  {diff?.patch === undefined ? <strong>diff 미포함</strong> : null}
+                  {diff?.patchTruncated ? <strong>diff 절단</strong> : diff?.patch === undefined ? <strong>diff 미포함</strong> : null}
                 </li>
               );
             })}
@@ -61,22 +61,23 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
       <section className={styles.section} aria-labelledby="diff-heading">
         <h3 id="diff-heading">코드 변경 내역</h3>
         {hasTruncatedPatch ? <p className={styles.warning}>일부 diff가 예산에 맞게 절단되거나 미포함되었습니다.</p> : null}
-        {!hasPatch ? (
-          <p className={styles.empty}><strong>표시할 코드 변경 내역이 없습니다</strong> patch 예산 절단 또는 patch 미제공 파일 때문일 수 있습니다.</p>
-        ) : (
+        {!hasPatch ? <p className={styles.empty}><strong>표시할 코드 변경 내역이 없습니다</strong> patch 예산 절단 또는 patch 미제공 파일 때문일 수 있습니다.</p> : null}
+        {representativeDiff?.files.some((file) => file.patch !== undefined || file.patchTruncated) ? (
           <div className={styles.diffList}>
-            {representativeDiff?.files.filter((file) => file.patch !== undefined).map((file) => (
+            {representativeDiff.files.filter((file) => file.patch !== undefined || file.patchTruncated).map((file) => (
               <details key={file.path}>
                 <summary>
                   <span>{file.path}</span>
                   <small>{fileStats(file)}</small>
                   {file.patchTruncated ? <strong>diff 절단</strong> : null}
                 </summary>
-                <pre><code>{file.patch}</code></pre>
+                {file.patch === undefined
+                  ? <p className={styles.truncatedNotice}>patch 예산이 소진되어 diff 본문이 미포함되었습니다.</p>
+                  : <pre><code>{file.patch}</code></pre>}
               </details>
             ))}
           </div>
-        )}
+        ) : null}
       </section>
 
       <section className={styles.section} aria-labelledby="related-commits-heading">

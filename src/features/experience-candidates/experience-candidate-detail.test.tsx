@@ -44,16 +44,20 @@ const data: CandidateDataOutput = {
   repository: { fileTree: [], treeTruncated: false, languages: {} },
 };
 
-function renderDetail(candidates: StageBCandidateResult) {
+function renderDetail(
+  candidates: StageBCandidateResult,
+  candidateData: CandidateDataOutput = data,
+  commit: ReadonlyCommitDetail = representative
+) {
   const selectedCandidate = candidates.candidates[0];
   render(
     <ExperienceCandidateDetail
       repository={{ owner: "hm1n", repo: "demian" }}
-      data={data}
+      data={candidateData}
       candidates={candidates}
       item={{
         candidate: selectedCandidate,
-        commit: representative,
+        commit,
         origin: "repository",
         normalizedRelatedShas: [...new Set(selectedCandidate.relatedShas.filter((sha) => sha !== selectedCandidate.sha))],
         normalizedCitedFilePaths: [...new Set(selectedCandidate.citedFilePaths)],
@@ -79,9 +83,33 @@ describe("ExperienceCandidateDetail", () => {
     expect(screen.getByText("변경 파일 2개")).toBeInTheDocument();
     expect(screen.getByText("src/missing.ts")).toBeInTheDocument();
     expect(screen.getByText("diff 미포함")).toBeInTheDocument();
-    expect(screen.getByText("diff 절단")).toBeInTheDocument();
+    expect(screen.getAllByText("diff 절단")).toHaveLength(2);
     expect(screen.getByText(/일부 diff가 예산에 맞게 절단/)).toBeInTheDocument();
     expect(screen.getByText(/\+new/)).toBeInTheDocument();
+  });
+
+  it("patch가 없는 예산 절단 파일도 일반 미포함과 구분해 표시한다", () => {
+    const exhaustedCommit: ReadonlyCommitDetail = {
+      ...representative,
+      changedFiles: 1,
+      files: [{ path: "src/exhausted.ts", status: "modified", additions: 0, deletions: 1, changes: 1 }],
+    };
+    renderDetail(
+      {
+        candidates: [candidate],
+        insufficientCandidatesReason: "하나뿐입니다.",
+        diffs: [{
+          sha: representative.sha,
+          files: [{ path: "src/exhausted.ts", status: "modified", additions: 0, deletions: 1, changes: 1, patchTruncated: true }],
+        }],
+      },
+      { ...data, includedCommits: [exhaustedCommit, related] },
+      exhaustedCommit
+    );
+
+    expect(screen.getAllByText("diff 절단")).toHaveLength(2);
+    expect(screen.queryByText("diff 미포함")).not.toBeInTheDocument();
+    expect(screen.getByText("patch 예산이 소진되어 diff 본문이 미포함되었습니다.")).toBeInTheDocument();
   });
 
   it("관련 커밋을 상한 없이 제목·SHA·PR 번호와 링크로 표시한다", () => {
