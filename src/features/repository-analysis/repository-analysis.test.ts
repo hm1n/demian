@@ -325,7 +325,7 @@ describe("toCandidateGenerationError", () => {
       "stage_a"
     );
     expect(stageB.title).toContain("실행 시간 예산");
-    expect(stageB.message).toContain("diff·PR 수집과 최종 판단을 합친");
+    expect(stageB.message).toContain("GitHub diff·PR 조회를 포함한");
     expect(stageA.title).toContain("LLM 분석 시간이 초과");
     expect(stageA.title).not.toContain("예산");
   });

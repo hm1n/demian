@@ -338,7 +338,7 @@ export function toCandidateGenerationError(error: unknown, stage: CandidateStage
             kind: "llm_call_failure",
             title: "Stage B 실행 시간 예산을 초과했습니다",
             message:
-              "diff·PR 수집과 최종 판단을 합친 전체 시간 예산을 초과했습니다. 잠시 후 후보 생성을 다시 시도해 주세요.",
+              "GitHub diff·PR 조회를 포함한 라우트 전체 시간 예산을 초과했습니다. LLM 자체의 실패가 아닐 수 있습니다. 잠시 후 후보 생성을 다시 시도해 주세요.",
             recovery: "retry",
           }
         : {
