@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExperienceEvidenceSnapshot,
-  EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS,
+  estimateEvidenceTokens,
+  EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN,
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+  sliceEvidencePatchByUtf8Bytes,
 } from "./evidence-snapshot";
 import { REPOSITORY_UNVERIFIABLE_ITEMS } from "./evidence-verifiability";
 import type {
@@ -11,6 +14,11 @@ import type {
   StageBCandidateResult,
 } from "./types";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
+
+/** 홀로 남은 UTF-16 서로게이트를 찾습니다. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+const utf8Length = (text: string) => new TextEncoder().encode(text).byteLength;
 
 const representative: ReadonlyCommitDetail = {
   sha: "a".repeat(40),
@@ -94,6 +102,20 @@ const queueDiff = (patch: string | undefined, patchTruncated?: boolean): Candida
   ],
 });
 
+const delayDiff = (patch: string): CandidateDiff => ({
+  sha: related.sha,
+  files: [
+    {
+      path: "src/delay.ts",
+      status: "modified",
+      additions: 4,
+      deletions: 1,
+      changes: 5,
+      patch,
+    },
+  ],
+});
+
 function expectSnapshot(result: ReturnType<typeof buildExperienceEvidenceSnapshot>) {
   if (!result.ok) throw new Error(`스냅샷 생성이 실패했습니다: ${result.reason}`);
   return result.snapshot;
@@ -105,22 +127,7 @@ describe("buildExperienceEvidenceSnapshot", () => {
       buildExperienceEvidenceSnapshot(
         listItem(),
         data,
-        stageBResult([
-          queueDiff("@@ -0,0 +1 @@\n+queue"),
-          {
-            sha: related.sha,
-            files: [
-              {
-                path: "src/delay.ts",
-                status: "modified",
-                additions: 4,
-                deletions: 1,
-                changes: 5,
-                patch: "@@ -1 +1 @@\n-1000\n+3000",
-              },
-            ],
-          },
-        ])
+        stageBResult([queueDiff("@@ -0,0 +1 @@\n+queue"), delayDiff("@@ -1 +1 @@\n-1000\n+3000")])
       )
     );
 
@@ -200,90 +207,89 @@ describe("buildExperienceEvidenceSnapshot", () => {
     });
   });
 
-  it("총 상한을 커밋 간 균등 배분하고 절단 사실을 표시한다", () => {
-    const oversized = "x".repeat(EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS);
+  it("patch 몫을 커밋 간 균등 배분하고 절단 사실을 표시한다", () => {
+    const oversized = "x".repeat(EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN);
     const snapshot = expectSnapshot(
       buildExperienceEvidenceSnapshot(
         listItem(),
         data,
-        stageBResult([
-          queueDiff(oversized),
-          {
-            sha: related.sha,
-            files: [
-              {
-                path: "src/delay.ts",
-                status: "modified",
-                additions: 4,
-                deletions: 1,
-                changes: 5,
-                patch: oversized,
-              },
-            ],
-          },
-        ])
+        stageBResult([queueDiff(oversized), delayDiff(oversized)])
       )
     );
 
-    const share = EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS / 2;
+    const share = Math.floor(snapshot.patchBudget.maxPatchBytes / 2);
+    expect(share).toBeGreaterThan(0);
     expect(snapshot.representativeCommit.files[0].patch).toHaveLength(share);
     expect(snapshot.representativeCommit.files[0].patchTruncated).toBe(true);
-    // 선착순 배분이면 뒤 커밋이 0자를 받습니다. 균등 배분이라 관련 커밋도 자기 몫을 받습니다.
+    // 선착순 배분이면 뒤 커밋이 0바이트를 받습니다. 균등 배분이라 관련 커밋도 자기 몫을 받습니다.
     expect(snapshot.relatedCommits[0].files[0].patch).toHaveLength(share);
-    expect(snapshot.patchBudget).toEqual({
-      maxTotalChars: EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS,
-      usedChars: EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS,
-      truncatedByBudget: true,
-    });
+    expect(snapshot.patchBudget.truncatedByBudget).toBe(true);
+    expect(snapshot.patchBudget.patchBytes).toBe(share * 2);
   });
 
   it("앞 커밋이 몫을 다 쓰지 않으면 잔액을 뒤 커밋으로 이월한다", () => {
+    const short = "short-patch";
     const snapshot = expectSnapshot(
       buildExperienceEvidenceSnapshot(
         listItem(),
         data,
         stageBResult([
-          queueDiff("짧은 patch"),
-          {
-            sha: related.sha,
-            files: [
-              {
-                path: "src/delay.ts",
-                status: "modified",
-                additions: 4,
-                deletions: 1,
-                changes: 5,
-                patch: "y".repeat(EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS),
-              },
-            ],
-          },
+          queueDiff(short),
+          delayDiff("y".repeat(EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN)),
         ])
       )
     );
 
-    expect(snapshot.relatedCommits[0].files[0].patch).toHaveLength(
-      EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS - "짧은 patch".length
-    );
+    const relatedPatch = snapshot.relatedCommits[0].files[0].patch ?? "";
+    expect(snapshot.representativeCommit.files[0].patch).toBe(short);
+    expect(relatedPatch.length).toBeGreaterThan(Math.floor(snapshot.patchBudget.maxPatchBytes / 2));
+    expect(snapshot.patchBudget.patchBytes).toBe(short.length + relatedPatch.length);
   });
 
-  it("관련 커밋이 없으면 대표 커밋이 총 상한을 모두 쓴다", () => {
+  it("관련 커밋이 없으면 대표 커밋이 patch 몫을 모두 쓴다", () => {
     const soleCandidate: ExperienceCandidate = { ...candidate, relatedShas: [] };
     const snapshot = expectSnapshot(
-      buildExperienceEvidenceSnapshot(
-        listItem({}, soleCandidate),
-        data,
-        {
-          candidates: [soleCandidate],
-          insufficientCandidatesReason: "하나뿐입니다.",
-          diffs: [queueDiff("z".repeat(EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS + 1))],
-        }
-      )
+      buildExperienceEvidenceSnapshot(listItem({}, soleCandidate), data, {
+        candidates: [soleCandidate],
+        insufficientCandidatesReason: "하나뿐입니다.",
+        diffs: [
+          queueDiff("z".repeat(EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN)),
+        ],
+      })
     );
 
     expect(snapshot.relatedCommits).toEqual([]);
     expect(snapshot.representativeCommit.files[0].patch).toHaveLength(
-      EVIDENCE_SNAPSHOT_MAX_TOTAL_PATCH_CHARS
+      snapshot.patchBudget.maxPatchBytes
     );
+  });
+
+  it("비ASCII patch도 문자 수가 아니라 UTF-8 바이트로 상한 안에 묶는다", () => {
+    const koreanPatch = "가".repeat(20_000);
+    const snapshot = expectSnapshot(
+      buildExperienceEvidenceSnapshot(listItem(), data, stageBResult([queueDiff(koreanPatch)]))
+    );
+
+    const { metadataTokens, maxPatchBytes, patchBytes, maxInputTokens } = snapshot.patchBudget;
+    const patchText = snapshot.representativeCommit.files[0].patch ?? "";
+    expect(utf8Length(patchText)).toBe(patchBytes);
+    // 문자 수 상한이면 한 글자 3바이트인 근거가 상한의 3배까지 실립니다.
+    expect(patchText.length).toBeLessThan(maxPatchBytes);
+    expect(patchBytes).toBeLessThanOrEqual(maxPatchBytes);
+    expect(metadataTokens + Math.ceil(patchBytes / EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN)).toBeLessThanOrEqual(
+      maxInputTokens
+    );
+  });
+
+  it("이모지가 상한 경계에 걸려도 홀로 남은 서로게이트를 만들지 않는다", () => {
+    const snapshot = expectSnapshot(
+      buildExperienceEvidenceSnapshot(listItem(), data, stageBResult([queueDiff("🙂".repeat(20_000))]))
+    );
+
+    const patchText = snapshot.representativeCommit.files[0].patch ?? "";
+    expect(patchText.length).toBeGreaterThan(0);
+    expect(LONE_SURROGATE.test(patchText)).toBe(false);
+    expect(utf8Length(patchText) % 4).toBe(0);
   });
 
   it("대표 커밋을 색인에서 찾지 못하면 스냅샷을 만들지 않는다", () => {
@@ -296,14 +302,40 @@ describe("buildExperienceEvidenceSnapshot", () => {
     expect(result).toEqual({ ok: false, reason: "representative_commit_not_indexed" });
   });
 
-  it("대표 커밋에 변경 파일이 없으면 확인 가능한 근거가 없다고 알린다", () => {
+  it("대표 커밋이 빈 커밋이어도 관련 커밋에 변경 파일이 있으면 근거로 쓴다", () => {
+    const snapshot = expectSnapshot(
+      buildExperienceEvidenceSnapshot(
+        listItem({ commit: { ...representative, files: [] } }),
+        data,
+        stageBResult([delayDiff("@@ -1 +1 @@\n-1000\n+3000")])
+      )
+    );
+
+    expect(snapshot.representativeCommit.files).toEqual([]);
+    expect(snapshot.relatedCommits[0].files[0]).toMatchObject({
+      path: "src/delay.ts",
+      patch: "@@ -1 +1 @@\n-1000\n+3000",
+    });
+  });
+
+  it("대표 커밋과 관련 커밋 모두 변경 파일이 없으면 확인 가능한 근거가 없다고 알린다", () => {
     const result = buildExperienceEvidenceSnapshot(
       listItem({ commit: { ...representative, files: [] } }),
-      data,
+      { ...data, includedCommits: [{ ...related, files: [] }] },
       stageBResult([])
     );
 
     expect(result).toEqual({ ok: false, reason: "no_repository_evidence" });
+  });
+
+  it("patch를 모두 빼도 나머지 근거가 상한을 넘으면 실패로 알린다", () => {
+    const result = buildExperienceEvidenceSnapshot(
+      listItem({ commit: { ...representative, message: "긴 커밋 메시지 ".repeat(5_000) } }),
+      data,
+      stageBResult([])
+    );
+
+    expect(result).toEqual({ ok: false, reason: "evidence_input_too_large" });
   });
 
   it("색인에 없는 관련 커밋은 확인 가능으로 표시하지 않고 diff의 변경 파일은 유지한다", () => {
@@ -311,21 +343,7 @@ describe("buildExperienceEvidenceSnapshot", () => {
       buildExperienceEvidenceSnapshot(
         listItem(),
         { ...data, includedCommits: [representative] },
-        stageBResult([
-          {
-            sha: related.sha,
-            files: [
-              {
-                path: "src/delay.ts",
-                status: "modified",
-                additions: 4,
-                deletions: 1,
-                changes: 5,
-                patch: "@@ -1 +1 @@\n-1000\n+3000",
-              },
-            ],
-          },
-        ])
+        stageBResult([delayDiff("@@ -1 +1 @@\n-1000\n+3000")])
       )
     );
 
@@ -337,5 +355,33 @@ describe("buildExperienceEvidenceSnapshot", () => {
       verifiability: { status: "unverifiable", aiSelected: true },
     });
     expect(snapshot.relatedCommits[0].files[0].patch).toBe("@@ -1 +1 @@\n-1000\n+3000");
+  });
+});
+
+describe("sliceEvidencePatchByUtf8Bytes", () => {
+  it("상한을 넘지 않는 가장 긴 앞부분을 남긴다", () => {
+    expect(sliceEvidencePatchByUtf8Bytes("abcdef", 3)).toBe("abc");
+    expect(sliceEvidencePatchByUtf8Bytes("abc", 10)).toBe("abc");
+    expect(sliceEvidencePatchByUtf8Bytes("abc", 0)).toBe("");
+  });
+
+  it("코드 포인트 경계에서만 잘라 홀로 남은 서로게이트를 만들지 않는다", () => {
+    // 이모지 하나가 4바이트이므로 3바이트 상한에서는 통째로 빠집니다.
+    expect(sliceEvidencePatchByUtf8Bytes("🙂", 3)).toBe("");
+    expect(sliceEvidencePatchByUtf8Bytes("a🙂", 4)).toBe("a");
+    expect(sliceEvidencePatchByUtf8Bytes("a🙂", 5)).toBe("a🙂");
+    expect(LONE_SURROGATE.test(sliceEvidencePatchByUtf8Bytes("🙂🙂", 6))).toBe(false);
+  });
+
+  it("한글은 한 글자당 3바이트로 계산한다", () => {
+    expect(sliceEvidencePatchByUtf8Bytes("가나다", 7)).toBe("가나");
+  });
+});
+
+describe("estimateEvidenceTokens", () => {
+  it("문자 수가 아니라 UTF-8 바이트로 추정한다", () => {
+    expect(estimateEvidenceTokens("abc")).toBe(1);
+    // 한글 3자는 9바이트이므로 같은 문자 수의 ASCII보다 3배로 추정됩니다.
+    expect(estimateEvidenceTokens("가나다")).toBe(3);
   });
 });
