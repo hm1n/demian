@@ -4,6 +4,7 @@ import type {
   EvidenceCommitRole,
   EvidenceSnapshotCommit,
   EvidenceSnapshotFile,
+  EvidenceSnapshotPatchBudget,
   EvidenceSnapshotResult,
   EvidenceVerifiability,
   ExperienceCandidateListItem,
@@ -38,30 +39,56 @@ export const EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN = 3;
 const utf8ByteLength = (codePoint: number) =>
   codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x1_0000 ? 3 : 4;
 
-/** 직렬화한 근거의 추정 토큰입니다. JSON 이스케이프가 더하는 분량은 추정의 여유로 흡수합니다. */
+/**
+ * JSON 문자열로 직렬화했을 때 이 코드 포인트가 차지하는 바이트입니다. diff는 줄바꿈이 많고
+ * `
+`은 직렬화에서 2바이트가 되므로, 원본 UTF-8 바이트로만 재면 실제 요청 크기를 낮게 봅니다.
+ */
+function serializedCodePointBytes(codePoint: number): number {
+  if (codePoint === 0x22 || codePoint === 0x5c) return 2;
+  if ([0x08, 0x09, 0x0a, 0x0c, 0x0d].includes(codePoint)) return 2;
+  if (codePoint < 0x20) return 6;
+  return utf8ByteLength(codePoint);
+}
+
+/** JSON 문자열 값으로 직렬화했을 때의 바이트입니다. 감싸는 따옴표는 세지 않습니다. */
+export function serializedByteLength(text: string): number {
+  let bytes = 0;
+  for (const character of text) bytes += serializedCodePointBytes(character.codePointAt(0)!);
+  return bytes;
+}
+
+/** 직렬화한 근거의 추정 토큰입니다. */
 export function estimateEvidenceTokens(value: unknown): number {
   const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
   return Math.ceil(new TextEncoder().encode(text).byteLength / EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN);
 }
 
 /**
- * UTF-8 바이트 상한을 넘지 않는 가장 긴 앞부분을 남깁니다.
+ * 직렬화 바이트 상한을 넘지 않는 가장 긴 앞부분을 남깁니다.
  *
  * 코드 포인트 경계에서만 자릅니다. UTF-16 코드 단위로 자르면 이모지 같은 astral 문자가 경계에
  * 걸릴 때 홀로 남은 서로게이트가 생기고, 직렬화 결과에 실제 Repository 문자가 아닌 값이 나갑니다.
  */
-export function sliceEvidencePatchByUtf8Bytes(text: string, maxBytes: number): string {
+export function sliceEvidencePatchBySerializedBytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   let bytes = 0;
   let end = 0;
   for (const character of text) {
-    const size = utf8ByteLength(character.codePointAt(0)!);
+    const size = serializedCodePointBytes(character.codePointAt(0)!);
     if (bytes + size > maxBytes) break;
     bytes += size;
     end += character.length;
   }
   return end === text.length ? text : text.slice(0, end);
 }
+
+/**
+ * patch 하나가 본문 밖에서 더 쓰는 바이트입니다. 감싸는 따옴표와, patch 유무에 따라 길이가
+ * 달라지는 `patchTruncated`·`patchOmittedReason` 값의 차이를 덮는 보수적인 몫입니다. 이 몫이
+ * 없으면 patch가 예산을 꽉 채울 때 완성된 스냅샷이 상한을 몇 바이트 넘습니다.
+ */
+const PATCH_ENVELOPE_BYTES = 4;
 
 const EVIDENCE_STATEMENT_VERIFIABILITY: EvidenceVerifiability = {
   status: "unverifiable",
@@ -147,9 +174,14 @@ function assembleCommits(inputs: readonly CommitInput[], maxPatchBytes: number):
       const source = diffByPath.get(file.path);
       const sourcePatch = source?.patch;
       const patch =
-        sourcePatch === undefined ? "" : sliceEvidencePatchByUtf8Bytes(sourcePatch, available);
-      const usedBytes = new TextEncoder().encode(patch).byteLength;
-      available -= usedBytes;
+        sourcePatch === undefined
+          ? ""
+          : sliceEvidencePatchBySerializedBytes(
+              sourcePatch,
+              Math.max(0, available - PATCH_ENVELOPE_BYTES)
+            );
+      const usedBytes = serializedByteLength(patch);
+      available -= usedBytes === 0 ? 0 : usedBytes + PATCH_ENVELOPE_BYTES;
       patchBytes += usedBytes;
       const cutByBudget = sourcePatch !== undefined && patch.length < sourcePatch.length;
       if (cutByBudget) truncatedByBudget = true;
@@ -245,38 +277,49 @@ export function buildExperienceEvidenceSnapshot(
     verifiability: CITED_FILE_PATHS_VERIFIABILITY,
   };
 
+  // 추정 대상은 실제로 직렬화되는 스냅샷 모양 그대로입니다. `candidateSha`, `source`, `origin`,
+  // `patchBudget`과 커밋 묶음의 키까지 세지 않으면 patch가 몫을 다 쓸 때 완성된 스냅샷이 상한을
+  // 넘습니다. 예산 숫자는 아직 정해지지 않았으므로 실제보다 크거나 같은 자리수를 넣어 추정이
+  // 모자라지 않게 합니다.
+  const budgetUpperBound = maxInputTokens * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN;
   const withoutPatches = assembleCommits(inputs, 0);
-  const metadataTokens = estimateEvidenceTokens({
+  const snapshotShape = (
+    commits: readonly EvidenceSnapshotCommit[],
+    patchBudget: EvidenceSnapshotPatchBudget
+  ) => ({
+    candidateSha: candidate.sha,
+    source: candidate.source,
+    origin,
     evidence: statement,
-    commits: withoutPatches.commits,
+    representativeCommit: commits[0],
+    relatedCommits: commits.slice(1),
     citedFilePaths,
     unverifiableItems: REPOSITORY_UNVERIFIABLE_ITEMS,
+    patchBudget,
   });
+  const metadataTokens = estimateEvidenceTokens(
+    snapshotShape(withoutPatches.commits, {
+      maxInputTokens,
+      metadataTokens: maxInputTokens,
+      maxPatchBytes: budgetUpperBound,
+      patchBytes: budgetUpperBound,
+      truncatedByBudget: true,
+    })
+  );
   const remainingTokens = maxInputTokens - metadataTokens;
   if (remainingTokens <= 0) return { ok: false, reason: "evidence_input_too_large" };
 
   const maxPatchBytes = remainingTokens * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN;
   const { commits, patchBytes, truncatedByBudget } = assembleCommits(inputs, maxPatchBytes);
-  const [representativeCommit, ...relatedCommits] = commits;
 
   return {
     ok: true,
-    snapshot: {
-      candidateSha: candidate.sha,
-      source: candidate.source,
-      origin,
-      evidence: statement,
-      representativeCommit,
-      relatedCommits,
-      citedFilePaths,
-      unverifiableItems: REPOSITORY_UNVERIFIABLE_ITEMS,
-      patchBudget: {
-        maxInputTokens,
-        metadataTokens,
-        maxPatchBytes,
-        patchBytes,
-        truncatedByBudget,
-      },
-    },
+    snapshot: snapshotShape(commits, {
+      maxInputTokens,
+      metadataTokens,
+      maxPatchBytes,
+      patchBytes,
+      truncatedByBudget,
+    }),
   };
 }
