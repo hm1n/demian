@@ -6,6 +6,8 @@ import type { CandidateDataOutput } from "@/lib/github/types";
 import type { RepositoryRef } from "@/lib/github/types";
 import { AI_SELECTION_LABEL, EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
 import { ExperienceCandidateDetail } from "./experience-candidate-detail";
+import { ExperienceInterviewEntry } from "./experience-interview-entry";
+import { confirmExperienceSelection, type ExperienceSelectionState } from "./experience-selection";
 import styles from "./experience-candidate-list.module.css";
 
 const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
@@ -35,8 +37,20 @@ interface ExperienceCandidateListProps {
 
 export function ExperienceCandidateList({ repository, data, candidates, onSelectRepository }: ExperienceCandidateListProps) {
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  // 확정 상태는 `AnalysisState`가 아니라 후보 기능 안에 둡니다. 이유는 `experience-selection.ts`에 있습니다.
+  const [selection, setSelection] = useState<ExperienceSelectionState>({ status: "idle" });
   const items = useMemo(() => createExperienceCandidateListItems(data, candidates), [data, candidates]);
   const selectedItem = items.find(({ candidate }) => candidate.sha === selectedSha);
+
+  // 목록으로 돌아갈 때 확정 상태를 비웁니다. 다른 경험을 다시 확정하면 그 값이 이전 확정을 교체합니다.
+  function backToList() {
+    setSelectedSha(null);
+    setSelection({ status: "idle" });
+  }
+
+  if (selection.status === "confirmed") {
+    return <ExperienceInterviewEntry snapshot={selection.snapshot} onBack={backToList} />;
+  }
 
   if (selectedItem) {
     return (
@@ -45,7 +59,9 @@ export function ExperienceCandidateList({ repository, data, candidates, onSelect
         data={data}
         candidates={candidates}
         item={selectedItem}
-        onBack={() => setSelectedSha(null)}
+        onBack={backToList}
+        onConfirm={() => setSelection(confirmExperienceSelection(selectedItem, data, candidates))}
+        selectionError={selection.status === "error" ? selection.reason : undefined}
       />
     );
   }

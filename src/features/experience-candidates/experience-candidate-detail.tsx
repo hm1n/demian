@@ -1,11 +1,17 @@
 import type { CandidateDataOutput, RepositoryRef } from "@/lib/github/types";
-import type { CandidateDiffFile, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
+import type {
+  CandidateDiffFile,
+  EvidenceSnapshotFailureReason,
+  ExperienceCandidateListItem,
+  StageBCandidateResult,
+} from "./types";
 import {
   EVIDENCE_VERIFIABILITY_NOTICE,
   RELATED_COMMITS_VERIFICATION_NOTICE,
   REPOSITORY_UNVERIFIABLE_ITEMS,
   REPOSITORY_VERIFIED_NOTICE,
 } from "./evidence-verifiability";
+import { EXPERIENCE_SELECTION_ERROR_COPY } from "./experience-selection";
 import styles from "./experience-candidate-detail.module.css";
 
 interface ExperienceCandidateDetailProps {
@@ -14,7 +20,17 @@ interface ExperienceCandidateDetailProps {
   candidates: StageBCandidateResult;
   item: ExperienceCandidateListItem;
   onBack: () => void;
+  /** 이 경험을 인터뷰 대상으로 확정합니다. */
+  onConfirm: () => void;
+  /** 근거 스냅샷을 만들지 못한 이유입니다. 성공했거나 아직 확정하지 않았으면 undefined입니다. */
+  selectionError?: EvidenceSnapshotFailureReason;
 }
+
+// 확정 액션의 접근성 설명으로 연결합니다. 액션 접근성 이름은 버튼 문구로 짧게 두고, 확인 가능·불가
+// 안내는 `aria-describedby`로 계속 노출합니다. `aria-label`로 이름만 주면 안내가 스크린리더에서
+// 사라지고, 그것이 이슈 #47 PR #52 1차 리뷰의 P1이었습니다.
+const EVIDENCE_NOTICE_ID = "candidate-evidence-verifiability-notice";
+const VERIFIED_NOTICE_ID = "candidate-repository-verified-notice";
 
 const commitUrl = ({ owner, repo }: RepositoryRef, sha: string) =>
   `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commit/${sha}`;
@@ -22,7 +38,15 @@ const commitUrl = ({ owner, repo }: RepositoryRef, sha: string) =>
 const fileStats = (file: Pick<CandidateDiffFile, "status" | "additions" | "deletions">) =>
   `${file.status} · +${file.additions} / -${file.deletions}`;
 
-export function ExperienceCandidateDetail({ repository, data, candidates, item, onBack }: ExperienceCandidateDetailProps) {
+export function ExperienceCandidateDetail({
+  repository,
+  data,
+  candidates,
+  item,
+  onBack,
+  onConfirm,
+  selectionError,
+}: ExperienceCandidateDetailProps) {
   const { candidate, commit, normalizedRelatedShas } = item;
   const commitsBySha = new Map(data.includedCommits.map((entry) => [entry.sha, entry]));
   const representativeDiff = candidates.diffs.find((diff) => diff.sha === candidate.sha);
@@ -44,7 +68,7 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
         대표 커밋 {candidate.sha.slice(0, 7)}
       </a>
       <p>{candidate.evidence}</p>
-      <p className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</p>
+      <p id={EVIDENCE_NOTICE_ID} className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</p>
 
       <section className={styles.section} aria-labelledby="unverifiable-heading">
         <h3 id="unverifiable-heading">Repository로 확인할 수 없는 항목</h3>
@@ -55,7 +79,7 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
         </ul>
       </section>
 
-      <p className={styles.verifiedNotice}>{REPOSITORY_VERIFIED_NOTICE}</p>
+      <p id={VERIFIED_NOTICE_ID} className={styles.verifiedNotice}>{REPOSITORY_VERIFIED_NOTICE}</p>
 
       <section className={styles.section} aria-labelledby="changed-files-heading">
         <h3 id="changed-files-heading">변경 파일 {commit?.files.length ?? 0}개</h3>
@@ -130,6 +154,26 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
             ))}
           </ul>
         )}
+      </section>
+
+      <section className={styles.section} aria-labelledby="selection-heading">
+        <h3 id="selection-heading">인터뷰 시작</h3>
+        {selectionError ? (
+          <div className={styles.selectionError} role="alert" data-selection-error={selectionError}>
+            <strong>{EXPERIENCE_SELECTION_ERROR_COPY[selectionError].title}</strong>
+            <span>{EXPERIENCE_SELECTION_ERROR_COPY[selectionError].message}</span>
+          </div>
+        ) : (
+          <p>확인한 근거로 이 경험을 인터뷰 대상으로 확정합니다. 목록으로 돌아가 다른 경험을 다시 선택할 수 있습니다.</p>
+        )}
+        <button
+          className={styles.primaryButton}
+          type="button"
+          aria-describedby={`${EVIDENCE_NOTICE_ID} ${VERIFIED_NOTICE_ID}`}
+          onClick={onConfirm}
+        >
+          이 경험으로 인터뷰 시작
+        </button>
       </section>
     </section>
   );
