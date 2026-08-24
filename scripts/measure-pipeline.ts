@@ -425,6 +425,9 @@ ${describeLlmFailure(error)}`);
 async function runStageAChunks() {
   const { included } = await loadCommits();
   const targets = included.slice(0, numericOption("limit", included.length));
+  const chunkModel = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
+  const chunkGenerate = createStageAGenerate(chunkModel);
+  console.log(`[stage-a-chunks] 모델=${chunkModel ?? STAGE_A_MODEL}`);
   const details = await fetchDetailsCached(targets);
   let candidates: StageACandidate[] = [];
   const unclassified = new Set<string>();
@@ -467,7 +470,7 @@ async function runStageAChunks() {
     } as const;
     const recover = async (current: typeof input, attempts = 2): ReturnType<typeof selectStageACandidates> => {
       try {
-        return await selectStageACandidates(current);
+        return await selectStageACandidates(current, chunkGenerate);
       } catch (error) {
         if (!(error instanceof ExperienceCandidateOutputError) || !error.missingShas?.length ||
           !error.partialOutput) throw error;
