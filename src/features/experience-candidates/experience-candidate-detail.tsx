@@ -2,6 +2,7 @@ import type { CandidateDataOutput, RepositoryRef } from "@/lib/github/types";
 import type { CandidateDiffFile, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
 import {
   EVIDENCE_VERIFIABILITY_NOTICE,
+  RELATED_COMMITS_VERIFICATION_NOTICE,
   REPOSITORY_UNVERIFIABLE_ITEMS,
   REPOSITORY_VERIFIED_NOTICE,
 } from "./evidence-verifiability";
@@ -99,7 +100,9 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
       <section className={styles.section} aria-labelledby="related-commits-heading">
         <h3 id="related-commits-heading">관련 커밋 {normalizedRelatedShas.length}개</h3>
         {normalizedRelatedShas.length === 0 ? <p>관련 커밋이 없습니다.</p> : (
-          <ul className={styles.relatedList}>
+          <>
+            <p className={styles.aiSelectionNotice}>{RELATED_COMMITS_VERIFICATION_NOTICE}</p>
+            <ul className={styles.relatedList}>
             {normalizedRelatedShas.map((sha) => {
               const related = commitsBySha.get(sha);
               return (
@@ -110,7 +113,8 @@ export function ExperienceCandidateDetail({ repository, data, candidates, item, 
                 </li>
               );
             })}
-          </ul>
+            </ul>
+          </>
         )}
       </section>
 

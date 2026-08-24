@@ -160,6 +160,22 @@ describe("ExperienceCandidateList", () => {
     expect(button).toHaveAccessibleDescription(/PR #9/);
   });
 
+  it("인용 파일·관련 커밋 개수는 AI 선택으로 표시하고 확인 가능 태그는 PR 정보 앞에만 둔다", () => {
+    const commits = [
+      commit("a", "표시 범위 검증", [{ number: 8, title: "표시 범위", state: "open", url: "https://example.com/8", baseBranch: "develop", headBranch: "feature" }]),
+    ];
+    renderList([candidate("a", { citedFilePaths: ["src/unrelated.ts"], relatedShas: [] })], commits, "하나뿐입니다.");
+
+    const citedFilesEl = screen.getByText("인용 파일 1개");
+    expect(citedFilesEl.previousElementSibling).toHaveTextContent("AI 선택");
+
+    const relatedCommitsEl = screen.getByText("관련 커밋 0개");
+    expect(relatedCommitsEl.nextElementSibling).toHaveTextContent("확인 가능");
+
+    const prEl = screen.getByText("PR #8");
+    expect(prEl.previousElementSibling).toHaveTextContent("확인 가능");
+  });
+
   it("후보 상세에 진입했다가 목록으로 돌아온다", () => {
     renderList([candidate("a")], [commit("a", "상세 전환")], "하나뿐입니다.");
 

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { EvidenceOrigin, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
 import type { CandidateDataOutput } from "@/lib/github/types";
 import type { RepositoryRef } from "@/lib/github/types";
-import { EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
+import { AI_SELECTION_LABEL, EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
 import { ExperienceCandidateDetail } from "./experience-candidate-detail";
 import styles from "./experience-candidate-list.module.css";
 
@@ -80,9 +80,10 @@ export function ExperienceCandidateList({ repository, data, candidates, onSelect
                   <span className={styles.evidence}>{candidate.evidence}</span>
                   <span className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</span>
                   <span className={styles.metrics}>
-                    <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
+                    <span className={styles.aiSelectionTag}>{AI_SELECTION_LABEL}</span>
                     <span>인용 파일 {normalizedCitedFilePaths.length}개</span>
                     <span>관련 커밋 {normalizedRelatedShas.length}개</span>
+                    <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
                     {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (
                       <span>PR 정보 없음</span>
                     ) : commit.pullRequests.map((pullRequest) => <span key={pullRequest.number}>PR #{pullRequest.number}</span>)}

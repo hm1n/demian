@@ -138,8 +138,36 @@ describe("ExperienceCandidateDetail", () => {
 
     expect(screen.getByText("확인 불가 · AI가 작성한 해석입니다")).toBeInTheDocument();
     expect(
-      screen.getByText("확인 가능 · 변경 파일, 코드 변경 내역, 관련 커밋, PR 정보는 Repository 응답 값입니다")
+      screen.getByText(
+        "확인 가능 · 변경 파일, 코드 변경 내역, PR 정보는 Repository 응답 값이고, 관련 커밋은 대표 커밋과 같은 PR에 속한다는 관계까지 확인됩니다"
+      )
     ).toBeInTheDocument();
+  });
+
+  it("관련 커밋 목록이 있으면 AI가 고른 결과이고 PR 소속 관계까지만 확인됨을 안내한다", () => {
+    renderDetail({
+      candidates: [candidate],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(
+      screen.getByText(
+        "AI 선택 · 대표 커밋과 같은 PR에 속한다는 관계까지만 확인되고, 근거로서 관련 있다는 판단은 확인 불가입니다"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("관련 커밋이 없으면 AI 선택 안내를 표시하지 않는다", () => {
+    renderDetail({
+      candidates: [{ ...candidate, relatedShas: [] }],
+      insufficientCandidatesReason: "하나뿐입니다.",
+      diffs: [],
+    });
+
+    expect(
+      screen.queryByText(/대표 커밋과 같은 PR에 속한다는 관계까지만 확인되고/)
+    ).not.toBeInTheDocument();
   });
 
   it("Repository로 확인할 수 없는 고정 목록을 항상 표시한다", () => {
