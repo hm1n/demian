@@ -4,6 +4,7 @@
 .eyebrow { color: #5b52d6 !important; font-size: 12px !important; font-weight: 750; text-transform: uppercase; }
 .candidateList { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .candidateList button { width: 100%; display: grid; gap: 10px; border: 1px solid #ecebf0; border-radius: 12px; background: #fff; padding: 16px; cursor: pointer; text-align: left; }
+.evidenceGroup { display: contents; }
 .candidateList button:hover { border-color: #8a82e9; }
 .candidateList button:focus-visible, .backButton:focus-visible, .secondaryButton:focus-visible { outline: 3px solid rgba(109, 99, 232, .25); outline-offset: 2px; }
 .title { color: #282632; font-size: 15px; font-weight: 750; }

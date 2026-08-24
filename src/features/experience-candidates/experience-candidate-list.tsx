@@ -68,22 +68,25 @@ export function ExperienceCandidateList({ repository, data, candidates, onSelect
               <button
                 type="button"
                 aria-label={`${indexedTitle} · ${EVIDENCE_ORIGIN_LABEL[origin]}`}
+                aria-describedby={`candidate-evidence-${candidate.sha}`}
                 onClick={() => setSelectedSha(candidate.sha)}
               >
                 <span className={styles.title}>{indexedTitle}</span>
-                <span className={styles.badges}>
-                  <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
-                  <span>{EVIDENCE_ORIGIN_LABEL[origin]}</span>
-                </span>
-                <span className={styles.evidence}>{candidate.evidence}</span>
-                <span className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</span>
-                <span className={styles.metrics}>
-                  <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
-                  <span>인용 파일 {normalizedCitedFilePaths.length}개</span>
-                  <span>관련 커밋 {normalizedRelatedShas.length}개</span>
-                  {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (
-                    <span>PR 정보 없음</span>
-                  ) : commit.pullRequests.map((pullRequest) => <span key={pullRequest.number}>PR #{pullRequest.number}</span>)}
+                <span id={`candidate-evidence-${candidate.sha}`} className={styles.evidenceGroup}>
+                  <span className={styles.badges}>
+                    <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
+                    <span>{EVIDENCE_ORIGIN_LABEL[origin]}</span>
+                  </span>
+                  <span className={styles.evidence}>{candidate.evidence}</span>
+                  <span className={styles.evidenceNotice}>{EVIDENCE_VERIFIABILITY_NOTICE}</span>
+                  <span className={styles.metrics}>
+                    <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
+                    <span>인용 파일 {normalizedCitedFilePaths.length}개</span>
+                    <span>관련 커밋 {normalizedRelatedShas.length}개</span>
+                    {commit === null ? <span>커밋 색인 실패</span> : commit.pullRequests.length === 0 ? (
+                      <span>PR 정보 없음</span>
+                    ) : commit.pullRequests.map((pullRequest) => <span key={pullRequest.number}>PR #{pullRequest.number}</span>)}
+                  </span>
                 </span>
               </button>
             </li>

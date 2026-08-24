@@ -147,6 +147,19 @@ describe("ExperienceCandidateList", () => {
     expect(screen.getByRole("button", { name: "접근성 이름 검증 · 출처: Repository" })).toBeInTheDocument();
   });
 
+  it("카드 버튼은 짧은 이름과 별개로 근거 문장·확인 가능·불가 안내·지표를 접근성 설명으로 계속 노출한다", () => {
+    const commits = [
+      commit("a", "접근성 설명 검증", [{ number: 9, title: "설명", state: "open", url: "https://example.com/9", baseBranch: "develop", headBranch: "feature" }]),
+    ];
+    renderList([candidate("a", { source: "contribution_match" })], commits, "하나뿐입니다.");
+
+    const button = screen.getByRole("button", { name: "접근성 설명 검증 · 출처: Repository" });
+    expect(button).toHaveAccessibleDescription(/기여 항목 일치/);
+    expect(button).toHaveAccessibleDescription(/확인 불가 · AI가 작성한 해석입니다/);
+    expect(button).toHaveAccessibleDescription(/확인 가능/);
+    expect(button).toHaveAccessibleDescription(/PR #9/);
+  });
+
   it("후보 상세에 진입했다가 목록으로 돌아온다", () => {
     renderList([candidate("a")], [commit("a", "상세 전환")], "하나뿐입니다.");
 
