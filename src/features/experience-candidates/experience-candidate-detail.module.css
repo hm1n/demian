@@ -1,0 +1,26 @@
+.detail { display: grid; gap: 12px; margin-top: 24px; border-top: 1px solid #ecebf0; padding-top: 24px; }
+.detail h2, .detail h3 { color: #1f1e28; letter-spacing: -.02em; }
+.detail h2 { font-size: 20px; }
+.detail h3 { font-size: 16px; }
+.detail p { color: #696773; font-size: 14px; line-height: 1.65; }
+.detail .eyebrow { color: #5b52d6; font-size: 12px; font-weight: 750; text-transform: uppercase; }
+.detail .evidenceNotice { color: #777580; font-size: 12px; line-height: 1.5; }
+.backButton { width: fit-content; min-height: 44px; border: 0; background: #fff; color: #34333d; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0; }
+.backButton:focus-visible, .detail a:focus-visible, .diffList summary:focus-visible { outline: 3px solid rgba(109, 99, 232, .25); outline-offset: 2px; }
+.commitLink, .relatedList a, .prList a { color: #5148c7; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.notice, .warning, .empty { border-radius: 10px; background: #f5f4fa; padding: 12px 14px; }
+.detail .warning { background: #fff4d8; color: #725414; }
+.empty { display: grid; gap: 4px; }
+.empty strong { color: #383743; }
+.section { display: grid; gap: 10px; border-top: 1px solid #ecebf0; padding-top: 18px; }
+.fileList, .relatedList, .prList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.fileList li, .relatedList li, .prList li { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; border-radius: 8px; background: #f8f7fb; padding: 10px 12px; overflow-wrap: anywhere; }
+.fileList span { flex: 1 1 260px; color: #282632; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.fileList small, .relatedList span, .prList span, .diffList small { color: #777580; font-size: 12px; }
+.fileList strong, .diffList strong { border-radius: 999px; background: #fff4d8; color: #725414; font-size: 11px; padding: 3px 7px; }
+.diffList { display: grid; gap: 8px; }
+.diffList details { min-width: 0; border: 1px solid #e2e0e8; border-radius: 10px; overflow: hidden; }
+.diffList summary { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; cursor: pointer; padding: 12px; }
+.diffList summary span { flex: 1 1 260px; overflow-wrap: anywhere; }
+.diffList pre { max-width: 100%; margin: 0; background: #1f1e28; color: #f4f2fb; overflow: auto; padding: 14px; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+@media (max-width: 560px) { .fileList li, .relatedList li, .prList li { align-items: flex-start; flex-direction: column; } }

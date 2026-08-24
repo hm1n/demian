@@ -198,7 +198,12 @@ export function RepositoryAnalysisView() {
           />
         ) : null}
         {state.status === "success" ? (
-          <ExperienceCandidateList data={state.data} candidates={state.candidates} onSelectRepository={selectRepository} />
+          <ExperienceCandidateList
+            repository={{ owner: owner.trim(), repo: repo.trim() }}
+            data={state.data}
+            candidates={state.candidates}
+            onSelectRepository={selectRepository}
+          />
         ) : null}
       </main>
     </div>
