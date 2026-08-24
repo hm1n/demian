@@ -154,9 +154,20 @@ export interface EvidenceSnapshotPaths {
   readonly verifiability: EvidenceVerifiability;
 }
 
+/**
+ * 근거 입력 크기 예산입니다. patch만 재지 않고 직렬화한 근거 전체를 추정 토큰으로 묶습니다.
+ * 문자 수가 아니라 UTF-8 바이트를 쓰는 이유는 비ASCII 근거에서 문자 수 상한이 실제 토큰을
+ * 대표하지 못하기 때문입니다.
+ */
 export interface EvidenceSnapshotPatchBudget {
-  readonly maxTotalChars: number;
-  readonly usedChars: number;
+  /** 근거 입력 전체의 추정 토큰 상한입니다. */
+  readonly maxInputTokens: number;
+  /** patch를 뺀 나머지 근거의 추정 토큰입니다. */
+  readonly metadataTokens: number;
+  /** 남은 몫으로 patch에 배정한 UTF-8 바이트입니다. */
+  readonly maxPatchBytes: number;
+  /** patch에 실제로 실은 UTF-8 바이트입니다. */
+  readonly patchBytes: number;
   /** 상한 때문에 patch를 자르거나 빼면 true입니다. */
   readonly truncatedByBudget: boolean;
 }
@@ -177,7 +188,9 @@ export interface ExperienceEvidenceSnapshot {
 
 export type EvidenceSnapshotFailureReason =
   | "representative_commit_not_indexed"
-  | "no_repository_evidence";
+  | "no_repository_evidence"
+  /** patch를 모두 빼도 나머지 근거만으로 입력 상한을 넘는 경우입니다. */
+  | "evidence_input_too_large";
 
 export type EvidenceSnapshotResult =
   | { readonly ok: true; readonly snapshot: ExperienceEvidenceSnapshot }
