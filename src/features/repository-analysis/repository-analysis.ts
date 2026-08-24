@@ -269,10 +269,16 @@ export async function generateCandidates(
     }
     onStateChange({ status: "success", data, candidates });
   } catch (error) {
+    // 계약 위반(422)은 보존한 입력을 그대로 다시 보내면 반드시 같은 결과라 retryPoint를 남기지 않습니다.
+    // retryPoint가 없으면 재시도가 전체 재분석이 되어 입력을 처음부터 다시 구성합니다.
+    const samePayloadAlwaysFails =
+      error instanceof CandidateRequestError && error.kind === "invalid_request";
     onStateChange({
       status: "error",
       error: toCandidateGenerationError(error, stageA ? "stage_b" : "stage_a"),
-      retryPoint: { repository, contributionItems, data, ...(stageA ? { stageA } : {}) },
+      ...(samePayloadAlwaysFails
+        ? {}
+        : { retryPoint: { repository, contributionItems, data, ...(stageA ? { stageA } : {}) } }),
     });
   }
 }
@@ -386,8 +392,15 @@ export function toCandidateGenerationError(error: unknown, stage: CandidateStage
         message: "네트워크 연결을 확인한 뒤 후보 생성을 다시 시도해 주세요.",
         recovery: "retry",
       };
+    case "invalid_request":
+      return {
+        kind: "server_error",
+        title: "후보 생성 요청이 서버 계약과 맞지 않았습니다",
+        message: `${error.message} 같은 입력을 그대로 다시 보내지 않고 Repository 조회부터 다시 구성해 재시도합니다. 문제가 반복되면 사용자 조작으로 해결할 수 없는 결함일 수 있습니다.`,
+        recovery: "retry",
+      };
     default:
-      // invalid_response, invalid_json, invalid_request 등 사용자가 복구 방법을 고를 수 없는 오류입니다.
+      // invalid_response, invalid_json 등 사용자가 복구 방법을 고를 수 없는 오류입니다.
       return { ...fallback, message: `${error.message} 후보 생성을 다시 시도해 주세요.` };
   }
 }

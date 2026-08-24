@@ -257,6 +257,25 @@ describe("generateCandidates", () => {
     expect(last.candidates.insufficientCandidatesReason).toBeNull();
   });
 
+  it.each([
+    ["stage_a", "fetchStageACandidates"],
+    ["stage_b", "fetchStageBCandidates"],
+  ] as const)("%s의 invalid_request에는 같은 페이로드 재전송을 막기 위해 retryPoint를 남기지 않는다", async (stage, dependency) => {
+    const deps = dependencies({
+      [dependency]: vi.fn().mockRejectedValue(
+        new CandidateRequestError(stage, "invalid_request", "입력 형식이 올바르지 않습니다.")
+      ),
+    });
+    const states: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => states.push(state), deps);
+
+    const last = states.at(-1);
+    if (last?.status !== "error") throw new Error("unreachable");
+    expect(last.retryPoint).toBeUndefined();
+    expect(last.error).toMatchObject({ kind: "server_error", recovery: "retry" });
+    expect(last.error.title).toContain("서버 계약과 맞지 않았습니다");
+  });
+
   it("Stage A 실패는 Stage A부터 재시도할 수 있는 retryPoint를 남긴다", async () => {
     const deps = dependencies({
       fetchStageACandidates: vi.fn().mockRejectedValue(new CandidateRequestError("stage_a", "llm_failure", "실패")),

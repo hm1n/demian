@@ -367,6 +367,23 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
     expect(screen.getByRole("button", { name: "Repository 다시 선택" })).toBeInTheDocument();
   });
 
+  it("계약 위반 오류는 retryPoint 없이 전체 조회 재시도로 처음부터 입력을 다시 구성한다", async () => {
+    const error: AnalysisError = {
+      kind: "server_error",
+      title: "후보 생성 요청이 서버 계약과 맞지 않았습니다",
+      message: "같은 입력을 그대로 다시 보내지 않고 Repository 조회부터 다시 구성해 재시도합니다.",
+      recovery: "retry",
+    };
+    mockState({ status: "error", error });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    fireEvent.click(screen.getByRole("button", { name: "전체 조회 다시 시도" }));
+
+    await waitFor(() => expect(analyzeMock).toHaveBeenCalledTimes(2));
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
   it("인증 재진행 후에는 retryPoint를 버리고 처음부터 다시 분석한다", async () => {
     const error: AnalysisError = {
       kind: "diff_refetch_failure",
