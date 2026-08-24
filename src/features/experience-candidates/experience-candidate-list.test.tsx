@@ -43,7 +43,7 @@ function renderList(candidateItems: readonly ExperienceCandidate[], commits: rea
 afterEach(cleanup);
 
 describe("ExperienceCandidateList", () => {
-  it("화면 표시 모델의 각 후보에 Repository 근거 출처를 담는다", () => {
+  it("화면 표시 모델의 각 후보에 Repository 출처를 담는다", () => {
     const commits = [commit("a", "상태 머신 구현")];
     const data: CandidateDataOutput = {
       allCommits: commits,
@@ -58,7 +58,14 @@ describe("ExperienceCandidateList", () => {
 
     expect(createExperienceCandidateListItems(data, candidates)[0]).toMatchObject({ origin: "repository" });
     render(<ExperienceCandidateList data={data} candidates={candidates} onSelectRepository={vi.fn()} />);
-    expect(screen.getByText("Repository 근거")).toBeInTheDocument();
+    expect(screen.getByText("출처: Repository")).toBeInTheDocument();
+  });
+
+  it("출처 배지가 검증을 주장하지 않고 근거 문장의 작성 주체와 후속 범위를 안내한다", () => {
+    renderList([candidate("a")], [commit("a", "상태 머신 구현")], "하나뿐입니다.");
+
+    expect(screen.queryByText("Repository 근거")).not.toBeInTheDocument();
+    expect(screen.getByText("AI 작성 요약 · 확인 가능·불가 구분은 후속 제공")).toBeInTheDocument();
   });
 
   it("후보 3개의 제목과 출처를 표시하고 부족 사유는 숨긴다", () => {
@@ -66,7 +73,7 @@ describe("ExperienceCandidateList", () => {
     renderList(commits.map(({ sha }) => candidate(sha)), commits, null);
 
     expect(screen.getByText(/경험 후보 3개를 선정했습니다/)).toBeInTheDocument();
-    expect(screen.getAllByText("Repository 근거")).toHaveLength(3);
+    expect(screen.getAllByText("출처: Repository")).toHaveLength(3);
     expect(screen.queryByText("후보를 3개 채우지 않은 이유")).not.toBeInTheDocument();
   });
 

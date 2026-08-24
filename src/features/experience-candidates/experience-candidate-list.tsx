@@ -6,8 +6,10 @@ import type { CandidateDataOutput } from "@/lib/github/types";
 import styles from "./experience-candidate-list.module.css";
 
 const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
-  repository: "Repository 근거",
+  repository: "출처: Repository",
 };
+
+const EVIDENCE_SUMMARY_NOTICE = "AI 작성 요약 · 확인 가능·불가 구분은 후속 제공";
 
 export function createExperienceCandidateListItems(
   data: CandidateDataOutput,
@@ -44,6 +46,7 @@ export function ExperienceCandidateList({ data, candidates, onSelectRepository }
         <h2>{indexedTitle}</h2>
         {commit === null ? <p className={styles.detailNotice}>대표 커밋을 커밋 색인에서 찾지 못했습니다.</p> : null}
         <p>{candidate.evidence}</p>
+        <p>{EVIDENCE_SUMMARY_NOTICE}</p>
         <p className={styles.detailNotice}>코드 변경 내역과 파일·관련 커밋 상세는 다음 단계에서 제공됩니다.</p>
       </section>
     );
@@ -71,6 +74,7 @@ export function ExperienceCandidateList({ data, candidates, onSelectRepository }
                   <span>{EVIDENCE_ORIGIN_LABEL[origin]}</span>
                 </span>
                 <span className={styles.evidence}>{candidate.evidence}</span>
+                <span className={styles.metrics}>{EVIDENCE_SUMMARY_NOTICE}</span>
                 <span className={styles.metrics}>
                   <span>인용 파일 {candidate.citedFilePaths.length}개</span>
                   <span>관련 커밋 {candidate.relatedShas.length}개</span>
