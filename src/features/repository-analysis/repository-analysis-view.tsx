@@ -2,7 +2,13 @@
 
 import { type FormEvent, useRef, useState } from "react";
 import type { RepositoryRef } from "@/lib/github/types";
-import { analyzeRepository, type AnalysisState, type LoadingPhase } from "./repository-analysis";
+import {
+  analyzeRepository,
+  generateCandidates,
+  type AnalysisState,
+  type EmptyKind,
+  type LoadingPhase,
+} from "./repository-analysis";
 import styles from "./repository-analysis.module.css";
 
 const INITIAL_STATE: AnalysisState = { status: "idle" };
@@ -25,6 +31,21 @@ function loadingCopy(loading: LoadingPhase) {
       step: "3단계",
       title: "파생 지표를 계산하고 있습니다",
       description: "수집한 Repository 근거를 후보 데이터 입력 형태로 정리하고 있습니다.",
+    };
+  }
+  if (loading.step === "stage_a") {
+    return {
+      step: "4단계",
+      title: "경험 후보를 1차 선별하고 있습니다",
+      description: "커밋 메시지와 변경 통계를 근거로 설명할 가치가 있는 커밋을 고르고 있습니다.",
+    };
+  }
+  if (loading.step === "stage_b") {
+    return {
+      step: "5·6단계",
+      title: "diff·PR 근거를 수집하고 최종 후보를 판단하고 있습니다",
+      description:
+        "서버가 후보 커밋의 diff와 PR 소속을 수집한 뒤 한 번의 판단으로 최대 3개 후보를 고릅니다. 두 단계는 한 요청으로 처리됩니다.",
     };
   }
   return {
@@ -86,13 +107,13 @@ export function RepositoryAnalysisView() {
     }
     setHasSession(true);
     setToken("");
-    await analyzeRepository(repository, setState);
+    await analyzeRepository(repository, parseContributionItems(contributionItems), setState);
   }
 
   function runAnalysis() {
     const repository = { owner: owner.trim(), repo: repo.trim() };
     if (token) return startAnalysis(repository, token);
-    if (hasSession) return analyzeRepository(repository, setState);
+    if (hasSession) return analyzeRepository(repository, parseContributionItems(contributionItems), setState);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -101,6 +122,7 @@ export function RepositoryAnalysisView() {
   }
 
   function retry() {
+    if (state.status === "error" && state.retryPoint) return generateCandidates(state.retryPoint, setState);
     runAnalysis();
   }
 
@@ -156,11 +178,25 @@ export function RepositoryAnalysisView() {
         </form>
 
         {state.status === "loading" ? <LoadingState loading={state.loading} /> : null}
-        {state.status === "empty" ? <EmptyState kind={state.kind} onSelectRepository={selectRepository} /> : null}
-        {state.status === "error" ? (
-          <ErrorState error={state.error} onRetry={retry} onReauthenticate={reauthenticate} onSelectRepository={selectRepository} />
+        {state.status === "empty" ? (
+          <EmptyState
+            kind={state.kind}
+            reason={state.kind === "no_final_candidates" ? state.reason : undefined}
+            onSelectRepository={selectRepository}
+          />
         ) : null}
-        {state.status === "success" ? <SuccessState data={state.data} onSelectRepository={selectRepository} /> : null}
+        {state.status === "error" ? (
+          <ErrorState
+            error={state.error}
+            retryLabel={state.retryPoint ? "후보 생성 다시 시도" : "전체 조회 다시 시도"}
+            onRetry={retry}
+            onReauthenticate={reauthenticate}
+            onSelectRepository={selectRepository}
+          />
+        ) : null}
+        {state.status === "success" ? (
+          <SuccessState data={state.data} candidates={state.candidates} onSelectRepository={selectRepository} />
+        ) : null}
       </main>
     </div>
   );
@@ -181,19 +217,47 @@ function LoadingState({ loading }: { loading: LoadingPhase }) {
   );
 }
 
-function EmptyState({ kind, onSelectRepository }: { kind: "no_commits" | "no_author_commits" | "no_analyzable_commits"; onSelectRepository: () => void }) {
-  const noCommits = kind === "no_commits";
-  const noAuthorCommits = kind === "no_author_commits";
+const EMPTY_COPY: Record<EmptyKind | "no_final_candidates", { title: string; description: string }> = {
+  no_commits: {
+    title: "분석할 커밋이 없습니다",
+    description: "기본 브랜치에 커밋이 확인되지 않았습니다. 커밋 이력이 있는 Repository를 선택해 주세요.",
+  },
+  no_author_commits: {
+    title: "본인이 작성한 커밋이 없습니다",
+    description:
+      "기본 브랜치에는 커밋이 있지만 현재 GitHub 계정이 작성자로 연결된 커밋은 확인되지 않았습니다. 본인이 작성한 커밋이 있는 다른 Repository를 선택해 주세요.",
+  },
+  no_analyzable_commits: {
+    title: "이 저장소는 분석하기 어렵습니다",
+    description:
+      "커밋은 있지만 병합, 문서, 의존성, 오타, 포맷팅 커밋을 제외하면 상세히 살펴볼 대상이 없습니다. 커밋 이력이 있는 다른 Repository를 선택해 주세요.",
+  },
+  no_stage_a_candidates: {
+    title: "설명할 만한 경험 후보를 찾지 못했습니다",
+    description:
+      "커밋 메시지와 변경 통계에서 기여 항목과 일치하거나 설명할 가치가 있는 커밋을 찾지 못했습니다. 다른 Repository를 선택해 주세요.",
+  },
+  no_final_candidates: {
+    title: "최종 경험 후보를 만들지 못했습니다",
+    description: "기준을 완화하거나 후보를 임의로 채우지 않습니다. 다른 Repository를 선택해 주세요.",
+  },
+};
+
+function EmptyState({
+  kind,
+  reason,
+  onSelectRepository,
+}: {
+  kind: EmptyKind | "no_final_candidates";
+  reason?: string;
+  onSelectRepository: () => void;
+}) {
+  const copy = EMPTY_COPY[kind];
   return (
-    <section className={styles.state} aria-live="polite">
-      <h2>{noCommits ? "분석할 커밋이 없습니다" : noAuthorCommits ? "본인이 작성한 커밋이 없습니다" : "이 저장소는 분석하기 어렵습니다"}</h2>
-      <p>
-        {noCommits
-          ? "기본 브랜치에 커밋이 확인되지 않았습니다. 커밋 이력이 있는 Repository를 선택해 주세요."
-          : noAuthorCommits
-            ? "기본 브랜치에는 커밋이 있지만 현재 GitHub 계정이 작성자로 연결된 커밋은 확인되지 않았습니다. 본인이 작성한 커밋이 있는 다른 Repository를 선택해 주세요."
-          : "커밋은 있지만 병합, 문서, 의존성, 오타, 포맷팅 커밋을 제외하면 상세히 살펴볼 대상이 없습니다. 커밋 이력이 있는 다른 Repository를 선택해 주세요."}
-      </p>
+    <section className={styles.state} aria-live="polite" data-empty-kind={kind}>
+      <h2>{copy.title}</h2>
+      {reason ? <p>{reason}</p> : null}
+      <p>{copy.description}</p>
       <div className={styles.actions}>
         <button className={styles.secondaryButton} type="button" onClick={onSelectRepository}>다른 Repository 선택</button>
       </div>
@@ -203,17 +267,18 @@ function EmptyState({ kind, onSelectRepository }: { kind: "no_commits" | "no_aut
 
 interface ErrorStateProps {
   error: Extract<AnalysisState, { status: "error" }>["error"];
+  retryLabel: string;
   onRetry: () => void;
   onReauthenticate: () => void;
   onSelectRepository: () => void;
 }
 
-function ErrorState({ error, onRetry, onReauthenticate, onSelectRepository }: ErrorStateProps) {
+function ErrorState({ error, retryLabel, onRetry, onReauthenticate, onSelectRepository }: ErrorStateProps) {
   const action = error.recovery === "reauthenticate"
     ? { label: "GitHub 인증 다시 하기", run: onReauthenticate }
     : error.recovery === "select_repository"
       ? { label: "Repository 다시 선택", run: onSelectRepository }
-      : { label: "전체 조회 다시 시도", run: onRetry };
+      : { label: retryLabel, run: onRetry };
   return (
     <section className={styles.state} role="alert" data-error-kind={error.kind}>
       <h2>{error.title}</h2>
@@ -225,11 +290,28 @@ function ErrorState({ error, onRetry, onReauthenticate, onSelectRepository }: Er
   );
 }
 
-function SuccessState({ data, onSelectRepository }: { data: Extract<AnalysisState, { status: "success" }>["data"]; onSelectRepository: () => void }) {
+type SuccessProps = Extract<AnalysisState, { status: "success" }>;
+
+function SuccessState({ data, candidates, onSelectRepository }: Pick<SuccessProps, "data" | "candidates"> & { onSelectRepository: () => void }) {
   return (
     <section className={styles.state} aria-live="polite">
-      <h2>Repository 근거를 준비했습니다</h2>
-      <p>점수나 순위를 만들지 않고, 다음 단계에서 사용할 실제 Repository 데이터만 수집했습니다.</p>
+      <h2>경험 후보를 준비했습니다</h2>
+      <p>실제 diff와 PR 소속을 근거로 경험 후보 {candidates.candidates.length}개를 선정했습니다.</p>
+      {candidates.insufficientCandidatesReason ? (
+        <p>
+          후보를 3개 채우지 않은 이유: {candidates.insufficientCandidatesReason} 기준을 완화하거나 후보를
+          임의로 채우지 않습니다.
+        </p>
+      ) : null}
+      <ul className={styles.candidateList}>
+        {candidates.candidates.map((candidate) => (
+          <li key={candidate.sha}>
+            <strong>{candidate.sha.slice(0, 7)}</strong>
+            <span>{candidate.source === "contribution_match" ? "기여 항목 일치" : "자동 추천"}</span>
+            <p>{candidate.evidence}</p>
+          </li>
+        ))}
+      </ul>
       <div className={styles.summary}>
         <div className={styles.metric}><strong>{data.allCommits.length}</strong><span>전체 커밋</span></div>
         <div className={styles.metric}><strong>{data.includedCommits.length}</strong><span>상세 조회 커밋</span></div>
