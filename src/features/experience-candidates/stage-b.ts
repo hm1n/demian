@@ -6,7 +6,9 @@ import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
 // 이슈 #19 실측(2026-08-24)으로 유효성 확인: Google 모델 목록에 존재하며 정상 응답합니다.
-// 다만 "high demand" 일시 실패가 잦아 성공률이 낮았습니다. 근거는 위키 측정 문서에 있습니다.
+// 무료 등급 일일 한도가 하루 20요청(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`)이고
+// 모델별로 따로 걸립니다. 측정에서 관측된 낮은 성공률은 모델의 일시적 과부하가 아니라 이 일일
+// 쿼터 소진이 주 원인이었습니다. 근거는 위키 측정 문서에 있습니다.
 export const STAGE_B_MODEL = "gemini-3.7-flash";
 // Stage A 후보 전체가 입력되므로 INITIAL_STAGE_A_CANDIDATE_LIMIT과 같아야 정상 흐름이 422로 막히지 않습니다.
 // 이슈 #19 실측으로 확정: 20개 전원이 patch 예산을 받습니다. 선착순 배분이던 시절에는 앞쪽 9개가
