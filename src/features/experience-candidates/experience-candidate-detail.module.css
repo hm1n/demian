@@ -28,3 +28,10 @@
 .diffList pre { max-width: 100%; margin: 0; background: #1f1e28; color: #f4f2fb; overflow: auto; padding: 14px; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
 .detail .truncatedNotice { margin: 0; border-top: 1px solid #e2e0e8; color: #725414; padding: 12px; }
 @media (max-width: 560px) { .fileList li, .relatedList li, .prList li { align-items: flex-start; flex-direction: column; } }
+.primaryButton { width: fit-content; min-height: 44px; border: 0; border-radius: 10px; background: #5148c7; color: #fff; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 20px; }
+.primaryButton:hover { background: #443bb0; }
+.primaryButton:focus-visible { outline: 3px solid rgba(109, 99, 232, .35); outline-offset: 2px; }
+.selectionError { display: grid; gap: 4px; border-radius: 10px; background: #fdeaea; padding: 12px 14px; }
+.selectionError strong { color: #a3272c; font-size: 14px; }
+.selectionError span { color: #7c3b3d; font-size: 13px; line-height: 1.6; }
+@media (max-width: 560px) { .primaryButton { width: 100%; } }

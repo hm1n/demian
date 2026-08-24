@@ -264,6 +264,8 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
     expect(screen.getByText("실제 diff 근거로 설명할 수 있는 커밋이 없습니다.")).toBeInTheDocument();
     expect(screen.getByText(/기준을 완화하거나 후보를 임의로 채우지 않습니다/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다른 Repository 선택" })).toBeInTheDocument();
+    // 후보 0개는 이 Empty가 처리하므로 후보 목록과 선택 액션에 도달하지 않습니다(이슈 #55).
+    expect(screen.queryByRole("button", { name: "이 경험으로 인터뷰 시작" })).not.toBeInTheDocument();
   });
 
   it("후보가 3개 미만인 성공 상태에 생성 개수와 부족 사유를 안내한다", async () => {
