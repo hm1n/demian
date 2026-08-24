@@ -121,21 +121,26 @@ function mapLlmError(error: unknown) {
   return new ExperienceCandidateOutputError("llm_failure", "Stage B 분석에 실패했습니다.", { cause: error });
 }
 
-const generateWithGemini: GenerateStageB = async (payload, abortSignal) => {
-  const { object } = await generateObject({
-    model: createGoogle()(STAGE_B_MODEL),
-    schema: experienceCandidateOutputSchema,
-    system:
-      "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. " +
-      "관련 커밋은 대표 커밋과 같은 PR에 속한 입력 SHA만 사용하세요. " +
-      "억지로 3개를 채우지 말고, evidence에는 대표 선정 이유와 관련 커밋이 근거가 되는 이유를 함께 쓰세요. " +
-      "citedFilePaths는 제공된 diff 경로만 사용하세요. " +
-      "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
-    prompt: JSON.stringify(payload),
-    abortSignal,
-  });
-  return object;
-};
+/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
+export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateStageB {
+  return async (payload, abortSignal) => {
+    const { object } = await generateObject({
+      model: createGoogle()(model),
+      schema: experienceCandidateOutputSchema,
+      system:
+        "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. " +
+        "관련 커밋은 대표 커밋과 같은 PR에 속한 입력 SHA만 사용하세요. " +
+        "억지로 3개를 채우지 말고, evidence에는 대표 선정 이유와 관련 커밋이 근거가 되는 이유를 함께 쓰세요. " +
+        "citedFilePaths는 제공된 diff 경로만 사용하세요. " +
+        "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
+      prompt: JSON.stringify(payload),
+      abortSignal,
+    });
+    return object;
+  };
+}
+
+const generateWithGemini: GenerateStageB = createStageBGenerate();
 
 export async function selectStageBCandidates(
   commits: readonly CommitDetail[],

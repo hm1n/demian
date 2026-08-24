@@ -174,17 +174,22 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   });
 }
 
-const generateWithGroq: GenerateStageA = async (payload, abortSignal) => {
-  const { object } = await generateObject({
-    model: createGroq()(STAGE_A_MODEL),
-    schema: structuredOutputSchema,
-    system:
+/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
+export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
+  return async (payload, abortSignal) => {
+    const { object } = await generateObject({
+      model: createGroq()(model),
+      schema: structuredOutputSchema,
+      system:
       `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
-    prompt: JSON.stringify(payload),
-    abortSignal,
-  });
-  return object;
-};
+      prompt: JSON.stringify(payload),
+      abortSignal,
+    });
+    return object;
+  };
+}
+
+const generateWithGroq: GenerateStageA = createStageAGenerate();
 
 export async function selectStageACandidates(
   input: StageAInput,
