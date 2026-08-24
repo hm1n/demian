@@ -68,17 +68,37 @@ const ms = () => performance.now();
 const round = (value: number) => Math.round(value);
 
 /**
+ * probe 헤더는 숫자여야 한다. `githubFetch`는 상태 코드를 보지 않고 Response를 돌려주므로
+ * 헤더가 없을 때 `Number(null)`이 0이 되고, 그 0이 잔량·소비량으로 조용히 측정에 섞인다.
+ * probe는 모든 소비량 계산의 기준값이므로 값을 만들어내지 말고 즉시 실패시킨다.
+ */
+function rateLimitHeader(response: Response, name: string) {
+  const raw = response.headers.get(name);
+  const value = raw === null ? Number.NaN : Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`rate limit probe 실패: ${name} 헤더가 없거나 숫자가 아니다`);
+  }
+  return value;
+}
+
+/**
  * core rate limit 사용량. `/rate_limit` 엔드포인트는 캐시된 값을 돌려줘(실측: 헤더가 4762를
  * 가리킬 때 4996을 응답) 소비량 계산에 쓸 수 없다. 권위 있는 값은 각 응답의
  * `x-ratelimit-used` 헤더뿐이므로 core 요청 하나를 던져 헤더를 읽는다.
  * 이 probe 자체가 1을 소비하므로 두 probe 사이의 실제 소비량은 `used 차이 - 1`이다.
+ *
+ * 비성공 응답(401 토큰 만료, 403 한도 소진·차단, 429)에서는 이 계산이 성립하지 않는다. 소비가
+ * 1이 아닐 수 있고 헤더도 없을 수 있다. 측정을 이어가면 위조된 수치가 결과에 남으므로 던진다.
  */
 async function coreRateLimit() {
   const response = await githubFetch(`${GITHUB_API_BASE}/user`, token!);
+  if (!response.ok) {
+    throw new Error(`rate limit probe 실패: GET /user 응답 ${response.status}`);
+  }
   return {
-    limit: Number(response.headers.get("x-ratelimit-limit")),
-    remaining: Number(response.headers.get("x-ratelimit-remaining")),
-    used: Number(response.headers.get("x-ratelimit-used")),
+    limit: rateLimitHeader(response, "x-ratelimit-limit"),
+    remaining: rateLimitHeader(response, "x-ratelimit-remaining"),
+    used: rateLimitHeader(response, "x-ratelimit-used"),
   };
 }
 
