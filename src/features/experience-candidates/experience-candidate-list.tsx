@@ -6,7 +6,7 @@ import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/typ
 import type { RepositoryRef } from "@/lib/github/types";
 import { AI_SELECTION_LABEL, EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
 import { ExperienceCandidateDetail } from "./experience-candidate-detail";
-import { ExperienceInterviewEntry } from "./experience-interview-entry";
+import { InterviewScreen } from "@/features/interview/interview-screen";
 import { confirmExperienceSelection, type ExperienceSelectionState } from "./experience-selection";
 import { WORK_UNIT_EXCLUSION_COPY, type ExcludedCommit } from "./work-unit";
 import {
@@ -75,7 +75,7 @@ export function ExperienceCandidateList({
   }
 
   if (selection.status === "confirmed") {
-    return <ExperienceInterviewEntry snapshot={selection.snapshot} onBack={backToList} />;
+    return <InterviewScreen snapshot={selection.snapshot} onBack={backToList} />;
   }
 
   if (selectedItem) {
