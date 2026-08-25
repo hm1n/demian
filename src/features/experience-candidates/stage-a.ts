@@ -9,7 +9,7 @@ import {
 } from "ai";
 import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
 import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
-import type { CommitDetail } from "@/lib/github/types";
+import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
 
 // 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
 // 반환했습니다. 현재 서빙 중인 구조화 출력 가능 모델 중 입력 SHA 전수 응답 계약을 가장 잘
@@ -20,31 +20,63 @@ export const UNCLASSIFIED_LABEL = "미분류";
 // 이슈 #19 실측으로 확정: 성공 호출은 3.1~11.1초, 계약 위반으로 끝난 호출도 29.0초였습니다.
 // route maxDuration 60초보다 먼저 JSON 오류를 반환하는 시한으로 55초를 유지합니다.
 export const STAGE_A_TIMEOUT_MS = 55_000;
-export const STAGE_A_CHUNK_SIZE = 8;
+/**
+ * 한 청크가 모델에 보내는 프롬프트 바이트 상한입니다.
+ *
+ * 요청 본문이 아니라 접힌 묶음 문자열을 잽니다. 요청 본문은 구조화 요약이라 같은 내용이라도
+ * 필드 이름과 따옴표 때문에 더 큽니다. 모델 한도에 걸리는 것은 프롬프트 쪽이므로 둘을
+ * 나눠서 잽니다.
+ */
 export const STAGE_A_CHUNK_MAX_BYTES = 6_000;
-export const STAGE_A_CHUNK_MAX_FILES = 32;
+/** 요청 본문 상한입니다. 구조화 요약의 필드 이름과 구분자를 감안해 프롬프트 상한보다 크게 둡니다. */
+export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 16_000;
+/** 한 청크에 담을 작업 묶음 수 상한입니다. 바이트 상한보다 먼저 걸리는 경우를 막는 안전장치입니다. */
+export const STAGE_A_CHUNK_MAX_UNITS = 20;
+/**
+ * 청크 하나가 추천할 수 있는 묶음 수입니다.
+ *
+ * 이 값이 재판단 라운드를 없앱니다. 이전에는 청크마다 전역 상한 20을 그대로 보내서 청크가
+ * 14개면 실효 상한이 280개가 되었고, 넘친 후보를 다시 줄이려고 재판단 라운드를 돌았습니다.
+ * 청크마다 쿼터를 고정하면 후보 수가 `청크 수 × 쿼터`로 결정되므로 넘칠 일이 없습니다.
+ */
+export const STAGE_A_CHUNK_QUOTA = 2;
 export const STAGE_A_TOKEN_RESERVE = 6_000;
 export const STAGE_A_RESET_SAFETY_MS = 1_000;
 
-export type StageACommit = Pick<
-  CommitDetail,
-  "sha" | "message" | "additions" | "deletions" | "changedFiles"
-> & {
-  readonly files: readonly Pick<
-    CommitDetail["files"][number],
-    "path" | "status" | "additions" | "deletions" | "changes"
-  >[];
-};
+/**
+ * 청크 수가 많아 `청크 수 × 쿼터`가 전역 상한을 넘을 때 쿼터를 줄입니다. 상한을 넘는 응답을
+ * 받아 놓고 다시 줄이는 대신 요청 단계에서 넘지 않게 만듭니다.
+ */
+export function resolveChunkQuota(chunkCount: number): number {
+  if (chunkCount <= 0) return STAGE_A_CHUNK_QUOTA;
+  return Math.max(
+    1,
+    Math.min(STAGE_A_CHUNK_QUOTA, Math.floor(INITIAL_STAGE_A_CANDIDATE_LIMIT / chunkCount))
+  );
+}
+
+/**
+ * Stage A가 판단하는 단위입니다.
+ *
+ * `representativeSha`는 이 묶음을 뒤 단계에서 가리키는 식별자입니다. 모델은 PR 번호로
+ * 답하지만 후보 출력과 오류 보고는 SHA를 그대로 씁니다. Stage B와 화면이 커밋 SHA 기반이라
+ * 식별자를 PR 번호로 바꾸면 파급이 큽니다.
+ */
+export interface StageAUnitInput {
+  readonly pullRequestNumber: number;
+  readonly representativeSha: string;
+  readonly summary: WorkUnitSummary;
+}
 
 export interface StageAInput {
-  readonly mode?: "initial" | "reduce";
-  readonly commits: readonly StageACommit[];
+  readonly units: readonly StageAUnitInput[];
   readonly contributionItems: readonly string[];
-  readonly candidateLimit?: number;
+  /** 이 청크가 추천할 수 있는 묶음 수입니다. 항상 보냅니다. */
+  readonly candidateLimit: number;
 }
 
 interface StageADecision {
-  readonly sha: string;
+  readonly pullRequestNumber: number;
   readonly contributionItem: string | null;
   readonly recommended: boolean;
 }
@@ -54,11 +86,17 @@ interface StageAStructuredOutput {
   readonly __rateLimit?: StageARateLimit | null;
 }
 
-export type GenerateStageA = (payload: {
-  readonly commits: readonly StageACommit[];
+/** 모델에 실제로 보내는 형태입니다. 묶음은 이미 문자열로 접혀 있습니다. */
+export interface StageAPayload {
+  readonly units: readonly { readonly pullRequestNumber: number; readonly summary: string }[];
   readonly contributionItems: readonly string[];
-  readonly candidateLimit?: number;
-}, abortSignal: AbortSignal) => Promise<unknown>;
+  readonly candidateLimit: number;
+}
+
+export type GenerateStageA = (
+  payload: StageAPayload,
+  abortSignal: AbortSignal
+) => Promise<unknown>;
 
 const structuredOutputSchema = jsonSchema<StageAStructuredOutput>({
   type: "object",
@@ -70,9 +108,9 @@ const structuredOutputSchema = jsonSchema<StageAStructuredOutput>({
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["sha", "contributionItem", "recommended"],
+        required: ["pullRequestNumber", "contributionItem", "recommended"],
         properties: {
-          sha: { type: "string", minLength: 1 },
+          pullRequestNumber: { type: "integer" },
           contributionItem: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] },
           recommended: { type: "boolean" },
         },
@@ -88,11 +126,11 @@ function validateStructuredOutput(value: unknown): StageAStructuredOutput {
     !Array.isArray((value as { decisions?: unknown }).decisions) ||
     (value as { decisions: unknown[] }).decisions.some((decision) => {
       if (typeof decision !== "object" || decision === null) return true;
-      const { sha, contributionItem, recommended } = decision as Partial<StageADecision>;
+      const { pullRequestNumber, contributionItem, recommended } =
+        decision as Partial<StageADecision>;
       return (
         Object.keys(decision).length !== 3 ||
-        typeof sha !== "string" ||
-        sha.length === 0 ||
+        !Number.isInteger(pullRequestNumber) ||
         (contributionItem !== null &&
           (typeof contributionItem !== "string" || contributionItem.length === 0)) ||
         typeof recommended !== "boolean"
@@ -107,24 +145,20 @@ function validateStructuredOutput(value: unknown): StageAStructuredOutput {
   return value as StageAStructuredOutput;
 }
 
-export function buildStageAPayload(input: StageAInput) {
+/**
+ * 묶음을 문자열로 접어 모델 입력을 만듭니다.
+ *
+ * 렌더링을 서버에서 합니다. 클라이언트가 접은 문자열을 그대로 받으면 형식이 두 곳으로 갈리고
+ * 요청 검증이 문자열 안을 들여다볼 수 없습니다.
+ */
+export function buildStageAPayload(input: StageAInput): StageAPayload {
   return {
-    commits: input.commits.map((commit) => ({
-      sha: commit.sha,
-      message: commit.message,
-      additions: commit.additions,
-      deletions: commit.deletions,
-      changedFiles: commit.changedFiles,
-      files: commit.files.map(({ path, status, additions, deletions, changes }) => ({
-        path,
-        status,
-        additions,
-        deletions,
-        changes,
-      })),
+    units: input.units.map((unit) => ({
+      pullRequestNumber: unit.pullRequestNumber,
+      summary: renderWorkUnitSummary(unit.summary),
     })),
     contributionItems: [...input.contributionItems],
-    ...(input.mode === "reduce" ? { candidateLimit: input.candidateLimit } : {}),
+    candidateLimit: input.candidateLimit,
   };
 }
 
@@ -215,8 +249,15 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
       model: createGroq()(model),
       schema: structuredOutputSchema,
       system:
-        `커밋 메시지와 stat만 보고 개발 경험 후보를 선별하세요. 각 SHA를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 커밋은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 전체 추천은 최대 ${payload.candidateLimit ?? INITIAL_STAGE_A_CANDIDATE_LIMIT}개입니다.`,
-      prompt: JSON.stringify(payload),
+        `Pull Request 단위 작업 묶음을 보고 개발 경험 후보를 선별하세요. 각 묶음은 'PR#번호 제목 [커밋수 기간 증감 파일수]'와 커밋 제목 목록, 변경량 상위 파일 경로로 이뤄집니다. 입력에 있는 각 PR 번호를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 묶음은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 이 목록에서 recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개입니다. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.`,
+      prompt: [
+        payload.units.map(({ summary }) => summary).join("\n"),
+        payload.contributionItems.length > 0
+          ? `기여 항목:\n${payload.contributionItems.join("\n")}`
+          : "",
+      ]
+        .filter((section) => section !== "")
+        .join("\n\n"),
       abortSignal,
     });
     const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);
@@ -257,64 +298,70 @@ export async function selectStageACandidates(
     clearTimeout(timeout);
   }
 
-  const allowedShas = new Set(payload.commits.map(({ sha }) => sha));
-  const returnedShas = output.decisions.map(({ sha }) => sha);
-  const unknownShas = [...new Set(returnedShas.filter((sha) => !allowedShas.has(sha)))];
-  if (unknownShas.length > 0) {
+  // 모델은 PR 번호로 답하지만 이 지점 이후로는 전부 대표 SHA로 옮깁니다. 뒤 단계와 오류 보고가
+  // 커밋 SHA 기반이라 식별자를 두 종류로 들고 다니면 복구 경로가 갈라집니다.
+  const shaByPullRequest = new Map(
+    input.units.map(({ pullRequestNumber, representativeSha }) => [
+      pullRequestNumber,
+      representativeSha,
+    ])
+  );
+  const returnedNumbers = output.decisions.map(({ pullRequestNumber }) => pullRequestNumber);
+  const unknownNumbers = [
+    ...new Set(returnedNumbers.filter((number) => !shaByPullRequest.has(number))),
+  ];
+  if (unknownNumbers.length > 0) {
     throw new ExperienceCandidateOutputError(
       "unknown_sha",
-      `입력 집합에 없는 커밋 SHA가 포함되어 있습니다: ${unknownShas.join(", ")}`,
-      { unknownShas }
+      `입력 집합에 없는 PR 번호가 포함되어 있습니다: ${unknownNumbers.map((number) => `#${number}`).join(", ")}`,
+      { unknownShas: unknownNumbers.map((number) => `#${number}`) }
     );
   }
-  if (new Set(returnedShas).size !== returnedShas.length) {
+  if (new Set(returnedNumbers).size !== returnedNumbers.length) {
     throw new ExperienceCandidateOutputError(
       "schema_validation",
-      "Stage A 응답에 같은 SHA가 두 번 이상 포함되어 있습니다."
+      "Stage A 응답에 같은 PR 번호가 두 번 이상 포함되어 있습니다."
     );
   }
   const contributionItems = new Set(input.contributionItems);
   const candidates = output.decisions.flatMap<StageACandidate>((decision) => {
+    const sha = shaByPullRequest.get(decision.pullRequestNumber)!;
     if (
       decision.contributionItem !== UNCLASSIFIED_LABEL &&
       decision.contributionItem !== null &&
       contributionItems.has(decision.contributionItem)
     ) {
       return [{
-        sha: decision.sha,
+        sha,
         source: "contribution_match" as const,
         contributionItem: decision.contributionItem,
       }];
     }
     if (decision.recommended) {
-      return [{
-        sha: decision.sha,
-        source: "automatic_recommendation" as const,
-        contributionItem: null,
-      }];
+      return [{ sha, source: "automatic_recommendation" as const, contributionItem: null }];
     }
     return [];
   });
 
-  const candidateLimit = input.candidateLimit ?? INITIAL_STAGE_A_CANDIDATE_LIMIT;
-  if (candidates.length > candidateLimit) {
+  if (candidates.length > input.candidateLimit) {
     throw new ExperienceCandidateOutputError(
       "schema_validation",
-      `Stage A 후보는 요청 상한 ${candidateLimit}개를 넘을 수 없습니다.`
+      `Stage A 후보는 요청 상한 ${input.candidateLimit}개를 넘을 수 없습니다.`
     );
   }
 
   const candidateShas = new Set(candidates.map(({ sha }) => sha));
-  const unclassifiedShas = payload.commits
-    .map(({ sha }) => sha)
+  const unclassifiedShas = input.units
+    .map(({ representativeSha }) => representativeSha)
     .filter((sha) => !candidateShas.has(sha));
-  const missingShas = payload.commits
-    .map(({ sha }) => sha)
-    .filter((sha) => !returnedShas.includes(sha));
+  const returned = new Set(returnedNumbers);
+  const missingShas = input.units
+    .filter(({ pullRequestNumber }) => !returned.has(pullRequestNumber))
+    .map(({ representativeSha }) => representativeSha);
   if (missingShas.length > 0) {
     throw new ExperienceCandidateOutputError(
       "schema_validation",
-      "Stage A 응답은 입력된 모든 커밋 SHA를 정확히 한 번 포함해야 합니다.",
+      "Stage A 응답은 입력된 모든 PR 번호를 정확히 한 번 포함해야 합니다.",
       { missingShas, partialOutput: {
         candidates,
         unclassifiedShas: unclassifiedShas.filter((sha) => !missingShas.includes(sha)),

@@ -36,13 +36,17 @@ import {
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
   selectStageACandidates,
   STAGE_A_MODEL,
-  STAGE_A_CHUNK_SIZE,
-  STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_FILES,
+  resolveChunkQuota,
   STAGE_A_TIMEOUT_MS,
   STAGE_A_RESET_SAFETY_MS,
   STAGE_A_TOKEN_RESERVE,
+  type StageAInput,
+  type StageAUnitInput,
 } from "../src/features/experience-candidates/stage-a";
+import {
+  splitUnitsIntoChunks,
+  toStageAUnits,
+} from "../src/features/experience-candidates/candidate-client";
 import {
   buildStageBPayload,
   createStageBGenerate,
@@ -240,14 +244,8 @@ function reportDetailShape(details: readonly CommitDetail[]) {
 function reportPayloadSizes(details: readonly CommitDetail[]) {
   const encoder = new TextEncoder();
   const stageA = buildStageAPayload({
-    commits: details.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
-      sha,
-      message,
-      additions,
-      deletions,
-      changedFiles,
-      files,
-    })),
+    units: toStageAUnits(details).units,
+    candidateLimit: 1,
     contributionItems: [],
   });
   const stageABytes = encoder.encode(JSON.stringify(stageA)).byteLength;
@@ -355,13 +353,12 @@ function instrumentedStageAGenerate(model: string | undefined, expected: number)
   const generate = createStageAGenerate(model);
   return async (payload, abortSignal) => {
     const output = await generate(payload, abortSignal);
-    const decisions = (output as { decisions?: { sha?: string }[] }).decisions ?? [];
-    const returned = decisions.map((decision) => decision.sha);
+    const decisions =
+      (output as { decisions?: { pullRequestNumber?: number }[] }).decisions ?? [];
+    const returned = decisions.map((decision) => decision.pullRequestNumber);
     const unique = new Set(returned);
-    const inputShas = new Set(
-      (payload as { commits: readonly { readonly sha: string }[] }).commits.map(({ sha }) => sha)
-    );
-    const missing = [...inputShas].filter((sha) => !unique.has(sha)).length;
+    const inputNumbers = new Set(payload.units.map(({ pullRequestNumber }) => pullRequestNumber));
+    const missing = [...inputNumbers].filter((number) => !unique.has(number)).length;
     console.log(
       `[stage-a] 모델 응답 decision=${returned.length}/${expected} 고유=${unique.size} ` +
         `누락=${missing} 중복=${returned.length - unique.size} 계약충족=${returned.length === expected && unique.size === expected && missing === 0}`
@@ -387,14 +384,8 @@ async function runStageA() {
   try {
     const output = await selectStageACandidates(
       {
-        commits: details.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
-          sha,
-          message,
-          additions,
-          deletions,
-          changedFiles,
-          files,
-        })),
+        units: toStageAUnits(details).units,
+        candidateLimit: INITIAL_STAGE_A_CANDIDATE_LIMIT,
         contributionItems,
       },
       instrumentedStageAGenerate(model, details.length)
@@ -429,7 +420,7 @@ async function runStageAChunks() {
   const chunkGenerate = createStageAGenerate(chunkModel);
   console.log(`[stage-a-chunks] 모델=${chunkModel ?? STAGE_A_MODEL}`);
   const details = await fetchDetailsCached(targets);
-  let candidates: StageACandidate[] = [];
+  const candidates: StageACandidate[] = [];
   const unclassified = new Set<string>();
   let calls = 0;
   let totalTokens = 0;
@@ -438,36 +429,10 @@ async function runStageAChunks() {
   let failedShas = 0;
   let rateLimitFailures = 0;
   const startedAt = ms();
-  const split = (items: readonly CommitDetail[]) => {
-    const result: CommitDetail[][] = [];
-    for (const commit of items) {
-      const current = result.at(-1) ?? [];
-      const proposed = [...current, commit];
-      const bytes = new TextEncoder().encode(JSON.stringify(buildStageAPayload({
-        commits: proposed,
-        contributionItems: [],
-      }))).length;
-      const files = proposed.reduce((sum, item) => sum + item.files.length, 0);
-      if (current.length > 0 && (proposed.length > STAGE_A_CHUNK_SIZE ||
-        bytes > STAGE_A_CHUNK_MAX_BYTES || files > STAGE_A_CHUNK_MAX_FILES)) {
-        result.push([commit]);
-      } else if (result.length === 0 || current.length === 0) {
-        result.push(proposed);
-      } else {
-        result[result.length - 1] = proposed;
-      }
-    }
-    return result;
-  };
 
-  const call = async (chunk: readonly CommitDetail[], mode: "initial" | "reduce", limit?: number) => {
+  const call = async (chunk: readonly StageAUnitInput[], limit: number) => {
     const callStartedAt = ms();
-    const input = {
-      mode,
-      commits: chunk,
-      contributionItems: [],
-      ...(limit === undefined ? {} : { candidateLimit: limit }),
-    } as const;
+    const input: StageAInput = { units: chunk, contributionItems: [], candidateLimit: limit };
     const recover = async (current: typeof input, attempts = 2): ReturnType<typeof selectStageACandidates> => {
       try {
         return await selectStageACandidates(current, chunkGenerate);
@@ -484,10 +449,11 @@ async function runStageAChunks() {
         const missing = new Set(error.missingShas);
         const recovered = await recover({
           ...current,
-          commits: current.commits.filter(({ sha }) => missing.has(sha)),
-          ...(current.candidateLimit === undefined ? {} : {
-            candidateLimit: Math.max(1, current.candidateLimit - error.partialOutput.candidates.length),
-          }),
+          units: current.units.filter(({ representativeSha }) => missing.has(representativeSha)),
+          candidateLimit: Math.max(
+            1,
+            current.candidateLimit - error.partialOutput.candidates.length
+          ),
         }, attempts - 1);
         error.missingShas.forEach((sha) => recoveredShaSet.add(sha));
         return {
@@ -521,7 +487,7 @@ async function runStageAChunks() {
     calls += 1;
     totalTokens += output.rateLimit?.usedTokens ?? 0;
     console.log(
-      `[stage-a-chunks] 호출=${calls} mode=${mode} 입력=${chunk.length} 후보=${output.candidates.length} ` +
+      `[stage-a-chunks] 호출=${calls} 입력묶음=${chunk.length} 쿼터=${limit} 후보=${output.candidates.length} ` +
       `소요=${round(ms() - callStartedAt)}ms 토큰=${output.rateLimit?.usedTokens ?? 0} ` +
       `잔여=${output.rateLimit?.remainingTokens ?? -1} reset=${output.rateLimit?.resetAfterMs ?? -1}ms`
     );
@@ -533,35 +499,19 @@ async function runStageAChunks() {
     }
   };
 
-  const initialChunks = split(details);
+  const { units, excludedCommits } = toStageAUnits(details);
+  const initialChunks = splitUnitsIntoChunks(units, []);
+  const quota = resolveChunkQuota(initialChunks.length);
+  console.log(
+    `[stage-a-chunks] 커밋=${details.length} 묶음=${units.length} 제외=${excludedCommits.length} ` +
+    `청크=${initialChunks.length} 쿼터=${quota} 최대후보=${initialChunks.length * quota}`
+  );
   for (let index = 0; index < initialChunks.length; index += 1) {
-    const output = await call(initialChunks[index], "initial");
+    const chunk = initialChunks[index];
+    const output = await call(chunk, Math.min(quota, chunk.length));
     candidates.push(...output.candidates);
     output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
-    if (index + 1 < initialChunks.length || candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
-      await pause(output.rateLimit);
-    }
-  }
-
-  for (let roundIndex = 0; candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT && roundIndex < 6; roundIndex += 1) {
-    const next: StageACandidate[] = [];
-    const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
-    const chunks = split(details.filter(({ sha }) => candidateBySha.has(sha)));
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index];
-      const group = chunk.map(({ sha }) => candidateBySha.get(sha)!);
-      if (group.length === 1) { next.push(group[0]); continue; }
-      const output = await call(
-        chunk,
-        "reduce",
-        Math.max(1, Math.floor(group.length / 2))
-      );
-      next.push(...output.candidates);
-      output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
-      if (index + 1 < chunks.length) await pause(output.rateLimit);
-    }
-    console.log(`[stage-a-chunks] 재판단 라운드=${roundIndex + 1} ${candidates.length}->${next.length}`);
-    candidates = next;
+    if (index + 1 < initialChunks.length) await pause(output.rateLimit);
   }
 
   const finalShas = new Set([...candidates.map(({ sha }) => sha), ...unclassified]);

@@ -4,6 +4,8 @@ import {
   fetchStageACandidatesFromApi,
   fetchStageBCandidatesFromApi,
   toStageARequest,
+  toStageAUnits,
+  splitUnitsIntoChunks,
 } from "./candidate-client";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
@@ -19,7 +21,7 @@ const COMMIT: ReadonlyCommitDetail = {
   deletions: 2,
   changedFiles: 1,
   files: [{ path: "src/a.ts", status: "modified", additions: 10, deletions: 2, changes: 12, patch: "@@ -1 +1 @@" }],
-  pullRequests: [{ number: 1, title: "PR", state: "merged", url: "https://example.test", baseBranch: "main", headBranch: "feat" }],
+  pullRequests: [{ number: 7, title: "PR", state: "merged", url: "https://example.test", baseBranch: "main", headBranch: "feat" }],
 };
 
 const STAGE_A_CANDIDATE: StageACandidate = {
@@ -45,6 +47,24 @@ async function expectRequestError(promise: Promise<unknown>, expected: Partial<C
   expect(error).toMatchObject(expected);
 }
 
+type StageARequestBody = {
+  units: { pullRequestNumber: number; representativeSha: string }[];
+  candidateLimit: number;
+};
+
+function parseRequest(init: RequestInit | undefined): StageARequestBody {
+  return JSON.parse(String(init?.body)) as StageARequestBody;
+}
+
+/** 커밋마다 서로 다른 PR을 붙여 묶음 하나에 커밋 하나가 되게 합니다. */
+function manyUnits(count: number): ReadonlyCommitDetail[] {
+  return Array.from({ length: count }, (_, index) => ({
+    ...COMMIT,
+    sha: `sha-${index}`,
+    pullRequests: [{ ...COMMIT.pullRequests[0], number: index + 1 }],
+  }));
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn());
 });
@@ -53,23 +73,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("toStageARequest", () => {
-  it("경량 계약 필드만 남기고 patch, PR, 작성자 정보를 제거한다", () => {
-    const request = toStageARequest([COMMIT], ["푸시 알림 구현"]);
+describe("toStageAUnits", () => {
+  it("PR 묶음으로 접고 patch와 커밋 본문을 남기지 않는다", () => {
+    const { units, excludedCommits } = toStageAUnits([COMMIT]);
 
-    expect(request).toEqual({
-      mode: "initial",
-      commits: [{
-        sha: "sha-1",
-        message: "feat: add analysis",
-        additions: 10,
-        deletions: 2,
-        changedFiles: 1,
-        files: [{ path: "src/a.ts", status: "modified", additions: 10, deletions: 2, changes: 12 }],
-      }],
-      contributionItems: ["푸시 알림 구현"],
-    });
-    expect(JSON.stringify(request)).not.toContain("patch");
+    expect(excludedCommits).toEqual([]);
+    expect(units).toHaveLength(1);
+    expect(units[0].pullRequestNumber).toBe(7);
+    expect(units[0].representativeSha).toBe("sha-1");
+    expect(JSON.stringify(units)).not.toContain("patch");
+    expect(JSON.stringify(units)).not.toContain("\\n");
+  });
+
+  it("PR에 속하지 않은 커밋을 사유와 함께 제외한다", () => {
+    const { units, excludedCommits } = toStageAUnits([{ ...COMMIT, pullRequests: [] }]);
+
+    expect(units).toEqual([]);
+    expect(excludedCommits).toEqual([
+      { sha: "sha-1", title: COMMIT.title, reason: "no_pull_request" },
+    ]);
   });
 });
 
@@ -84,7 +106,7 @@ describe("fetchStageACandidatesFromApi", () => {
     });
     expect(fetch).toHaveBeenCalledWith("/api/candidates/stage-a", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify(toStageARequest([COMMIT], ["푸시 알림 구현"])),
+      body: JSON.stringify(toStageARequest(toStageAUnits([COMMIT]).units, ["푸시 알림 구현"], 1)),
     }));
   });
 
@@ -121,39 +143,59 @@ describe("fetchStageACandidatesFromApi", () => {
     });
   });
 
-  it("8개 경계로 모든 커밋을 한 번씩 판단하고 후보 초과를 감소 재판단한다", async () => {
-    const commits = Array.from({ length: 25 }, (_, index) => ({ ...COMMIT, sha: `sha-${index}` }));
-    const initialShas: string[] = [];
+  it("모든 묶음을 한 번씩 판단하고 재판단 라운드 없이 끝낸다", async () => {
+    const commits = manyUnits(25);
+    const sent: number[] = [];
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as {
-        mode: "initial" | "reduce";
-        commits: { sha: string }[];
-        candidateLimit?: number;
-      };
-      if (request.mode === "initial") initialShas.push(...request.commits.map(({ sha }) => sha));
-      const selected = request.commits.slice(0, request.candidateLimit ?? request.commits.length);
+      const request = parseRequest(init);
+      sent.push(...request.units.map(({ pullRequestNumber }) => pullRequestNumber));
+      const selected = request.units.slice(0, request.candidateLimit);
       return jsonResponse({
-        candidates: selected.map(({ sha }) => ({ sha, source: "automatic_recommendation", contributionItem: null })),
-        unclassifiedShas: request.commits.slice(selected.length).map(({ sha }) => sha),
+        candidates: selected.map(({ representativeSha }) => ({
+          sha: representativeSha,
+          source: "automatic_recommendation",
+          contributionItem: null,
+        })),
+        unclassifiedShas: request.units.slice(selected.length).map((u) => u.representativeSha),
         rateLimit: { remainingTokens: 0, resetAfterMs: 1, usedTokens: 100 },
       });
     });
 
     const output = await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
 
-    expect(initialShas).toEqual(commits.map(({ sha }) => sha));
-    expect(new Set(initialShas).size).toBe(25);
+    expect(sent).toEqual(commits.map((_, index) => index + 1));
+    expect(new Set(sent).size).toBe(25);
     expect(output.candidates.length).toBeLessThanOrEqual(20);
-    expect(vi.mocked(fetch).mock.calls.slice(0, 4).map(([, init]) =>
-      (JSON.parse(String(init?.body)) as { commits: unknown[] }).commits.length
-    )).toEqual([8, 8, 8, 1]);
+    // 청크 수만큼만 호출합니다. 재판단 라운드가 있으면 이 값을 넘습니다.
+    const chunkCount = splitUnitsIntoChunks(toStageAUnits(commits).units, []).length;
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(chunkCount);
   });
 
-  it("실패 전 완료 청크 체크포인트로 재개해 이미 판단한 SHA를 다시 보내지 않는다", async () => {
-    const commits = Array.from({ length: 13 }, (_, index) => ({ ...COMMIT, sha: `sha-${index}` }));
+  it("청크마다 쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
+    const commits = manyUnits(25);
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const request = parseRequest(init);
+      return jsonResponse({
+        candidates: [],
+        unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
+        rateLimit: { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
+      });
+    });
+
+    await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
+
+    const limits = vi.mocked(fetch).mock.calls.map(([, init]) => parseRequest(init).candidateLimit);
+    expect(limits.every((limit) => limit >= 1)).toBe(true);
+    expect(limits.reduce((sum, limit) => sum + limit, 0)).toBeLessThanOrEqual(20);
+  });
+
+  it("실패 전 완료 청크 체크포인트로 재개해 이미 판단한 묶음을 다시 보내지 않는다", async () => {
+    const commits = manyUnits(25);
+    const firstChunk = splitUnitsIntoChunks(toStageAUnits(commits).units, [])[0];
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse({
-        candidates: [], unclassifiedShas: commits.slice(0, 8).map(({ sha }) => sha),
+        candidates: [],
+        unclassifiedShas: firstChunk.map(({ representativeSha }) => representativeSha),
         rateLimit: { remainingTokens: 0, resetAfterMs: 1, usedTokens: 100 },
       }))
       .mockResolvedValueOnce(jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502));
@@ -164,28 +206,26 @@ describe("fetchStageACandidatesFromApi", () => {
     } catch (error) {
       checkpoint = (error as CandidateRequestError).checkpoint;
     }
-    expect(checkpoint?.processedShas).toHaveLength(8);
+    expect(checkpoint?.processedShas).toHaveLength(firstChunk.length);
 
     vi.mocked(fetch).mockReset();
     vi.mocked(fetch).mockResolvedValue(jsonResponse({
-      candidates: [], unclassifiedShas: commits.slice(8).map(({ sha }) => sha), rateLimit: null,
+      candidates: [], unclassifiedShas: [], rateLimit: null,
     }));
     await fetchStageACandidatesFromApi(commits, [], () => undefined, checkpoint, async () => undefined);
-    const resumed = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)) as { commits: { sha: string }[] };
-    expect(resumed.commits.map(({ sha }) => sha)).toEqual(commits.slice(8).map(({ sha }) => sha));
+    const resumed = parseRequest(vi.mocked(fetch).mock.calls[0][1]);
+    expect(resumed.units.some(({ representativeSha }) =>
+      checkpoint!.processedShas.includes(representativeSha)
+    )).toBe(false);
   });
 
-  it("커밋 수보다 먼저 바이트 경계에 닿으면 경계 커밋을 다음 청크로 보존한다", async () => {
-    const commits = Array.from({ length: 3 }, (_, index) => ({
-      ...COMMIT,
-      sha: `sha-${index}`,
-      message: "x".repeat(2_500),
-    }));
+  it("프롬프트 바이트 경계에서 묶음을 다음 청크로 보존한다", async () => {
+    const commits = manyUnits(3).map((commit) => ({ ...commit, title: "x".repeat(2_800) }));
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as { commits: { sha: string }[] };
+      const request = parseRequest(init);
       return jsonResponse({
         candidates: [],
-        unclassifiedShas: request.commits.map(({ sha }) => sha),
+        unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
         rateLimit: { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
       });
     });
@@ -193,27 +233,24 @@ describe("fetchStageACandidatesFromApi", () => {
     const output = await fetchStageACandidatesFromApi(commits, []);
 
     expect(output.unclassifiedShas).toEqual(commits.map(({ sha }) => sha));
-    expect(vi.mocked(fetch).mock.calls.map(([, init]) =>
-      (JSON.parse(String(init?.body)) as { commits: unknown[] }).commits.length
-    )).toEqual([2, 1]);
+    expect(vi.mocked(fetch).mock.calls.map(([, init]) => parseRequest(init).units.length))
+      .toEqual([2, 1]);
+  });
+});
+
+describe("splitUnitsIntoChunks", () => {
+  it("묶음 수 상한에서 나눈다", () => {
+    const units = toStageAUnits(manyUnits(45)).units;
+
+    const chunks = splitUnitsIntoChunks(units, []);
+
+    expect(chunks.every((chunk) => chunk.length <= 20)).toBe(true);
+    expect(chunks.flat().map(({ pullRequestNumber }) => pullRequestNumber))
+      .toEqual(units.map(({ pullRequestNumber }) => pullRequestNumber));
   });
 
-  it("파일 수 경계에서도 커밋을 누락하거나 중복하지 않는다", async () => {
-    const files = Array.from({ length: 10 }, (_, index) => ({ ...COMMIT.files[0], path: `src/${index}.ts` }));
-    const commits = Array.from({ length: 4 }, (_, index) => ({ ...COMMIT, sha: `sha-${index}`, files }));
-    vi.mocked(fetch).mockImplementation(async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as { commits: { sha: string }[] };
-      return jsonResponse({ candidates: [], unclassifiedShas: request.commits.map(({ sha }) => sha), rateLimit: {
-        remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100,
-      } });
-    });
-
-    const output = await fetchStageACandidatesFromApi(commits, []);
-
-    expect(output.unclassifiedShas).toEqual(commits.map(({ sha }) => sha));
-    expect(vi.mocked(fetch).mock.calls.map(([, init]) =>
-      (JSON.parse(String(init?.body)) as { commits: unknown[] }).commits.length
-    )).toEqual([3, 1]);
+  it("묶음이 없으면 청크도 없다", () => {
+    expect(splitUnitsIntoChunks([], [])).toEqual([]);
   });
 });
 

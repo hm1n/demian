@@ -8,15 +8,27 @@ import {
 import { ExperienceCandidateOutputError } from "@/features/experience-candidates/errors";
 import { handleStageA, MAX_STAGE_A_BODY_BYTES } from "./route";
 
-const body = { mode: "initial", commits: [], contributionItems: [] };
-const commit = {
-  sha: "sha",
-  message: "feat: 경량 입력",
-  additions: 1,
-  deletions: 0,
-  changedFiles: 1,
-  files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1 }],
-};
+function unit(pullRequestNumber: number, representativeSha: string) {
+  return {
+    pullRequestNumber,
+    representativeSha,
+    summary: {
+      pullRequestNumber,
+      pullRequestTitle: "경량 입력",
+      commitCount: 1,
+      spanDays: 1,
+      additions: 1,
+      deletions: 0,
+      commitTitles: ["feat: 경량 입력"],
+      changedFilePathCount: 1,
+      topFilePaths: ["src/a.ts"],
+    },
+  };
+}
+
+const SHA = "a".repeat(40);
+const SHA_2 = "b".repeat(40);
+const body = { units: [unit(1, SHA)], contributionItems: [], candidateLimit: 1 };
 
 function request(value: unknown, authenticated = true) {
   return new NextRequest("https://example.com/api/candidates/stage-a", {
@@ -50,9 +62,13 @@ describe("POST /api/candidates/stage-a", () => {
   });
 
   it("성공 응답은 Stage A 계약만 반환한다", async () => {
-    const response = await handleStageA(request(body), async () => ({ decisions: [] }));
+    const response = await handleStageA(request(body), async () => ({
+      decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: false }],
+    }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ candidates: [], unclassifiedShas: [], rateLimit: null });
+    expect(await response.json()).toEqual({
+      candidates: [], unclassifiedShas: [SHA], rateLimit: null,
+    });
   });
 
   it("잘못된 JSON, 입력 계약, 4.5MB 초과를 서로 다른 요청 오류로 거부한다", async () => {
@@ -69,63 +85,87 @@ describe("POST /api/candidates/stage-a", () => {
     expect(oversized.status).toBe(413);
   });
 
-  it("patch가 포함된 요청은 크기 상한이 아니라 계약 위반 422로 거부한다", async () => {
+  it("요약에 없는 필드를 덧붙인 요청은 계약 위반 422로 거부한다", async () => {
+    const tainted = unit(1, SHA);
     const response = await handleStageA(request({
-      commits: [{
-        ...commit,
-        files: [{ ...commit.files[0], patch: "x".repeat(1024 * 1024) }],
-      }],
+      units: [{ ...tainted, summary: { ...tainted.summary, patch: "x".repeat(1024 * 1024) } }],
       contributionItems: [],
+      candidateLimit: 1,
     }));
     expect(response.status).toBe(422);
     expect(await response.json()).toMatchObject({ error: { kind: "invalid_request" } });
   });
 
-  it("patch를 제외한 경량 메시지·stat 요청은 정상 처리한다", async () => {
-    let received: unknown;
-    const response = await handleStageA(
-      request({ mode: "initial", commits: [commit], contributionItems: [] }),
-      async (payload) => {
-        received = payload;
-        return { decisions: [{ sha: "sha", contributionItem: null, recommended: false }] };
-      }
-    );
-    expect(response.status).toBe(200);
-    expect(JSON.stringify(received)).not.toContain("patch");
-  });
-
-  it("8개를 넘는 단일 청크는 LLM 호출 전에 422로 거부한다", async () => {
+  it("프롬프트 상한을 넘는 요약은 LLM 호출 전에 422로 거부한다", async () => {
     const generate = vi.fn();
+    const long = unit(1, SHA);
     const response = await handleStageA(request({
-      mode: "initial",
-      commits: Array.from({ length: 9 }, (_, index) => ({ ...commit, sha: `sha-${index}` })),
+      units: [{ ...long, summary: { ...long.summary, commitTitles: ["x".repeat(7_000)] } }],
       contributionItems: [],
+      candidateLimit: 1,
     }), generate);
     expect(response.status).toBe(422);
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("누락된 SHA만 최대 2회 축소 재호출해 전수 계약을 복구한다", async () => {
-    const commits = [commit, { ...commit, sha: "sha-2" }];
+  it("접힌 묶음 요약만 모델에 전달한다", async () => {
+    let received: unknown;
+    const response = await handleStageA(request(body), async (payload) => {
+      received = payload;
+      return { decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: false }] };
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(received)).not.toContain("patch");
+    expect((received as { units: { summary: string }[] }).units[0].summary)
+      .toContain("PR#1 경량 입력 [1커밋 1일 +1-0 1파일]");
+  });
+
+  it("묶음 수 상한을 넘는 단일 청크는 LLM 호출 전에 422로 거부한다", async () => {
+    const generate = vi.fn();
+    const response = await handleStageA(request({
+      units: Array.from({ length: 21 }, (_, index) =>
+        unit(index + 1, String(index).padStart(40, "0"))
+      ),
+      contributionItems: [],
+      candidateLimit: 2,
+    }), generate);
+    expect(response.status).toBe(422);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("쿼터가 묶음 수보다 크면 LLM 호출 전에 422로 거부한다", async () => {
+    const generate = vi.fn();
+    const response = await handleStageA(request({
+      units: [unit(1, SHA)], contributionItems: [], candidateLimit: 2,
+    }), generate);
+    expect(response.status).toBe(422);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("누락된 묶음만 최대 2회 축소 재호출해 전수 계약을 복구한다", async () => {
     const generate = vi.fn()
       .mockResolvedValueOnce({ decisions: [
-        { sha: "sha", contributionItem: null, recommended: false },
+        { pullRequestNumber: 1, contributionItem: null, recommended: false },
       ] })
       .mockResolvedValueOnce({ decisions: [
-        { sha: "sha-2", contributionItem: null, recommended: false },
+        { pullRequestNumber: 2, contributionItem: null, recommended: false },
       ] });
 
-    const response = await handleStageA(request({ mode: "initial", commits, contributionItems: [] }), generate);
+    const response = await handleStageA(request({
+      units: [unit(1, SHA), unit(2, SHA_2)], contributionItems: [], candidateLimit: 2,
+    }), generate);
 
     expect(response.status).toBe(200);
     expect(generate).toHaveBeenCalledTimes(2);
-    expect(generate.mock.calls[1][0].commits.map(({ sha }: { sha: string }) => sha)).toEqual(["sha-2"]);
-    expect(await response.json()).toMatchObject({ unclassifiedShas: ["sha", "sha-2"] });
+    expect(generate.mock.calls[1][0].units.map(
+      ({ pullRequestNumber }: { pullRequestNumber: number }) => pullRequestNumber
+    )).toEqual([2]);
+    expect(await response.json()).toMatchObject({ unclassifiedShas: [SHA, SHA_2] });
   });
 
-  it("단일 SHA를 세 번 누락하면 판단 실패 수와 재시도 불가를 반환한다", async () => {
+  it("단일 묶음을 세 번 누락하면 판단 실패 수와 재시도 불가를 반환한다", async () => {
     const generate = vi.fn().mockResolvedValue({ decisions: [] });
-    const response = await handleStageA(request({ mode: "initial", commits: [commit], contributionItems: [] }), generate);
+    const response = await handleStageA(request(body), generate);
 
     expect(response.status).toBe(502);
     expect(generate).toHaveBeenCalledTimes(3);

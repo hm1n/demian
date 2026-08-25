@@ -9,12 +9,20 @@ import type {
   StageBCandidateResult,
 } from "./types";
 import { validateExperienceCandidateOutput } from "./schema";
+import { groupCommitsIntoWorkUnits, type ExcludedCommit } from "./work-unit";
+import {
+  renderWorkUnitSummary,
+  selectRepresentativeCommits,
+  summarizeWorkUnit,
+} from "./work-unit-summary";
 import type { ReadonlyCommitDetail, RepositoryRef } from "@/lib/github/types";
 import {
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
   STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_FILES,
-  STAGE_A_CHUNK_SIZE,
+  STAGE_A_CHUNK_MAX_REQUEST_BYTES,
+  STAGE_A_CHUNK_MAX_UNITS,
+  resolveChunkQuota,
+  type StageAUnitInput,
   STAGE_A_RESET_SAFETY_MS,
   STAGE_A_TOKEN_RESERVE,
 } from "./stage-a";
@@ -106,34 +114,10 @@ async function postCandidateApi(stage: CandidateStage, url: string, body: unknow
 }
 
 /** Stage A 계약이 허용하는 경량 필드만 남깁니다. patch는 입력 계약 위반(422)이라 전송하지 않습니다. */
-export function toStageARequest(
-  commits: readonly ReadonlyCommitDetail[],
-  contributionItems: readonly string[],
-  mode: "initial" | "reduce" = "initial",
-  candidateLimit?: number
-) {
-  return {
-    mode,
-    commits: commits.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
-      sha,
-      message,
-      additions,
-      deletions,
-      changedFiles,
-      files: files.map(({ path, status, additions: added, deletions: deleted, changes }) => ({
-        path,
-        status,
-        additions: added,
-        deletions: deleted,
-        changes,
-      })),
-    })),
-    contributionItems: [...contributionItems],
-    ...(candidateLimit === undefined ? {} : { candidateLimit }),
-  };
-}
-
-const SOURCES: readonly ExperienceCandidateSource[] = ["contribution_match", "automatic_recommendation"];
+const SOURCES: readonly ExperienceCandidateSource[] = [
+  "contribution_match",
+  "automatic_recommendation",
+];
 
 function isStageACandidate(value: unknown): value is StageACandidate {
   if (typeof value !== "object" || value === null) return false;
@@ -145,6 +129,70 @@ function isStageACandidate(value: unknown): value is StageACandidate {
   );
 }
 
+/**
+ * 커밋을 PR 단위 작업 묶음으로 접어 Stage A 요청 입력으로 만듭니다.
+ *
+ * patch는 보내지 않습니다. 입력 계약 위반(422)입니다. 커밋 메시지 본문과 파일별 숫자도 더는
+ * 보내지 않습니다. 묶음 요약이 그 자리를 대신합니다.
+ */
+export function toStageAUnits(
+  commits: readonly ReadonlyCommitDetail[]
+): { units: StageAUnitInput[]; excludedCommits: readonly ExcludedCommit[] } {
+  const { units, excludedCommits } = groupCommitsIntoWorkUnits(commits);
+  return {
+    units: units.map((unit) => ({
+      pullRequestNumber: unit.pullRequestNumber,
+      representativeSha: selectRepresentativeCommits(unit, 1)[0].sha,
+      summary: summarizeWorkUnit(unit),
+    })),
+    excludedCommits,
+  };
+}
+
+/** 한 청크의 요청 본문입니다. `candidateLimit`은 청크마다 고정된 쿼터입니다. */
+export function toStageARequest(
+  units: readonly StageAUnitInput[],
+  contributionItems: readonly string[],
+  candidateLimit: number
+) {
+  return { units: [...units], contributionItems: [...contributionItems], candidateLimit };
+}
+
+/**
+ * 묶음을 청크로 나눕니다.
+ *
+ * 프롬프트 바이트와 요청 본문 바이트를 둘 다 봅니다. 서버가 두 값을 각각 검증하므로 어느 한쪽만
+ * 보고 나누면 422가 납니다.
+ */
+export function splitUnitsIntoChunks(
+  units: readonly StageAUnitInput[],
+  contributionItems: readonly string[]
+): StageAUnitInput[][] {
+  const encoder = new TextEncoder();
+  const result: StageAUnitInput[][] = [];
+  for (const unit of units) {
+    const current = result.at(-1);
+    const proposed = current === undefined ? [unit] : [...current, unit];
+    const promptBytes = encoder.encode(
+      proposed.map((item) => renderWorkUnitSummary(item.summary)).join("\n")
+    ).length;
+    const requestBytes = encoder.encode(
+      JSON.stringify(toStageARequest(proposed, contributionItems, 1))
+    ).length;
+    if (
+      current === undefined ||
+      proposed.length > STAGE_A_CHUNK_MAX_UNITS ||
+      promptBytes > STAGE_A_CHUNK_MAX_BYTES ||
+      requestBytes > STAGE_A_CHUNK_MAX_REQUEST_BYTES
+    ) {
+      result.push([unit]);
+      continue;
+    }
+    result[result.length - 1] = proposed;
+  }
+  return result;
+}
+
 export async function fetchStageACandidatesFromApi(
   commits: readonly ReadonlyCommitDetail[],
   contributionItems: readonly string[],
@@ -153,103 +201,42 @@ export async function fetchStageACandidatesFromApi(
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 ): Promise<StageACandidateOutput> {
   const processed = new Set(checkpoint?.processedShas ?? []);
-  let candidates = [...(checkpoint?.candidates ?? [])];
+  const candidates = [...(checkpoint?.candidates ?? [])];
   const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
-  const pending = commits.filter(({ sha }) => !processed.has(sha));
-  const splitCommits = (items: readonly ReadonlyCommitDetail[]) => {
-    const result: ReadonlyCommitDetail[][] = [];
-    for (const commit of items) {
-      const current = result.at(-1) ?? [];
-      const proposed = [...current, commit];
-      const bytes = new TextEncoder().encode(JSON.stringify(toStageARequest(proposed, contributionItems))).length;
-      const files = proposed.reduce((sum, item) => sum + item.files.length, 0);
-      if (
-        current.length > 0 &&
-        (proposed.length > STAGE_A_CHUNK_SIZE || bytes > STAGE_A_CHUNK_MAX_BYTES || files > STAGE_A_CHUNK_MAX_FILES)
-      ) {
-        result.push([commit]);
-      } else if (result.length === 0 || current.length === 0) {
-        result.push(proposed);
-      } else {
-        result[result.length - 1] = proposed;
-      }
-    }
-    return result;
-  };
-  const chunks = splitCommits(pending);
+  const { units } = toStageAUnits(commits);
+  const pending = units.filter(({ representativeSha }) => !processed.has(representativeSha));
+  const chunks = splitUnitsIntoChunks(pending, contributionItems);
+  // 쿼터를 여기서 한 번 정합니다. 청크마다 전역 상한을 보내던 이전 방식은 실효 상한을
+  // `청크 수 × 20`으로 만들어 재판단 라운드를 부르는 원인이었습니다.
+  const quota = resolveChunkQuota(chunks.length);
 
-  const requestChunk = async (
-    chunk: readonly ReadonlyCommitDetail[],
-    mode: "initial" | "reduce",
-    limit?: number
-  ) => {
+  const requestChunk = async (chunk: readonly StageAUnitInput[]) => {
     const payload = await postCandidateApi(
-      "stage_a", "/api/candidates/stage-a", toStageARequest(chunk, contributionItems, mode, limit)
+      "stage_a",
+      "/api/candidates/stage-a",
+      toStageARequest(chunk, contributionItems, Math.min(quota, chunk.length))
     );
-    const output = payload as Partial<StageAChunkOutput>;
     if (!isStageAChunkOutput(payload)) {
       throw new CandidateRequestError("stage_a", "invalid_response", "Stage A 응답 형식이 올바르지 않습니다.");
     }
-    return output as StageAChunkOutput;
+    return payload as StageAChunkOutput;
   };
 
   try {
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
-      const output = await requestChunk(chunk, "initial");
+      const output = await requestChunk(chunk);
       candidates.push(...output.candidates);
       unclassifiedShas.push(...output.unclassifiedShas);
-      chunk.forEach(({ sha }) => processed.add(sha));
-      onProgress({ completed: processed.size, total: commits.length, waitingForRateLimit: false });
-      const moreRequests = index + 1 < chunks.length || candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT;
+      chunk.forEach(({ representativeSha }) => processed.add(representativeSha));
+      onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: false });
+      const moreRequests = index + 1 < chunks.length;
       if (moreRequests && !output.rateLimit) {
         throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
       }
       if (moreRequests && output.rateLimit && output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
-        onProgress({ completed: processed.size, total: commits.length, waitingForRateLimit: true });
+        onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: true });
         await wait(output.rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
-      }
-    }
-
-    for (let round = 0; candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT && round < 6; round += 1) {
-      const next: StageACandidate[] = [];
-      let lastRateLimit: StageAChunkOutput["rateLimit"] = null;
-      const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
-      const reductionChunks = splitCommits(
-        commits.filter(({ sha }) => candidateBySha.has(sha))
-      );
-      for (let index = 0; index < reductionChunks.length; index += 1) {
-        const chunk = reductionChunks[index];
-        const group = chunk.map(({ sha }) => candidateBySha.get(sha)!);
-        if (group.length === 1) {
-          next.push(group[0]);
-          continue;
-        }
-        const output = await requestChunk(chunk, "reduce", Math.max(1, Math.floor(group.length / 2)));
-        next.push(...output.candidates);
-        unclassifiedShas.push(...output.unclassifiedShas);
-        lastRateLimit = output.rateLimit;
-        if (index + 1 < reductionChunks.length && !output.rateLimit) {
-          throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
-        }
-        if (
-          index + 1 < reductionChunks.length &&
-          output.rateLimit &&
-          output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE
-        ) {
-          onProgress({ completed: commits.length, total: commits.length, waitingForRateLimit: true });
-          await wait(output.rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
-        }
-      }
-      candidates = next;
-      if (candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
-        if (!lastRateLimit) {
-          throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
-        }
-        if (lastRateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
-          onProgress({ completed: commits.length, total: commits.length, waitingForRateLimit: true });
-          await wait(lastRateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
-        }
       }
     }
   } catch (cause) {
@@ -263,16 +250,18 @@ export async function fetchStageACandidatesFromApi(
     throw cause;
   }
 
+  // 쿼터가 상한을 넘지 않도록 `resolveChunkQuota`가 이미 보장하지만, 서버가 쿼터를 어긴 응답을
+  // 돌려주는 경우까지 통과시키면 Stage B가 상한 초과 입력으로 422를 받습니다.
   if (candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
     throw new CandidateRequestError(
-      "stage_a", "schema_validation",
-      `재판단 6회 뒤에도 후보 ${candidates.length}개가 남아 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개로 줄지 않았습니다.`,
+      "stage_a",
+      "schema_validation",
+      `Stage A 후보가 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개를 넘었습니다.`,
       { checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] } }
     );
   }
   return { candidates, unclassifiedShas };
 }
-
 function isStageAChunkOutput(payload: unknown): payload is StageAChunkOutput {
   const output = payload as Partial<StageAChunkOutput>;
   if (

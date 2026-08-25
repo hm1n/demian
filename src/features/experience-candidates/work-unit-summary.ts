@@ -147,6 +147,30 @@ export function renderWorkUnitSummary(summary: WorkUnitSummary): string {
   ].join("\n");
 }
 
+/**
+ * 묶음을 대표하는 커밋을 변경량이 큰 순으로 고릅니다.
+ *
+ * Stage A는 묶음 하나를 후보 하나로 돌려주는데 뒤 단계와 화면은 커밋 SHA로 후보를 가리킵니다.
+ * 그 SHA를 여기서 정합니다. Stage B가 묶음 하나에서 patch를 가져올 커밋을 고를 때도 같은
+ * 기준을 씁니다. 기준이 갈리면 화면이 가리키는 커밋과 근거 diff의 커밋이 달라집니다.
+ *
+ * 변경량이 같으면 SHA 오름차순으로 끊습니다. 정렬이 흔들리면 같은 입력에서 대표 커밋이 매번
+ * 달라집니다.
+ */
+export function selectRepresentativeCommits<TCommit extends SummarizableCommit>(
+  unit: WorkUnit<TCommit>,
+  count: number
+): TCommit[] {
+  const changesOf = (commit: TCommit) =>
+    commit.files.reduce((sum, { changes }) => sum + changes, 0);
+  return [...unit.commits]
+    .sort((left, right) => {
+      const difference = changesOf(right) - changesOf(left);
+      return difference === 0 ? left.sha.localeCompare(right.sha) : difference;
+    })
+    .slice(0, Math.max(0, count));
+}
+
 /** 묶음 여러 개를 Stage A 한 청크의 입력 본문으로 만듭니다. 묶음 순서를 그대로 유지합니다. */
 export function renderWorkUnitSummaries(
   units: readonly WorkUnit<SummarizableCommit>[]
