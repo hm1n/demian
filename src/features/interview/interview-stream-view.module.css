@@ -1,0 +1,23 @@
+.stream { display: grid; gap: 12px; margin-top: 24px; }
+.log { display: grid; gap: 4px; max-height: 60vh; overflow-y: auto; border: 1px solid #ecebf0; border-radius: 12px; padding: 16px; background: #fff; overflow-wrap: anywhere; }
+.log:focus-visible { outline: 3px solid rgba(109, 99, 232, .25); outline-offset: 2px; }
+.preparing { color: #777580; font-size: 14px; }
+.message { display: grid; gap: 10px; border-top: 1px solid #f2f1f6; padding: 12px 0; color: #34333d; font-size: 15px; line-height: 1.7; }
+.message:first-child { border-top: 0; padding-top: 0; }
+.message h2 { color: #1f1e28; font-size: 18px; letter-spacing: -.02em; }
+.message ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; }
+.message code { border-radius: 4px; background: #f5f4fa; font-size: 13px; padding: 1px 4px; }
+.codeBlock pre, .plainCode { overflow-x: auto; border-radius: 10px; background: #f7f7fb; font-size: 13px; line-height: 1.6; padding: 12px 14px; }
+.codeBlock code, .plainCode code { background: none; font-size: 13px; padding: 0; }
+.status { color: #777580; font-size: 13px; }
+.unreadButton { width: fit-content; min-height: 44px; border: 0; border-radius: 999px; background: #5b52d6; color: #fff; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
+.unreadButton:focus-visible { outline: 3px solid rgba(109, 99, 232, .35); outline-offset: 2px; }
+.unreadNotice { color: #777580; font-size: 12px; line-height: 1.5; }
+/* 내용이 없을 때도 노드는 남겨 둡니다. live region은 붙어 있는 동안의 변경만 알립니다. 절대 위치로
+   빼서 grid 항목에서 제외해야 빈 상태에서 gap이 생기지 않습니다. */
+.unreadNotice:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.error { display: grid; gap: 6px; border-radius: 10px; background: #fdecec; padding: 12px 14px; }
+.errorMessage { color: #8c2f2f; font-size: 14px; font-weight: 700; }
+.errorGuidance { color: #8c4a4a; font-size: 13px; line-height: 1.6; }
+.retryButton { width: fit-content; min-height: 44px; border: 1px solid #d9b5b5; border-radius: 999px; background: #fff; color: #8c2f2f; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
+.retryButton:focus-visible { outline: 3px solid rgba(140, 47, 47, .25); outline-offset: 2px; }
