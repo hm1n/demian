@@ -117,7 +117,9 @@ export async function handleStageB(
       output.candidates.flatMap(({ sha, relatedShas }) => [sha, ...relatedShas])
     );
     // ponytail: payload 조립은 결정론적이라 재사용합니다. 비용이 커지면 한 번 만든 payload를 판단과 응답에 전달합니다.
-    const bounded = buildStageBPayload(commits, candidates).commits;
+    // buildStageBPayload는 커밋을 Pull Request 단위 workUnits로 묶어 반환합니다(Codex 리뷰 P1-1).
+    // 여기서는 응답 diffs가 여전히 커밋 평면 목록이어야 하므로 다시 펼칩니다.
+    const bounded = buildStageBPayload(commits, candidates).workUnits.flatMap((unit) => unit.commits);
     return Response.json({
       ...output,
       diffs: bounded

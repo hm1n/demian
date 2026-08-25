@@ -17,8 +17,8 @@ const commits: CommitDetail[] = candidates.map(({ sha }, index) => ({
 describe("Stage B", () => {
   it("파일 patch를 상한에서 자르고 절단 여부를 모델에 표시한다", () => {
     const payload = buildStageBPayload(commits, candidates);
-    expect(payload.commits[0].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
-    expect(payload.commits[0].files[0].patchTruncated).toBe(true);
+    expect(payload.workUnits[0].commits[0].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
+    expect(payload.workUnits[0].commits[0].files[0].patchTruncated).toBe(true);
   });
 
   it("정상 후보와 부족 사유를 검증하고 입력 근거만 허용한다", async () => {
@@ -42,7 +42,7 @@ describe("Stage B", () => {
       commits[1],
     ];
     const payload = buildStageBPayload(large, candidates);
-    const starved = payload.commits[0].files.filter((file) => !("patch" in file));
+    const starved = payload.workUnits[0].commits[0].files.filter((file) => !("patch" in file));
     expect(starved.length).toBeGreaterThan(0);
     expect(starved[0]).toMatchObject({ additions: 1, deletions: 0, changes: 1 });
     // 예산 때문에 patch가 빠진 파일도 절단 표시를 받아야 모델이 전체 diff로 오해하지 않는다.
@@ -65,9 +65,12 @@ describe("Stage B", () => {
       },
     ];
     const payload = buildStageBPayload(greedy, candidates);
-    const usedByFirst = payload.commits[0].files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0);
+    const usedByFirst = payload.workUnits[0].commits[0].files.reduce(
+      (sum, file) => sum + (file.patch?.length ?? 0),
+      0
+    );
     expect(usedByFirst).toBe(STAGE_B_MAX_TOTAL_PATCH_CHARS / 2);
-    expect(payload.commits[1].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
+    expect(payload.workUnits[1].commits[0].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
   });
 
   it("후보 수가 늘어도 모든 후보가 자기 몫을 받고 총량 상한을 넘지 않는다", () => {
@@ -83,9 +86,9 @@ describe("Stage B", () => {
       contributionItem: null,
     }));
     const payload = buildStageBPayload(many, manyCandidates);
-    const perCandidate = payload.commits.map((commit) =>
-      commit.files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0)
-    );
+    const perCandidate = payload.workUnits
+      .flatMap((unit) => unit.commits)
+      .map((commit) => commit.files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0));
     const share = Math.floor(STAGE_B_MAX_TOTAL_PATCH_CHARS / count);
     expect(perCandidate).toEqual(Array.from({ length: count }, () => share));
     expect(perCandidate.reduce((sum, chars) => sum + chars, 0)).toBeLessThanOrEqual(
@@ -102,15 +105,25 @@ describe("Stage B", () => {
       },
     ];
     const payload = buildStageBPayload(frugal, candidates);
-    expect(payload.commits[0].files[0].patch).toHaveLength(10);
+    expect(payload.workUnits[0].commits[0].files[0].patch).toHaveLength(10);
     // 잔액이 이월돼도 파일별 상한은 그대로 적용된다.
-    expect(payload.commits[1].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
-    expect(payload.commits[1].files[0]).not.toHaveProperty("patchTruncated");
+    expect(payload.workUnits[1].commits[0].files[0].patch).toHaveLength(STAGE_B_MAX_PATCH_CHARS);
+    expect(payload.workUnits[1].commits[0].files[0]).not.toHaveProperty("patchTruncated");
   });
 
   it("후보 3개 계약과 부족 사유 계약을 검증한다", async () => {
     const threeCandidates = [...candidates, { sha: "c", source: "automatic_recommendation" as const, contributionItem: null }];
-    const threeCommits = [...commits, { ...commits[1], sha: "c", files: [{ ...commits[1].files[0], path: "src/c.ts" }] }];
+    // c는 b와 다른 PR(3)에 속해야 한다. 그렇지 않으면 PR 중복 정리가 b·c를 하나로 묶어 이 계약
+    // 테스트(후보 3개 그대로 통과)가 깨진다.
+    const threeCommits = [
+      ...commits,
+      {
+        ...commits[1],
+        sha: "c",
+        pullRequests: [{ ...commits[1].pullRequests[0], number: 3 }],
+        files: [{ ...commits[1].files[0], path: "src/c.ts" }],
+      },
+    ];
     const output = await selectStageBCandidates(threeCommits, threeCandidates, async () => ({
       candidates: threeCandidates.map(({ sha, source }) => ({ sha, relatedShas: [], evidence: "근거", citedFilePaths: [`src/${sha}.ts`], source })),
       insufficientCandidatesReason: null,
@@ -197,5 +210,111 @@ describe("Stage B", () => {
     await vi.advanceTimersByTimeAsync(10);
     await assertion;
     vi.useRealTimers();
+  });
+});
+
+// Codex 리뷰 P1-1: Stage B 검증기가 대표 SHA 중복만 막아서, 같은 Pull Request의 커밋 여러 개가
+// 최종 후보 자리를 나눠 가지면 최종 후보 3개가 실제로는 경험 1개일 수 있었다.
+describe("Stage B 최종 후보의 PR 중복 정리", () => {
+  const samePrCommits: CommitDetail[] = ["p1", "p2", "p3"].map((sha) => ({
+    sha,
+    title: sha,
+    author: "me",
+    date: "2026-08-21",
+    parentCount: 1,
+    message: sha,
+    additions: 1,
+    deletions: 0,
+    changedFiles: 1,
+    files: [{ path: `src/${sha}.ts`, status: "modified", additions: 1, deletions: 0, changes: 1 }],
+    pullRequests: [{ number: 9, title: "PR", state: "closed", url: "url", baseBranch: "develop", headBranch: "feature" }],
+  }));
+  const samePrCandidates = samePrCommits.map(({ sha }) => ({
+    sha,
+    source: "automatic_recommendation" as const,
+    contributionItem: null,
+  }));
+  const toRawCandidate = ({ sha }: { sha: string }) => ({
+    sha,
+    relatedShas: [],
+    evidence: "근거",
+    citedFilePaths: [`src/${sha}.ts`],
+    source: "automatic_recommendation" as const,
+  });
+
+  it("같은 PR 커밋 3개를 최종 후보로 돌려주면 1개로 정리되고 부족 사유가 채워진다", async () => {
+    const output = await selectStageBCandidates(samePrCommits, samePrCandidates, async () => ({
+      candidates: samePrCommits.map(toRawCandidate),
+      insufficientCandidatesReason: null,
+    }));
+    expect(output.candidates).toHaveLength(1);
+    expect(output.candidates[0].sha).toBe("p1");
+    expect(output.insufficientCandidatesReason).toBe(
+      "같은 Pull Request에서 나온 후보를 하나로 합쳐 1개가 되었습니다."
+    );
+  });
+
+  it("정리 후 남는 후보는 모델 출력 순서상 첫 번째다 (결정성)", async () => {
+    const output = await selectStageBCandidates(samePrCommits, samePrCandidates, async () => ({
+      candidates: [samePrCommits[1], samePrCommits[2], samePrCommits[0]].map(toRawCandidate),
+      insufficientCandidatesReason: null,
+    }));
+    expect(output.candidates).toHaveLength(1);
+    expect(output.candidates[0].sha).toBe("p2");
+  });
+
+  it("서로 다른 PR 3개면 정리되지 않고 부족 사유는 null로 남는다", async () => {
+    const differentPrCommits = samePrCommits.map((commit, index) => ({
+      ...commit,
+      pullRequests: [{ ...commit.pullRequests[0], number: 9 + index }],
+    }));
+    const differentPrCandidates = differentPrCommits.map(({ sha }) => ({
+      sha,
+      source: "automatic_recommendation" as const,
+      contributionItem: null,
+    }));
+    const output = await selectStageBCandidates(differentPrCommits, differentPrCandidates, async () => ({
+      candidates: differentPrCommits.map(toRawCandidate),
+      insufficientCandidatesReason: null,
+    }));
+    expect(output.candidates).toHaveLength(3);
+    expect(output.insufficientCandidatesReason).toBeNull();
+  });
+
+  it("buildStageBPayload가 같은 PR 커밋을 한 workUnits 항목으로 접는다", () => {
+    const payload = buildStageBPayload(samePrCommits, samePrCandidates);
+    expect(payload.workUnits).toHaveLength(1);
+    expect(payload.workUnits[0].pullRequest?.number).toBe(9);
+    expect(payload.workUnits[0].commits.map((commit) => commit.sha)).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("PR이 없는 커밋은 자기 자신만의 workUnits 항목이 된다", () => {
+    const noPrCommit: CommitDetail = { ...samePrCommits[0], sha: "no-pr", pullRequests: [] };
+    const noPrCandidate = { sha: "no-pr", source: "automatic_recommendation" as const, contributionItem: null };
+    const payload = buildStageBPayload([noPrCommit, samePrCommits[0]], [noPrCandidate, samePrCandidates[0]]);
+    expect(payload.workUnits).toHaveLength(2);
+    expect(payload.workUnits[0].pullRequest).toBeNull();
+    expect(payload.workUnits[0].commits.map((commit) => commit.sha)).toEqual(["no-pr"]);
+    expect(payload.workUnits[1].pullRequest?.number).toBe(9);
+  });
+
+  it("PR 없는 커밋 여러 개는 서로 다른 묶음으로 남아 정리 대상이 되지 않는다", async () => {
+    const noPrCommits: CommitDetail[] = ["q1", "q2"].map((sha) => ({
+      ...samePrCommits[0],
+      sha,
+      files: [{ ...samePrCommits[0].files[0], path: `src/${sha}.ts` }],
+      pullRequests: [],
+    }));
+    const noPrCandidates = noPrCommits.map(({ sha }) => ({
+      sha,
+      source: "automatic_recommendation" as const,
+      contributionItem: null,
+    }));
+    const output = await selectStageBCandidates(noPrCommits, noPrCandidates, async () => ({
+      candidates: noPrCommits.map(toRawCandidate),
+      insufficientCandidatesReason: "독립적인 경험이 둘뿐입니다.",
+    }));
+    expect(output.candidates).toHaveLength(2);
+    expect(output.insufficientCandidatesReason).toBe("독립적인 경험이 둘뿐입니다.");
   });
 });
