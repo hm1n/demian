@@ -12,6 +12,7 @@ import {
   STAGE_A_CHUNK_MAX_REQUEST_BYTES,
   STAGE_A_CHUNK_MAX_UNITS,
   buildStageAPayload,
+  renderStageAPrompt,
   selectStageACandidates,
   type GenerateStageA,
   type StageAInput,
@@ -132,13 +133,29 @@ export async function handleStageA(
     ) {
       return Response.json({ error: { kind: "invalid_request", message: "Stage A 입력 형식이 올바르지 않습니다." } }, { status: 422 });
     }
-    // 모델에 실제로 실리는 프롬프트를 서버에서 접어 보고 상한을 확인합니다. 요청 본문 크기만
-    // 재면 클라이언트가 긴 커밋 제목을 담아 프롬프트만 키우는 경로가 열립니다.
-    const promptBytes = new TextEncoder().encode(
-      buildStageAPayload(body).units.map(({ summary }) => summary).join("\n")
-    ).byteLength;
+    // 모델에 실제로 실리는 프롬프트를 서버에서 접어 보고 상한을 확인합니다. `renderStageAPrompt`가
+    // `createStageAGenerate`와 같은 함수라 여기서 손으로 다시 계산하지 않습니다. 예전에는 요약만
+    // 손으로 다시 이어붙여 기여 항목이 빠졌고, 그 결과 기여 항목이 긴 요청이 이 가드를 통과한 뒤
+    // 실제 프롬프트에서는 Groq 분당 토큰 한도를 넘겨 413을 받았습니다(Codex 리뷰 P2-1).
+    const stageAPayload = buildStageAPayload(body);
+    const promptBytes = new TextEncoder().encode(renderStageAPrompt(stageAPayload)).byteLength;
     if (promptBytes > STAGE_A_CHUNK_MAX_BYTES) {
-      return Response.json({ error: { kind: "invalid_request", message: "Stage A 입력 형식이 올바르지 않습니다." } }, { status: 422 });
+      // 원인을 구분해 알려줍니다. 요약만으로도 이미 상한을 넘었다면 기여 항목과 무관한 입력
+      // 문제입니다. 요약은 상한 안인데 기여 항목을 더해 넘었다면 기여 항목이 원인입니다.
+      // 오류 종류(kind)는 화면이 문구를 소유한 계약이라 늘리지 않고 메시지만 구분합니다.
+      const summaryOnlyBytes = new TextEncoder().encode(
+        stageAPayload.units.map(({ summary }) => summary).join("\n")
+      ).byteLength;
+      const causedByContributionItems =
+        stageAPayload.contributionItems.length > 0 && summaryOnlyBytes <= STAGE_A_CHUNK_MAX_BYTES;
+      return Response.json({
+        error: {
+          kind: "invalid_request",
+          message: causedByContributionItems
+            ? "기여 항목이 너무 길어 Stage A 입력이 상한을 넘었습니다. 기여 항목을 줄여주세요."
+            : "Stage A 입력 형식이 올바르지 않습니다.",
+        },
+      }, { status: 422 });
     }
     /**
      * 병합 결과를 요청 상한까지 자릅니다.

@@ -180,6 +180,31 @@ export function buildStageAPayload(input: StageAInput): StageAPayload {
   };
 }
 
+/**
+ * 모델에 실제로 보내는 프롬프트 본문(사용자 메시지)입니다.
+ *
+ * `createStageAGenerate`와 프롬프트 예산을 재는 라우트가 이 함수 하나로 같은 문자열을 보게
+ * 합니다. 전에는 라우트가 이 문자열을 손으로 다시 계산했고, 그 계산이 기여 항목을 빠뜨려
+ * 로컬 가드를 통과한 요청이 실제 프롬프트에서는 Groq 분당 토큰 한도를 넘겨 413을 받는
+ * 결함(Codex 리뷰 P2-1)이 생겼습니다.
+ *
+ * 시스템 프롬프트는 여기 포함하지 않습니다. `STAGE_A_CHUNK_MAX_BYTES`는 실측 시점에 시스템
+ * 프롬프트가 이미 실려 있던 호출에서 관측한 바이트당 토큰 비율(0.676)로 역산한 값이라 시스템
+ * 프롬프트의 토큰 기여가 상한에 이미 녹아 있습니다. 여기서 시스템 프롬프트 글자 수를 더하면
+ * 같은 기여를 두 번 반영하게 됩니다. 근거는
+ * `llm-wiki/wiki/2026-08-25-Stage-A-청크-폐기와-점수-선별-전환.md` 6절입니다.
+ */
+export function renderStageAPrompt(payload: StageAPayload): string {
+  return [
+    payload.units.map(({ summary }) => summary).join("\n"),
+    payload.contributionItems.length > 0
+      ? `기여 항목:\n${payload.contributionItems.join("\n")}`
+      : "",
+  ]
+    .filter((section) => section !== "")
+    .join("\n\n");
+}
+
 function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   if (error instanceof ExperienceCandidateOutputError) return error;
   // SDK가 재시도한 실패는 `RetryError`로 감싸져 옵니다. `RetryError`는 `APICallError`가 아니므로
@@ -291,14 +316,7 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
 각 묶음의 판정은 이렇게 씁니다. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 씁니다. 어느 항목에도 맞지 않지만 설명할 가치가 있으면 contributionItem을 null로 두고 recommended를 true로 합니다. 그 밖에는 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 합니다.
 
 recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개까지만 고르세요. 이 상한은 고르는 개수에만 걸립니다. decisions 배열의 길이를 줄이는 데 쓰면 안 됩니다. 나머지 묶음은 전부 '${UNCLASSIFIED_LABEL}'로 담으세요. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.`,
-      prompt: [
-        payload.units.map(({ summary }) => summary).join("\n"),
-        payload.contributionItems.length > 0
-          ? `기여 항목:\n${payload.contributionItems.join("\n")}`
-          : "",
-      ]
-        .filter((section) => section !== "")
-        .join("\n\n"),
+      prompt: renderStageAPrompt(payload),
       abortSignal,
     });
     const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);

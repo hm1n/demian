@@ -1,13 +1,22 @@
-import { APICallError, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
+import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
 import {
   buildStageAPayload,
+  createStageAGenerate,
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
+  renderStageAPrompt,
   selectStageACandidates,
   type StageAInput,
   type StageAUnitInput,
 } from "./stage-a";
+
+// `createStageAGenerate`가 실제로 Groq에 보내는 프롬프트를 가로채기 위한 부분 모킹입니다.
+// `generateObject`만 대체하고 나머지(`jsonSchema`, `APICallError` 등)는 실제 구현을 씁니다.
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: vi.fn() };
+});
 
 function unit(
   pullRequestNumber: number,
@@ -257,5 +266,41 @@ describe("Stage A 후보 선별", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(signal?.aborted).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("renderStageAPrompt", () => {
+  it("기여 항목이 없으면 빈 섹션을 붙이지 않는다", () => {
+    const payload = buildStageAPayload({ ...input, contributionItems: [] });
+    const prompt = renderStageAPrompt(payload);
+    expect(prompt).not.toContain("기여 항목:");
+    expect(prompt).toBe(payload.units.map(({ summary }) => summary).join("\n"));
+  });
+
+  it("기여 항목이 있으면 구분된 문단으로 붙인다", () => {
+    const payload = buildStageAPayload(input);
+    const prompt = renderStageAPrompt(payload);
+    expect(prompt).toContain("\n\n기여 항목:\n인증 구현");
+  });
+
+  // 이 테스트가 핵심입니다. 라우트가 예산을 재는 문자열과 모델에 실제로 실리는 문자열이
+  // 다시 어긋나면(Codex 리뷰 P2-1처럼) 이 테스트가 잡습니다.
+  it("createStageAGenerate가 Groq에 실제로 보내는 프롬프트와 같은 문자열을 만든다", async () => {
+    const payload = buildStageAPayload(input);
+    const generateObjectMock = vi.mocked(generateObject);
+    generateObjectMock.mockResolvedValue({
+      object: { decisions: payload.units.map(({ pullRequestNumber }) => ({
+        pullRequestNumber, contributionItem: null, recommended: false,
+      })) },
+      response: { headers: {} },
+      usage: { totalTokens: 0 },
+    } as unknown as Awaited<ReturnType<typeof generateObject>>);
+
+    const generate = createStageAGenerate("test-model");
+    await generate(payload, new AbortController().signal);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    const actualPrompt = generateObjectMock.mock.calls[0]![0].prompt;
+    expect(actualPrompt).toBe(renderStageAPrompt(payload));
   });
 });
