@@ -154,8 +154,12 @@ export function ExperienceCandidateList({
  * 같은 "제외"라도 사용자에게 다른 의미라 구획을 나눕니다. 점수는 우리 휴리스틱이지 Repository
  * 사실이 아니므로 `확인 가능` 태그를 씌우지 않고 별도로 표시합니다. PR 번호·제목은 GitHub 응답
  * 값이라 `확인 가능`을 씌웁니다.
+ *
+ * 후보 0개인 빈 상태(`repository-analysis-view.tsx`의 `EmptyState`)도 같은 원칙이 적용되는
+ * 지점이라 이 컴포넌트를 그대로 재사용합니다. 같은 정보를 두 곳에서 다르게 그리면 어긋납니다
+ * (이슈 #58 Codex 리뷰 P1-2).
  */
-function StageAExclusions({
+export function StageAExclusions({
   excludedCommits,
   excludedUnits,
   thresholdScore,

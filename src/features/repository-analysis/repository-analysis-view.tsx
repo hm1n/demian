@@ -2,13 +2,14 @@
 
 import { type FormEvent, useRef, useState } from "react";
 import type { RepositoryRef } from "@/lib/github/types";
-import { ExperienceCandidateList } from "@/features/experience-candidates/experience-candidate-list";
+import { ExperienceCandidateList, StageAExclusions } from "@/features/experience-candidates/experience-candidate-list";
 import {
   analyzeRepository,
   generateCandidates,
   type AnalysisState,
   type EmptyKind,
   type LoadingPhase,
+  type StageASelectionState,
 } from "./repository-analysis";
 import styles from "./repository-analysis.module.css";
 
@@ -196,6 +197,7 @@ export function RepositoryAnalysisView() {
           <EmptyState
             kind={state.kind}
             reason={state.kind === "no_final_candidates" ? state.reason : undefined}
+            stageASelection={state.stageASelection}
             onSelectRepository={selectRepository}
           />
         ) : null}
@@ -268,10 +270,15 @@ const EMPTY_COPY: Record<EmptyKind | "no_final_candidates", { title: string; des
 function EmptyState({
   kind,
   reason,
+  stageASelection,
   onSelectRepository,
 }: {
   kind: EmptyKind | "no_final_candidates";
   reason?: string;
+  // Stage A 전에 나는 no_commits·no_author_commits·no_analyzable_commits는 선별 정보가 없어 생략됩니다.
+  // no_stage_a_candidates·no_final_candidates는 후보가 0개일 때가 제외 사유를 가장 알아야 할 순간이라
+  // 값이 있으면 성공 상태와 같은 `StageAExclusions`로 그립니다(이슈 #58 Codex 리뷰 P1-2).
+  stageASelection?: StageASelectionState;
   onSelectRepository: () => void;
 }) {
   const copy = EMPTY_COPY[kind];
@@ -280,6 +287,7 @@ function EmptyState({
       <h2>{copy.title}</h2>
       {reason ? <p>{reason}</p> : null}
       <p>{copy.description}</p>
+      {stageASelection ? <StageAExclusions {...stageASelection} /> : null}
       <div className={styles.actions}>
         <button className={styles.secondaryButton} type="button" onClick={onSelectRepository}>다른 Repository 선택</button>
       </div>

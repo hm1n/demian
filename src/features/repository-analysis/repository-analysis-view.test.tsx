@@ -3,6 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExcludedCommit } from "@/features/experience-candidates/work-unit";
 import {
   analyzeRepository,
   generateCandidates,
@@ -12,6 +13,8 @@ import {
   type StageASelectionState,
 } from "./repository-analysis";
 import { parseContributionItems, RepositoryAnalysisView } from "./repository-analysis-view";
+
+const excludedCommit = (sha: string, title: string): ExcludedCommit => ({ sha, title, reason: "no_pull_request" });
 
 vi.mock("./repository-analysis", async (importOriginal) => {
   const original = await importOriginal<typeof import("./repository-analysis")>();
@@ -164,6 +167,101 @@ describe("RepositoryAnalysisView Empty", () => {
       method: "POST",
       body: JSON.stringify({ token: "new_token" }),
     }));
+  });
+});
+
+// 이슈 #58 Codex 리뷰 P1-2: 후보 0개 빈 상태가 Stage A 제외 정보를 버리면 기능의 목적이 무너집니다.
+// 성공 상태와 같은 StageAExclusions를 재사용하므로 여기서는 배선(빈 상태에서도 렌더되는지, 빈 값이면
+// 렌더하지 않는지, Stage A 전 빈 상태는 영향받지 않는지)만 확인합니다. 세부 렌더 규칙(정렬·구획 분리
+// 등)은 experience-candidate-list.test.tsx가 이미 검증합니다.
+describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
+  it("no_stage_a_candidates에서도 제외 요약이 화면에 보인다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("heading", { name: "1차 선별에서 제외된 항목" })).toBeInTheDocument();
+    expect(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건")).toBeInTheDocument();
+  });
+
+  it("제외 0건이면 제외 섹션이 렌더되지 않는다", async () => {
+    mockState({ status: "empty", kind: "no_stage_a_candidates", stageASelection: EMPTY_STAGE_A_SELECTION });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+  });
+
+  it("Stage A 전에 나는 빈 상태는 stageASelection이 없어도 지금과 똑같이 동작한다", async () => {
+    mockState({ status: "empty", kind: "no_commits" });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "분석할 커밋이 없습니다" })).toBeInTheDocument();
+  });
+
+  it("unjudgedShas가 있으면 no_final_candidates에서도 판단 불가 표시가 보인다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_final_candidates",
+      reason: "실제 diff 근거로 설명할 수 있는 커밋이 없습니다.",
+      stageASelection: { ...EMPTY_STAGE_A_SELECTION, unjudgedShas: ["deadbeef00112233"] },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByText("모델이 판단하지 못한 묶음 1건")).toBeInTheDocument();
+    expect(screen.getByText("deadbee")).toBeInTheDocument();
+  });
+
+  it("빈 상태 섹션의 aria-live=\"polite\"를 유지한다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    const heading = screen.getByRole("heading", { name: "설명할 만한 경험 후보를 찾지 못했습니다" });
+    expect(heading.closest("section")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("제외 구획은 빈 상태에서도 키보드로 펼치고 접을 수 있다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    const details = screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건").closest("details");
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).not.toHaveAttribute("open");
   });
 });
 

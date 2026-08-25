@@ -83,8 +83,11 @@ export interface StageASelectionState extends StageASelectionSummary {
 export type AnalysisState =
   | { status: "idle" }
   | { status: "loading"; loading: LoadingPhase }
-  | { status: "empty"; kind: EmptyKind }
-  | { status: "empty"; kind: "no_final_candidates"; reason: string }
+  // stageASelection은 선택 필드입니다. Stage A를 부르기 전에 나는 no_commits·no_author_commits·
+  // no_analyzable_commits 세 갈래는 선별 정보가 존재하지 않아 값을 채우지 않습니다. no_stage_a_candidates는
+  // Stage A 직후 갈래라 항상 값을 싣습니다(이슈 #58 Codex 리뷰 P1-2).
+  | { status: "empty"; kind: EmptyKind; stageASelection?: StageASelectionState }
+  | { status: "empty"; kind: "no_final_candidates"; reason: string; stageASelection?: StageASelectionState }
   | { status: "error"; error: AnalysisError; retryPoint?: CandidateRetryPoint }
   | {
       status: "success";
@@ -278,8 +281,16 @@ export async function generateCandidates(
         stageACheckpoint
       );
     }
+    // 세 상태(빈 둘·성공)가 같은 선별 값을 싣도록 여기서 한 번만 만듭니다. 후보가 0개일 때가 제외
+    // 사유를 가장 알아야 할 순간이라 두 빈 갈래에도 성공 경로와 동일한 객체를 실어 보냅니다(이슈 #58 P1-2).
+    const stageASelection: StageASelectionState = {
+      excludedCommits: stageA.excludedCommits,
+      excludedUnits: stageA.excludedUnits,
+      thresholdScore: stageA.thresholdScore,
+      unjudgedShas: stageA.unjudgedShas,
+    };
     if (stageA.candidates.length === 0) {
-      onStateChange({ status: "empty", kind: "no_stage_a_candidates" });
+      onStateChange({ status: "empty", kind: "no_stage_a_candidates", stageASelection });
       return;
     }
     onStateChange({ status: "loading", loading: { step: "stage_b" } });
@@ -290,6 +301,7 @@ export async function generateCandidates(
         kind: "no_final_candidates",
         // 출력 계약이 후보 3개 미만이면 부족 사유를 보장하므로 0개에서 사유는 항상 존재합니다.
         reason: candidates.insufficientCandidatesReason!,
+        stageASelection,
       });
       return;
     }
@@ -297,12 +309,7 @@ export async function generateCandidates(
       status: "success",
       data,
       candidates,
-      stageASelection: {
-        excludedCommits: stageA.excludedCommits,
-        excludedUnits: stageA.excludedUnits,
-        thresholdScore: stageA.thresholdScore,
-        unjudgedShas: stageA.unjudgedShas,
-      },
+      stageASelection,
     });
   } catch (error) {
     if (error instanceof CandidateRequestError && error.checkpoint) {

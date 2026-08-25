@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { CandidateRequestError } from "@/features/experience-candidates/candidate-client";
-import type { StageACandidateOutput, StageBCandidateResult } from "@/features/experience-candidates/types";
+import { CandidateRequestError, type StageACandidateResult } from "@/features/experience-candidates/candidate-client";
+import type { StageBCandidateResult } from "@/features/experience-candidates/types";
 import { GitHubFetchError, RepositoryContributionFetchError } from "@/lib/github/errors";
 import type { CommitSummary, RepositoryContributionData } from "@/lib/github/types";
 import {
@@ -27,10 +27,13 @@ const CONTRIBUTIONS: RepositoryContributionData = {
   languages: { TypeScript: 100 },
 };
 
-const STAGE_A_OUTPUT: StageACandidateOutput = {
+const STAGE_A_OUTPUT: StageACandidateResult = {
   candidates: [{ sha: "sha-1", source: "automatic_recommendation", contributionItem: null }],
   unclassifiedShas: [],
   unjudgedShas: [],
+  excludedCommits: [],
+  excludedUnits: [],
+  thresholdScore: 3,
 };
 const STAGE_B_RESULT: StageBCandidateResult = {
   candidates: [
@@ -205,8 +208,35 @@ describe("generateCandidates", () => {
     const states: AnalysisState[] = [];
     await generateCandidates(retryPoint, (state) => states.push(state), deps);
 
-    expect(states.at(-1)).toEqual({ status: "empty", kind: "no_stage_a_candidates" });
+    expect(states.at(-1)).toMatchObject({ status: "empty", kind: "no_stage_a_candidates" });
     expect(deps.fetchStageBCandidates).not.toHaveBeenCalled();
+  });
+
+  // 이슈 #58 Codex 리뷰 P1-2: 후보가 0개일 때가 제외 사유를 가장 알아야 할 순간인데 그때만 안 보여주면
+  // 기능의 목적 자체가 무너집니다. 두 빈 갈래도 성공 경로와 같은 stageASelection을 실어 보내야 합니다.
+  it("Stage A 후보가 0개여도 제외·판단불가 정보를 stageASelection으로 함께 싣는다", async () => {
+    const deps = dependencies({
+      fetchStageACandidates: vi.fn().mockResolvedValue({
+        candidates: [],
+        unclassifiedShas: ["sha-1"],
+        unjudgedShas: ["sha-2"],
+        excludedCommits: [{ sha: "sha-3", title: "오타 수정", reason: "no_pull_request" }],
+        excludedUnits: [],
+        thresholdScore: 3,
+      }),
+    });
+    const states: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => states.push(state), deps);
+
+    const last = states.at(-1);
+    expect(last).toMatchObject({ status: "empty", kind: "no_stage_a_candidates" });
+    if (last?.status !== "empty" || last.kind !== "no_stage_a_candidates") throw new Error("unreachable");
+    expect(last.stageASelection).toEqual({
+      excludedCommits: [{ sha: "sha-3", title: "오타 수정", reason: "no_pull_request" }],
+      excludedUnits: [],
+      thresholdScore: 3,
+      unjudgedShas: ["sha-2"],
+    });
   });
 
   it("최종 후보가 0개이면 서버가 보낸 부족 사유와 함께 no_final_candidates로 끝낸다", async () => {
@@ -220,11 +250,77 @@ describe("generateCandidates", () => {
     const states: AnalysisState[] = [];
     await generateCandidates(retryPoint, (state) => states.push(state), deps);
 
-    expect(states.at(-1)).toEqual({
+    const last = states.at(-1);
+    expect(last).toMatchObject({
       status: "empty",
       kind: "no_final_candidates",
       reason: "실제 diff 근거로 설명할 수 있는 커밋이 없습니다.",
     });
+    if (last?.status !== "empty" || last.kind !== "no_final_candidates") throw new Error("unreachable");
+    expect(last.stageASelection).toEqual({
+      excludedCommits: STAGE_A_OUTPUT.excludedCommits,
+      excludedUnits: STAGE_A_OUTPUT.excludedUnits,
+      thresholdScore: STAGE_A_OUTPUT.thresholdScore,
+      unjudgedShas: STAGE_A_OUTPUT.unjudgedShas,
+    });
+  });
+
+  it("Stage A 전에 나는 빈 상태 3종은 stageASelection 없이도 정상 동작한다", async () => {
+    const noCommits: AnalysisState[] = [];
+    await analyzeRepository(
+      AUTH, [], (state) => noCommits.push(state),
+      dependencies({ fetchCommits: vi.fn().mockResolvedValue({ commits: [], repositoryHasCommits: false }) })
+    );
+    expect(noCommits.at(-1)).toEqual({ status: "empty", kind: "no_commits" });
+
+    const noAuthorCommits: AnalysisState[] = [];
+    await analyzeRepository(
+      AUTH, [], (state) => noAuthorCommits.push(state),
+      dependencies({ fetchCommits: vi.fn().mockResolvedValue({ commits: [], repositoryHasCommits: true }) })
+    );
+    expect(noAuthorCommits.at(-1)).toEqual({ status: "empty", kind: "no_author_commits" });
+
+    const noAnalyzableCommits: AnalysisState[] = [];
+    await analyzeRepository(
+      AUTH, [], (state) => noAnalyzableCommits.push(state),
+      dependencies({ filterCommits: vi.fn().mockReturnValue([]) })
+    );
+    expect(noAnalyzableCommits.at(-1)).toEqual({ status: "empty", kind: "no_analyzable_commits" });
+  });
+
+  it("Stage A 후보 0개·최종 후보 0개·성공 세 상태가 같은 stageASelection 값을 싣는다", async () => {
+    const expected = {
+      excludedCommits: STAGE_A_OUTPUT.excludedCommits,
+      excludedUnits: STAGE_A_OUTPUT.excludedUnits,
+      thresholdScore: STAGE_A_OUTPUT.thresholdScore,
+      unjudgedShas: STAGE_A_OUTPUT.unjudgedShas,
+    };
+
+    const successStates: AnalysisState[] = [];
+    await generateCandidates(retryPoint, (state) => successStates.push(state), dependencies());
+    const success = successStates.at(-1);
+    if (success?.status !== "success") throw new Error("unreachable");
+    expect(success.stageASelection).toEqual(expected);
+
+    const noStageAStates: AnalysisState[] = [];
+    await generateCandidates(
+      retryPoint, (state) => noStageAStates.push(state),
+      dependencies({ fetchStageACandidates: vi.fn().mockResolvedValue({ ...STAGE_A_OUTPUT, candidates: [] }) })
+    );
+    const noStageA = noStageAStates.at(-1);
+    if (noStageA?.status !== "empty" || noStageA.kind !== "no_stage_a_candidates") throw new Error("unreachable");
+    expect(noStageA.stageASelection).toEqual(expected);
+
+    const noFinalStates: AnalysisState[] = [];
+    await generateCandidates(
+      retryPoint, (state) => noFinalStates.push(state),
+      dependencies({
+        fetchStageBCandidates: vi.fn().mockResolvedValue({ candidates: [], insufficientCandidatesReason: "없음", diffs: [] }),
+      })
+    );
+    const noFinal = noFinalStates.at(-1);
+    if (noFinal?.status !== "empty" || noFinal.kind !== "no_final_candidates") throw new Error("unreachable");
+    expect(noFinal.stageASelection).toEqual(expected);
   });
 
   it("후보가 3개 미만이면 기준을 완화하지 않고 부족 사유를 성공 상태에 보존한다", async () => {
