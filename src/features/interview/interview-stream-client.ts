@@ -157,8 +157,13 @@ export async function runInterviewStream(
           return;
         }
       }
-      // `done` 없이 본문이 끝났습니다. 정상 종료와 구분해서 단절로 처리합니다.
-      throw transportError("stream_interrupted");
+      // `done` 없이 본문이 끝났습니다. 정상 종료와 구분해서 실패로 처리합니다.
+      //
+      // 청크를 하나도 받지 못한 채 끝난 경우까지 `stream_interrupted`로 두면 안 됩니다. 그 분류의
+      // 안내는 "이미 받은 내용은 그대로 두었고, 다시 시도하면 받은 지점부터 이어받습니다"인데
+      // 이어받을 내용이 없습니다. 재연결도 `Last-Event-ID` 없이 처음부터 받는 것이라 이어받기가
+      // 아닙니다. 받은 청크가 있는지로 갈라야 안내와 실제 동작이 맞습니다.
+      throw transportError(lastSeq === 0 ? "stream_connect_failed" : "stream_interrupted");
     } catch (error) {
       if (isAbort(error, signal)) return;
       const streamError =

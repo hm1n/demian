@@ -85,6 +85,20 @@ describe("runInterviewStream", () => {
     expect(sink.statuses.at(-1)).toBe("error");
   });
 
+  it("청크를 하나도 받지 못하고 끊기면 이어받기 안내를 쓰지 않는다", async () => {
+    // 2xx로 열린 본문이 keep-alive만 보내고 닫힌 경우입니다. `stream_interrupted`로 두면 이어받을
+    // 내용이 없는데도 "받은 지점부터 이어받습니다"라고 안내하게 됩니다.
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(": keep-alive\n\n"));
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl, retryDelaysMs: [] }, sink.handlers);
+
+    expect(sink.chunks).toEqual([]);
+    expect(sink.errors.map((error) => error.kind)).toEqual(["stream_connect_failed"]);
+    // 이어받을 지점이 없으므로 자동 재연결도 하지 않습니다.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("done의 seq가 실제로 받은 seq와 다르면 완료로 두지 않는다", async () => {
     // 청크 2·3이 빠진 채 done만 온 경우입니다. done 도착을 완결의 대리 지표로 쓰면 잘린 질문이
     // 완성된 것처럼 남습니다.
