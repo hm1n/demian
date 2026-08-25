@@ -10,7 +10,7 @@
  *   parallel  상세 조회 병렬도별 소요 시간과 secondary rate limit 관측
  *   commit    단일 커밋 상세 조회. changedFiles 3000 상한 왜곡 관측용
  *   stage-a   실제 Groq 호출 소요 시간과 선정 결과 (GROQ_API_KEY 필요)
- *   stage-a-chunks  Stage A 12개 청크 분할·재판단 완주 측정
+ *   stage-a-chunks  점수 선별·청크 분할·누락 복구 완주 측정
  *   stage-b   실제 Gemini 호출 소요 시간과 선정 결과 (GOOGLE_GENERATIVE_AI_API_KEY 필요)
  *
  * 옵션:
@@ -33,7 +33,6 @@ import { fetchCommitDetail } from "../src/lib/github/contributions";
 import {
   buildStageAPayload,
   createStageAGenerate,
-  INITIAL_STAGE_A_CANDIDATE_LIMIT,
   selectStageACandidates,
   STAGE_A_MODEL,
   resolveChunkQuota,
@@ -350,7 +349,14 @@ async function runParallel() {
  * Stage A의 "입력 SHA를 정확히 한 번씩" 계약은 모델이 지키지 못하면 schema_validation으로
  * 끝나 원인이 보이지 않는다. 검증 전에 실제 decision 수와 누락·중복 수를 남긴다.
  */
-function instrumentedStageAGenerate(model: string | undefined, expected: number): GenerateStageA {
+/**
+ * 전수 응답 계약은 입력 묶음 수를 기준으로 잽니다.
+ *
+ * 이전에는 기대값으로 커밋 수를 받았습니다. 판단 단위가 PR 묶음으로 바뀌면서 `demian`에서
+ * 묶음 15개를 커밋 90개와 비교하게 되어 계약 충족 판정이 구조적으로 항상 거짓이었습니다.
+ * 같은 줄의 누락은 `payload.units`로 계산해 맞았으므로 한 줄 안에서 두 지표가 서로 모순했습니다.
+ */
+function instrumentedStageAGenerate(model: string | undefined): GenerateStageA {
   const generate = createStageAGenerate(model);
   return async (payload, abortSignal) => {
     const output = await generate(payload, abortSignal);
@@ -358,6 +364,7 @@ function instrumentedStageAGenerate(model: string | undefined, expected: number)
       (output as { decisions?: { pullRequestNumber?: number }[] }).decisions ?? [];
     const returned = decisions.map((decision) => decision.pullRequestNumber);
     const unique = new Set(returned);
+    const expected = payload.units.length;
     const inputNumbers = new Set(payload.units.map(({ pullRequestNumber }) => pullRequestNumber));
     const missing = [...inputNumbers].filter((number) => !unique.has(number)).length;
     console.log(
@@ -383,18 +390,27 @@ async function runStageA() {
 
   const startedAt = ms();
   try {
+    // 후보 상한은 프로덕션이 쓰는 값과 같아야 합니다. 전역 상한 20을 그대로 쓰면 클라이언트가
+    // 실제로 보내는 쿼터와 다른 것을 재게 되고, Stage B로 넘어가는 후보 수도 달라집니다.
+    const stageAUnits = toStageAUnits(details).units;
+    const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
+    if (stageAChunks.length > 1) {
+      console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
+    }
+    const candidateLimit = Math.min(resolveChunkQuota(stageAChunks.length), stageAUnits.length);
+    console.log(`[stage-a] 선별 입력묶음=${stageAUnits.length} 후보상한=${candidateLimit}`);
     const output = await selectStageACandidates(
       {
-        units: toStageAUnits(details).units,
-        candidateLimit: INITIAL_STAGE_A_CANDIDATE_LIMIT,
+        units: stageAUnits,
+        candidateLimit,
         contributionItems,
       },
-      instrumentedStageAGenerate(model, details.length)
+      instrumentedStageAGenerate(model)
     );
     const elapsed = ms() - startedAt;
     console.log(`[stage-a] 성공 소요=${round(elapsed)}ms 예산=${STAGE_A_TIMEOUT_MS}ms 사용률=${((elapsed / STAGE_A_TIMEOUT_MS) * 100).toFixed(1)}%`);
     console.log(
-      `[stage-a] 후보=${output.candidates.length}/${INITIAL_STAGE_A_CANDIDATE_LIMIT} 미분류=${output.unclassifiedShas.length} ` +
+      `[stage-a] 후보=${output.candidates.length}/${candidateLimit} 미분류=${output.unclassifiedShas.length} 판단불가=${output.unjudgedShas.length} ` +
         `기여항목매칭=${output.candidates.filter((candidate) => candidate.source === "contribution_match").length}`
     );
     // 품질 검증용. SHA와 분류만 남기고 모델 원문은 출력하지 않는다.
