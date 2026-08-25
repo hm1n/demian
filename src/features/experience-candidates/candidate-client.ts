@@ -30,6 +30,7 @@ import {
   buildStageAPayload,
   renderStageAPrompt,
   resolveChunkQuota,
+  STAGE_A_DEGRADED_WAIT_MS,
   type StageAUnitInput,
   STAGE_A_RESET_SAFETY_MS,
   STAGE_A_TOKEN_RESERVE,
@@ -269,42 +270,51 @@ export function splitUnitsIntoChunks(
   contributionItems: readonly string[]
 ): StageAUnitInput[][] {
   const encoder = new TextEncoder();
+  /** 묶음 묶기 하나가 두 상한 안에 드는지 잽니다. 서버가 재는 것과 같은 값이어야 합니다. */
+  const measure = (chunk: readonly StageAUnitInput[]) => {
+    const request = toStageARequest(chunk, contributionItems, 1);
+    return {
+      promptBytes: encoder.encode(renderStageAPrompt(buildStageAPayload(request))).length,
+      requestBytes: encoder.encode(JSON.stringify(request)).length,
+    };
+  };
+  const withinLimits = ({ promptBytes, requestBytes }: ReturnType<typeof measure>) =>
+    promptBytes <= STAGE_A_CHUNK_MAX_BYTES && requestBytes <= STAGE_A_CHUNK_MAX_REQUEST_BYTES;
+
   const result: StageAUnitInput[][] = [];
   for (const unit of units) {
     const current = result.at(-1);
-    const proposed = current === undefined ? [unit] : [...current, unit];
-    const request = toStageARequest(proposed, contributionItems, 1);
-    const promptBytes = encoder.encode(
-      renderStageAPrompt(buildStageAPayload(request))
-    ).length;
-    const requestBytes = encoder.encode(JSON.stringify(request)).length;
-    // 묶음 하나가 혼자서도 상한을 넘는 경우입니다. `toStageAUnits`가 기여 항목 몫을 뺀 예산으로
-    // 선별하므로 정상 경로에서는 도달하지 않습니다. 남는 경로는 기여 항목이 예산을 거의 다
-    // 먹어치운 경우입니다.
-    //
-    // 조용히 청크에 담아 보내면 서버가 422로 거부하고, 조용히 버리면 사용자가 제외 사유를 알 수
-    // 없습니다. 그래서 여기서 실패시키되 `CandidateRequestError`로 던집니다. 평범한 `Error`로
-    // 던지면 `generateCandidates`가 재시도 지점을 남겨(`repository-analysis.ts`의
-    // `samePayloadAlwaysFails`가 `CandidateRequestError`만 봅니다) 같은 입력으로 반드시 같은
-    // 실패를 반복하는 재시도 버튼을 사용자에게 줍니다.
-    if (current === undefined && (promptBytes > STAGE_A_CHUNK_MAX_BYTES || requestBytes > STAGE_A_CHUNK_MAX_REQUEST_BYTES)) {
+    if (current !== undefined) {
+      const proposed = [...current, unit];
+      if (proposed.length <= STAGE_A_CHUNK_MAX_UNITS && withinLimits(measure(proposed))) {
+        result[result.length - 1] = proposed;
+        continue;
+      }
+    }
+    /**
+     * 새 청크를 만들 때는 그 묶음이 혼자서 상한에 드는지 반드시 확인합니다.
+     *
+     * 예전에는 첫 청크(`current === undefined`)만 확인했습니다. 뒤쪽 묶음이 앞 청크에 못 들어가
+     * 새 청크의 머리가 될 때는 크기를 다시 재지 않아, 혼자서 상한을 넘는 묶음이 그대로 라우트에
+     * 가서 422를 받았습니다. `toStageAUnits`가 요약 렌더 바이트로 선별하므로 프롬프트 상한은
+     * 지켜지지만, 요청 본문은 JSON 이스케이프가 붙어 따옴표나 백슬래시가 많은 요약이 선별을
+     * 통과하고도 20,000바이트를 넘을 수 있습니다.
+     *
+     * 조용히 담아 보내면 서버가 422로 거부하고, 조용히 버리면 사용자가 제외 사유를 알 수
+     * 없습니다. 그래서 실패시키되 `CandidateRequestError`로 던집니다. 평범한 `Error`로 던지면
+     * `generateCandidates`가 재시도 지점을 남겨(`repository-analysis.ts`의
+     * `samePayloadAlwaysFails`가 `CandidateRequestError`만 봅니다) 같은 입력으로 반드시 같은
+     * 실패를 반복하는 재시도 버튼을 사용자에게 줍니다.
+     */
+    if (!withinLimits(measure([unit]))) {
       throw new CandidateRequestError(
         "stage_a",
         "invalid_request",
-        "기여 항목이 너무 길어 작업 묶음 하나도 Stage A 입력 상한에 들어가지 않습니다. 기여 항목을 줄여주세요.",
+        `작업 묶음 하나(PR#${unit.pullRequestNumber})가 Stage A 입력 상한에 들어가지 않습니다. 기여 항목이 길면 줄여주세요.`,
         { retryable: false }
       );
     }
-    if (
-      current === undefined ||
-      proposed.length > STAGE_A_CHUNK_MAX_UNITS ||
-      promptBytes > STAGE_A_CHUNK_MAX_BYTES ||
-      requestBytes > STAGE_A_CHUNK_MAX_REQUEST_BYTES
-    ) {
-      result.push([unit]);
-      continue;
-    }
-    result[result.length - 1] = proposed;
+    result.push([unit]);
   }
   return result;
 }
@@ -369,9 +379,25 @@ export async function fetchStageACandidatesFromApi(
       onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: false });
       const moreRequests = index + 1 < chunks.length;
       if (moreRequests && !output.rateLimit) {
-        throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
-      }
-      if (moreRequests && output.rateLimit && output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
+        /**
+         * 한도 메타데이터가 없는 응답이 두 가지입니다. 구분하지 않으면 저하 경로가 제 일을 못
+         * 합니다.
+         *
+         * 라우트가 복구를 소진해 부분 결과로 저하시킬 때 `rateLimit`을 null로 돌려줍니다
+         * (`route.ts`의 `degrade`). 이때 판단하지 못한 묶음이 `unjudgedShas`에 담기므로 그것이
+         * 저하의 표식입니다. 예전에는 이 경우도 응답 형식 오류로 던져서, 청크가 여러 개일 때 앞
+         * 청크가 저하되면 뒤 청크를 아예 시도하지 않고 Stage A 전체가 실패했습니다. 저하는 이미
+         * 처리한 판단을 살리려고 만든 경로인데 그 목적을 스스로 깼습니다.
+         *
+         * 판단 불가가 비어 있으면 저하가 아니라 정말 형식이 어긋난 응답이므로 그대로 던집니다.
+         */
+        if (output.unjudgedShas.length === 0) {
+          throw new CandidateRequestError("stage_a", "invalid_response", "LLM 토큰 한도 메타데이터가 없습니다.");
+        }
+        // 남은 토큰을 모르므로 분당 창을 통째로 기다린 뒤 다음 청크로 넘어갑니다.
+        onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: true });
+        await wait(STAGE_A_DEGRADED_WAIT_MS);
+      } else if (moreRequests && output.rateLimit && output.rateLimit.remainingTokens < STAGE_A_TOKEN_RESERVE) {
         onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: true });
         await wait(output.rateLimit.resetAfterMs + STAGE_A_RESET_SAFETY_MS);
       }
@@ -381,7 +407,13 @@ export async function fetchStageACandidatesFromApi(
       throw new CandidateRequestError(cause.stage, cause.kind, cause.message, {
         cause,
         retryable: cause.retryable,
-        checkpoint: { candidates, unclassifiedShas, unjudgedShas, processedShas: [...processed] },
+        checkpoint: {
+          candidates,
+          unclassifiedShas,
+          unjudgedShas,
+          processedShas: [...processed],
+          totalUnits: units.length,
+        },
       });
     }
     throw cause;
@@ -394,7 +426,15 @@ export async function fetchStageACandidatesFromApi(
       "stage_a",
       "schema_validation",
       `Stage A 후보가 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개를 넘었습니다.`,
-      { checkpoint: { candidates, unclassifiedShas, unjudgedShas, processedShas: [...processed] } }
+      {
+        checkpoint: {
+          candidates,
+          unclassifiedShas,
+          unjudgedShas,
+          processedShas: [...processed],
+          totalUnits: units.length,
+        },
+      }
     );
   }
   // 후보 수 검증까지는 묶음 단위로 하고, 커밋으로 펼치는 것은 마지막에 합니다. 체크포인트에

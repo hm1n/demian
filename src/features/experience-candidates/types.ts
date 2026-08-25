@@ -72,6 +72,15 @@ export interface StageAChunkOutput extends StageACandidateOutput {
 
 export interface StageACheckpoint extends StageACandidateOutput {
   readonly processedShas: readonly string[];
+  /**
+   * 선별을 통과해 판단 대상이 된 묶음 수입니다. `processedShas`가 묶음의 대표 커밋 SHA이므로
+   * 진행 상황을 말할 때 견줄 분모가 이 값입니다.
+   *
+   * 실패 문구 쪽에서 커밋 수로 다시 유도하지 않으려고 여기에 싣습니다. 유도하면 분모와 분자가
+   * 서로 다른 단위가 되고, 유도 시점의 입력이 판단 시점과 달라지면 둘이 어긋납니다.
+   * `StageACandidateOutput`이 아니라 체크포인트에만 더해 서버 응답 계약은 건드리지 않습니다.
+   */
+  readonly totalUnits: number;
 }
 
 export interface StageAProgress {

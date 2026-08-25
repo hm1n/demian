@@ -62,6 +62,15 @@ export const STAGE_A_TOKEN_RESERVE = 6_000;
 export const STAGE_A_RESET_SAFETY_MS = 1_000;
 
 /**
+ * 한도 메타데이터 없이 다음 청크로 넘어갈 때 기다리는 시간입니다.
+ *
+ * 라우트가 복구를 소진해 부분 결과로 저하시킬 때 `rateLimit`을 null로 돌려줍니다. 남은 토큰을 알
+ * 수 없으므로 분당 토큰 한도의 창을 통째로 기다립니다. 헤더가 있을 때 쓰는 `resetAfterMs`가 이
+ * 창 안의 남은 시간이므로 창 전체가 상한입니다.
+ */
+export const STAGE_A_DEGRADED_WAIT_MS = 60_000 + STAGE_A_RESET_SAFETY_MS;
+
+/**
  * 청크 수가 많아 `청크 수 × 쿼터`가 전역 상한을 넘을 때 쿼터를 줄입니다. 상한을 넘는 응답을
  * 받아 놓고 다시 줄이는 대신 요청 단계에서 넘지 않게 만듭니다.
  */

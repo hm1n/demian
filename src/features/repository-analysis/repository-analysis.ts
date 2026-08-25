@@ -2,6 +2,7 @@ import {
   CandidateRequestError,
   fetchStageACandidatesFromApi,
   fetchStageBCandidatesFromApi,
+  toStageAUnits,
   type CandidateStage,
   type StageACandidateResult,
   type StageASelectionSummary,
@@ -78,6 +79,23 @@ export interface CandidateRetryPoint {
  */
 export interface StageASelectionState extends StageASelectionSummary {
   readonly unjudgedShas: readonly string[];
+}
+
+/**
+ * Stage A 진행 단위는 커밋이 아니라 Pull Request 묶음입니다.
+ *
+ * `fetchStageACandidates`가 보내는 진행률과 체크포인트의 `processedShas`가 모두 묶음 기준입니다.
+ * 커밋 수와 섞으면 커밋 여러 개짜리 PR이 있는 저장소에서 진행 바 전체 수가 첫 응답 직후 줄어들고,
+ * 실패 문구가 실제보다 훨씬 많이 남은 것처럼 보고합니다.
+ *
+ * `toStageAUnits`는 네트워크를 쓰지 않는 순수 함수라 클라이언트가 쓰는 값을 여기서 다시 구할 수
+ * 있습니다. 기여 항목이 선별 예산을 먹으므로 함께 넘겨야 같은 수가 나옵니다.
+ */
+function stageAUnitTotal(
+  data: CandidateDataOutput,
+  contributionItems: readonly string[]
+): number {
+  return toStageAUnits(data.includedCommits, contributionItems).units.length;
 }
 
 export type AnalysisState =
@@ -272,7 +290,7 @@ export async function generateCandidates(
     if (!stageA) {
       onStateChange({ status: "loading", loading: {
         step: "stage_a", completed: stageACheckpoint?.processedShas.length ?? 0,
-        total: data.includedCommits.length, waitingForRateLimit: false,
+        total: stageAUnitTotal(data, contributionItems), waitingForRateLimit: false,
       } });
       stageA = await dependencies.fetchStageACandidates(
         data.includedCommits,
@@ -320,12 +338,17 @@ export async function generateCandidates(
     const samePayloadAlwaysFails =
       error instanceof CandidateRequestError &&
       (error.kind === "invalid_request" || error.retryable === false);
+    // 체크포인트의 `processedShas`는 묶음의 대표 커밋 SHA이므로 묶음 수와 견줍니다. 분모는
+    // 체크포인트가 실어 온 `totalUnits`를 씁니다. 커밋 수로 다시 유도하면 단위가 섞이고, 유도
+    // 시점의 입력이 판단 시점과 달라지면 두 숫자가 어긋납니다.
+    const judgedUnits = stageACheckpoint?.processedShas.length ?? 0;
+    const totalUnits = stageACheckpoint?.totalUnits ?? 0;
     const visibleError =
       error instanceof CandidateRequestError && !stageA && stageACheckpoint
         ? new CandidateRequestError(
             error.stage,
             error.kind,
-            `${error.message} 전체 ${data.includedCommits.length}개 중 ${stageACheckpoint.processedShas.length}개를 판단했고 ${data.includedCommits.length - stageACheckpoint.processedShas.length}개는 아직 판단하지 못했습니다.`,
+            `${error.message} 전체 ${totalUnits}묶음 중 ${judgedUnits}묶음을 판단했고 ${totalUnits - judgedUnits}묶음은 아직 판단하지 못했습니다.`,
             { cause: error, checkpoint: stageACheckpoint }
           )
         : error;

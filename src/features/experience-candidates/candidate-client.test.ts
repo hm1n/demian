@@ -8,7 +8,13 @@ import {
   splitUnitsIntoChunks,
   expandCandidatesToCommits,
 } from "./candidate-client";
-import { buildStageAPayload, renderStageAPrompt, STAGE_A_CHUNK_MAX_BYTES } from "./stage-a";
+import {
+  buildStageAPayload,
+  renderStageAPrompt,
+  STAGE_A_CHUNK_MAX_BYTES,
+  STAGE_A_CHUNK_MAX_REQUEST_BYTES,
+  STAGE_A_DEGRADED_WAIT_MS,
+} from "./stage-a";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
 
@@ -328,6 +334,71 @@ describe("fetchStageACandidatesFromApi", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(chunkCount);
   });
 
+  it("앞 청크가 판단 불가로 저하돼도 뒤 청크를 계속 보낸다", async () => {
+    // 라우트가 복구를 소진하면 부분 결과를 rateLimit null로 돌려준다(route.ts의 degrade).
+    // 예전에는 이 응답을 응답 형식 오류로 던져서 청크가 여러 개일 때 뒤 청크를 아예 시도하지
+    // 않았다. 저하는 이미 처리한 판단을 살리려고 만든 경로인데 그 목적을 스스로 깼다.
+    const commits = manyUnits(25);
+    const sentChunks: number[][] = [];
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const request = parseRequest(init);
+      sentChunks.push(request.units.map(({ pullRequestNumber }) => pullRequestNumber));
+      const degraded = sentChunks.length === 1;
+      return jsonResponse({
+        candidates: [],
+        unclassifiedShas: degraded ? [] : request.units.map(({ representativeSha }) => representativeSha),
+        // 저하의 표식은 판단 불가 묶음이 있다는 것이다.
+        unjudgedShas: degraded ? request.units.map(({ representativeSha }) => representativeSha) : [],
+        rateLimit: degraded ? null : { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
+      });
+    });
+
+    const waits: number[] = [];
+    const output = await fetchStageACandidatesFromApi(
+      commits, [], () => undefined, undefined, async (ms) => { waits.push(ms); }
+    );
+
+    const chunkCount = splitUnitsIntoChunks(toStageAUnits(commits).units, []).length;
+    expect(chunkCount).toBeGreaterThan(1);
+    expect(sentChunks).toHaveLength(chunkCount);
+    // 저하된 청크의 묶음은 판단 불가로 남고 뒤 청크의 판단은 살아 있다.
+    expect(output.unjudgedShas.length).toBeGreaterThan(0);
+    expect(output.unclassifiedShas.length).toBeGreaterThan(0);
+    // 남은 토큰을 모르므로 한 창을 기다린 뒤 넘어간다.
+    expect(waits[0]).toBe(STAGE_A_DEGRADED_WAIT_MS);
+  });
+
+  it("한도 메타데이터가 없고 판단 불가도 없으면 응답 형식 오류로 던진다", async () => {
+    // 저하가 아니라 정말 형식이 어긋난 응답이다. 이 경우의 기존 방어는 유지해야 한다.
+    const commits = manyUnits(25);
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const request = parseRequest(init);
+      return jsonResponse({
+        candidates: [],
+        unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
+        unjudgedShas: [],
+        rateLimit: null,
+      });
+    });
+
+    await expect(
+      fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined)
+    ).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+
+  it("체크포인트가 판단 대상 묶음 수를 함께 싣는다", async () => {
+    // 실패 문구가 커밋 수로 분모를 다시 유도하지 않도록 체크포인트가 분모를 들고 다닌다.
+    const commits = manyUnits(25);
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502)
+    );
+
+    const units = toStageAUnits(commits).units;
+    await expect(
+      fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined)
+    ).rejects.toMatchObject({ checkpoint: { totalUnits: units.length } });
+  });
+
   it("청크마다 쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
     const commits = manyUnits(25);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
@@ -469,6 +540,68 @@ describe("splitUnitsIntoChunks", () => {
       expect((error as CandidateRequestError).kind).toBe("invalid_request");
       expect((error as CandidateRequestError).retryable).toBe(false);
     }
+  });
+
+  it("두 번째 이후 묶음이 혼자 상한을 넘어도 잡는다", () => {
+    // 예전에는 초과 검사가 current === undefined일 때만 돌아서, 앞 청크에 못 들어가 새 청크의
+    // 머리가 되는 묶음은 크기를 다시 재지 않았다. 혼자서 상한을 넘는 묶음이 그대로 라우트에 가서
+    // 422를 받았다. 첫 묶음 가드만으로는 부족하다는 것이 Codex 리뷰의 지적이다.
+    const small = toStageAUnits([COMMIT]).units[0];
+    const oversized = {
+      pullRequestNumber: 2,
+      representativeSha: "sha-oversized",
+      summary: {
+        pullRequestNumber: 2,
+        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
+        commitCount: 1,
+        spanDays: 1,
+        additions: 1,
+        deletions: 0,
+        commitTitles: ["feat: 기능 추가"],
+        changedFilePathCount: 1,
+        topFilePaths: ["src/a.ts"],
+      },
+    };
+
+    // 작은 묶음이 앞에 있어 current !== undefined인 상태로 초과 묶음을 만난다.
+    expect(() => splitUnitsIntoChunks([small, oversized], [])).toThrow(CandidateRequestError);
+  });
+
+  it("JSON 이스케이프로 요청 본문만 넘는 묶음도 잡는다", () => {
+    // 프롬프트 바이트는 상한 안이지만 JSON.stringify가 따옴표와 백슬래시를 이스케이프해 요청
+    // 본문이 20,000바이트를 넘는 경우다. 선별은 요약 렌더 바이트로만 재므로 여기까지 온다.
+    // 따옴표와 백슬래시를 소스에 리터럴로 두지 않고 만든다. JSON.stringify가 둘 다
+    // 이스케이프해 요청 본문 바이트를 두 배로 만든다.
+    // 쌍 하나가 프롬프트에서 2바이트, JSON에서 4바이트(둘 다 이스케이프)다. 요청 본문이
+    // 상한을 조금 넘고 프롬프트는 상한 안에 드는 길이를 상한에서 유도한다.
+    const pair = [String.fromCharCode(34), String.fromCharCode(92)].join("");
+    const escaped = pair.repeat(Math.floor((STAGE_A_CHUNK_MAX_REQUEST_BYTES + 200) / 4));
+    const unit = {
+      pullRequestNumber: 3,
+      representativeSha: "sha-escaped",
+      summary: {
+        pullRequestNumber: 3,
+        pullRequestTitle: "PR",
+        commitCount: 1,
+        spanDays: 1,
+        additions: 1,
+        deletions: 0,
+        commitTitles: [escaped],
+        changedFilePathCount: 1,
+        topFilePaths: ["src/a.ts"],
+      },
+    };
+    const promptBytes = new TextEncoder().encode(
+      renderStageAPrompt(buildStageAPayload(toStageARequest([unit], [], 1)))
+    ).byteLength;
+    const requestBytes = new TextEncoder().encode(
+      JSON.stringify(toStageARequest([unit], [], 1))
+    ).byteLength;
+
+    // 전제 확인: 프롬프트는 상한 안이고 요청 본문만 넘는다.
+    expect(promptBytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
+    expect(requestBytes).toBeGreaterThan(STAGE_A_CHUNK_MAX_REQUEST_BYTES);
+    expect(() => splitUnitsIntoChunks([unit], [])).toThrow(CandidateRequestError);
   });
 
   it("기여 항목을 프롬프트 바이트에 포함해 나눈다", () => {

@@ -389,8 +389,18 @@ describe("generateCandidates", () => {
     expect(last.retryPoint?.stageA).toBeUndefined();
   });
 
-  it("Stage A 부분 완료 실패는 처리하지 못한 커밋 수와 체크포인트를 보존한다", async () => {
-    const checkpoint = { candidates: [], unclassifiedShas: [], unjudgedShas: [], processedShas: [] };
+  it("Stage A 부분 완료 실패는 처리하지 못한 묶음 수와 체크포인트를 보존한다", async () => {
+    // 진행 단위는 커밋이 아니라 Pull Request 묶음입니다. 커밋 수를 분모로 쓰면 커밋 여러 개짜리
+    // PR이 있는 저장소에서 실제보다 훨씬 많이 남은 것처럼 보고합니다(이슈 #58 Codex 리뷰).
+    // 여기서는 커밋 하나뿐인 입력에 묶음 3개짜리 체크포인트를 줘서, 문구가 커밋 수가 아니라
+    // 체크포인트의 묶음 수를 쓰는지 확인합니다.
+    const checkpoint = {
+      candidates: [],
+      unclassifiedShas: [],
+      unjudgedShas: [],
+      processedShas: ["unit-a", "unit-b"],
+      totalUnits: 3,
+    };
     const deps = dependencies({
       fetchStageACandidates: vi.fn().mockRejectedValue(
         new CandidateRequestError("stage_a", "llm_failure", "실패", { checkpoint })
@@ -401,7 +411,7 @@ describe("generateCandidates", () => {
 
     const failed = states.at(-1);
     if (failed?.status !== "error") throw new Error("unreachable");
-    expect(failed.error.message).toContain("1개는 아직 판단하지 못했습니다");
+    expect(failed.error.message).toContain("전체 3묶음 중 2묶음을 판단했고 1묶음은 아직 판단하지 못했습니다");
     expect(failed.retryPoint?.stageACheckpoint).toEqual(checkpoint);
   });
 
