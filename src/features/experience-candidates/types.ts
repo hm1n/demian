@@ -49,7 +49,15 @@ export interface StageACandidate {
 
 export interface StageACandidateOutput {
   readonly candidates: readonly StageACandidate[];
+  /** 모델이 후보가 아니라고 판단한 묶음입니다. */
   readonly unclassifiedShas: readonly string[];
+  /**
+   * 모델이 끝내 판단하지 못한 묶음입니다.
+   *
+   * `unclassifiedShas`와 나눠 둡니다. 판단 결과 후보가 아닌 것과 판단 자체가 없는 것은 다르고,
+   * 둘을 합치면 화면이 "판단하지 못한 N건"을 표시할 수 없어 조용한 배제가 됩니다.
+   */
+  readonly unjudgedShas: readonly string[];
 }
 
 export interface StageARateLimit {

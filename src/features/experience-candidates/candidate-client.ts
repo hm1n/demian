@@ -266,6 +266,7 @@ export async function fetchStageACandidatesFromApi(
   const processed = new Set(checkpoint?.processedShas ?? []);
   const candidates = [...(checkpoint?.candidates ?? [])];
   const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
+  const unjudgedShas = [...(checkpoint?.unjudgedShas ?? [])];
   const { units, workUnits } = toStageAUnits(commits);
   const pending = units.filter(({ representativeSha }) => !processed.has(representativeSha));
   const chunks = splitUnitsIntoChunks(pending, contributionItems);
@@ -291,6 +292,7 @@ export async function fetchStageACandidatesFromApi(
       const output = await requestChunk(chunk);
       candidates.push(...output.candidates);
       unclassifiedShas.push(...output.unclassifiedShas);
+      unjudgedShas.push(...output.unjudgedShas);
       chunk.forEach(({ representativeSha }) => processed.add(representativeSha));
       onProgress({ completed: processed.size, total: units.length, waitingForRateLimit: false });
       const moreRequests = index + 1 < chunks.length;
@@ -307,7 +309,7 @@ export async function fetchStageACandidatesFromApi(
       throw new CandidateRequestError(cause.stage, cause.kind, cause.message, {
         cause,
         retryable: cause.retryable,
-        checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] },
+        checkpoint: { candidates, unclassifiedShas, unjudgedShas, processedShas: [...processed] },
       });
     }
     throw cause;
@@ -320,12 +322,16 @@ export async function fetchStageACandidatesFromApi(
       "stage_a",
       "schema_validation",
       `Stage A 후보가 상한 ${INITIAL_STAGE_A_CANDIDATE_LIMIT}개를 넘었습니다.`,
-      { checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] } }
+      { checkpoint: { candidates, unclassifiedShas, unjudgedShas, processedShas: [...processed] } }
     );
   }
   // 후보 수 검증까지는 묶음 단위로 하고, 커밋으로 펼치는 것은 마지막에 합니다. 체크포인트에
   // 묶음 단위 후보가 남아야 재개했을 때 같은 묶음을 두 번 펼치지 않습니다.
-  return { candidates: expandCandidatesToCommits(candidates, workUnits), unclassifiedShas };
+  return {
+    candidates: expandCandidatesToCommits(candidates, workUnits),
+    unclassifiedShas,
+    unjudgedShas,
+  };
 }
 
 function isStageAChunkOutput(payload: unknown): payload is StageAChunkOutput {
@@ -335,6 +341,8 @@ function isStageAChunkOutput(payload: unknown): payload is StageAChunkOutput {
     !Array.isArray(output.candidates) || !output.candidates.every(isStageACandidate) ||
     !Array.isArray(output.unclassifiedShas) ||
     !output.unclassifiedShas.every((sha) => typeof sha === "string") ||
+    !Array.isArray(output.unjudgedShas) ||
+    !output.unjudgedShas.every((sha) => typeof sha === "string") ||
     !(output.rateLimit === null || (
       typeof output.rateLimit === "object" && output.rateLimit !== null &&
       typeof output.rateLimit.remainingTokens === "number" &&

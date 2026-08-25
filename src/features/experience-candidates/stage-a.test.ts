@@ -61,6 +61,7 @@ describe("Stage A 후보 선별", () => {
         { sha: "automatic", source: "automatic_recommendation", contributionItem: null },
       ],
       unclassifiedShas: ["unclassified"],
+      unjudgedShas: [],
       rateLimit: null,
     });
   });

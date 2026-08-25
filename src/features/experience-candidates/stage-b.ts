@@ -1,6 +1,10 @@
 import { createGoogle } from "@ai-sdk/google";
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
-import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
+import {
+  ExperienceCandidateOutputError,
+  isModelOutputFailureResponseBody,
+  isRateLimitResponseBody,
+} from "./errors";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
@@ -166,6 +170,15 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
       return new ExperienceCandidateOutputError(
         "llm_configuration",
         "LLM 모델 설정이 올바르지 않습니다.",
+        { cause: error }
+      );
+    }
+    // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
+    // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
+    if (error.statusCode === 400 && isModelOutputFailureResponseBody(error.responseBody)) {
+      return new ExperienceCandidateOutputError(
+        "schema_validation",
+        "LLM이 형식에 맞는 응답을 만들지 못했습니다.",
         { cause: error }
       );
     }

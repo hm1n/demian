@@ -30,6 +30,7 @@ const CONTRIBUTIONS: RepositoryContributionData = {
 const STAGE_A_OUTPUT: StageACandidateOutput = {
   candidates: [{ sha: "sha-1", source: "automatic_recommendation", contributionItem: null }],
   unclassifiedShas: [],
+  unjudgedShas: [],
 };
 const STAGE_B_RESULT: StageBCandidateResult = {
   candidates: [
@@ -293,7 +294,7 @@ describe("generateCandidates", () => {
   });
 
   it("Stage A 부분 완료 실패는 처리하지 못한 커밋 수와 체크포인트를 보존한다", async () => {
-    const checkpoint = { candidates: [], unclassifiedShas: [], processedShas: [] };
+    const checkpoint = { candidates: [], unclassifiedShas: [], unjudgedShas: [], processedShas: [] };
     const deps = dependencies({
       fetchStageACandidates: vi.fn().mockRejectedValue(
         new CandidateRequestError("stage_a", "llm_failure", "실패", { checkpoint })

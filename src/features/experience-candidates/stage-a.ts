@@ -7,7 +7,11 @@ import {
   NoObjectGeneratedError,
   RetryError,
 } from "ai";
-import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
+import {
+  ExperienceCandidateOutputError,
+  isModelOutputFailureResponseBody,
+  isRateLimitResponseBody,
+} from "./errors";
 import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
 import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
 
@@ -237,6 +241,15 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         cause: error,
       });
     }
+    // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
+    // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
+    if (error.statusCode === 400 && isModelOutputFailureResponseBody(error.responseBody)) {
+      return new ExperienceCandidateOutputError(
+        "schema_validation",
+        "LLM이 형식에 맞는 응답을 만들지 못했습니다.",
+        { cause: error }
+      );
+    }
     if (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 422) {
       return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", {
         cause: error,
@@ -379,12 +392,14 @@ export async function selectStageACandidates(
       { missingShas, partialOutput: {
         candidates,
         unclassifiedShas: unclassifiedShas.filter((sha) => !missingShas.includes(sha)),
+        unjudgedShas: [],
       } }
     );
   }
   return {
     candidates,
     unclassifiedShas,
+    unjudgedShas: [],
     rateLimit: output.__rateLimit ?? null,
   };
 }

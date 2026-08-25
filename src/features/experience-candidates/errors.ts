@@ -50,3 +50,17 @@ export class ExperienceCandidateOutputError extends Error {
 export function isRateLimitResponseBody(responseBody: string | undefined): boolean {
   return responseBody?.includes("rate_limit_exceeded") ?? false;
 }
+
+/**
+ * 400이 모델 출력 실패인지 판별합니다.
+ *
+ * Groq는 구조화 출력에서 모델이 스키마를 맞추지 못하면 `json_validate_failed`를 담은 400을
+ * 돌려줍니다. `type`이 `invalid_request_error`지만 요청은 멀쩡하고 실패한 것은 모델 출력입니다.
+ * 요청 오류로 분류하면 재시도하면 풀릴 실패를 재시도 불가로 처리하게 됩니다.
+ *
+ * 실측: `openai/gpt-oss-20b`에 작업 묶음 15개를 보내면 전수 응답 위반과 이 400이 번갈아
+ * 나왔습니다. 같은 입력을 다시 보내면 다른 결과가 나오므로 재시도 대상입니다.
+ */
+export function isModelOutputFailureResponseBody(responseBody: string | undefined): boolean {
+  return responseBody?.includes("json_validate_failed") ?? false;
+}

@@ -174,12 +174,18 @@ describe("expandCandidatesToCommits", () => {
 
 describe("fetchStageACandidatesFromApi", () => {
   it("검증한 Stage A 응답을 반환한다", async () => {
-    const output = { candidates: [STAGE_A_CANDIDATE], unclassifiedShas: ["sha-2"], rateLimit: null };
+    const output = {
+      candidates: [STAGE_A_CANDIDATE],
+      unclassifiedShas: ["sha-2"],
+      unjudgedShas: [],
+      rateLimit: null,
+    };
     vi.mocked(fetch).mockResolvedValue(jsonResponse(output));
 
     await expect(fetchStageACandidatesFromApi([COMMIT], ["푸시 알림 구현"])).resolves.toEqual({
       candidates: output.candidates,
       unclassifiedShas: output.unclassifiedShas,
+      unjudgedShas: [],
     });
     expect(fetch).toHaveBeenCalledWith("/api/candidates/stage-a", expect.objectContaining({
       method: "POST",
@@ -202,6 +208,7 @@ describe("fetchStageACandidatesFromApi", () => {
           sha: representativeSha, source: "automatic_recommendation", contributionItem: null,
         })),
         unclassifiedShas: [],
+        unjudgedShas: [],
         rateLimit: null,
       });
     });
@@ -239,7 +246,7 @@ describe("fetchStageACandidatesFromApi", () => {
   });
 
   it("성공 응답의 형식 위반을 invalid_response로 거부한다", async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ candidates: [{ sha: 1 }], unclassifiedShas: [] }));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ candidates: [{ sha: 1 }], unclassifiedShas: [], unjudgedShas: [] }));
     await expectRequestError(fetchStageACandidatesFromApi([COMMIT], []), {
       stage: "stage_a",
       kind: "invalid_response",
@@ -260,6 +267,7 @@ describe("fetchStageACandidatesFromApi", () => {
           contributionItem: null,
         })),
         unclassifiedShas: request.units.slice(selected.length).map((u) => u.representativeSha),
+        unjudgedShas: [],
         rateLimit: { remainingTokens: 0, resetAfterMs: 1, usedTokens: 100 },
       });
     });
@@ -281,6 +289,7 @@ describe("fetchStageACandidatesFromApi", () => {
       return jsonResponse({
         candidates: [],
         unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
+        unjudgedShas: [],
         rateLimit: { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
       });
     });
@@ -299,6 +308,7 @@ describe("fetchStageACandidatesFromApi", () => {
       .mockResolvedValueOnce(jsonResponse({
         candidates: [],
         unclassifiedShas: firstChunk.map(({ representativeSha }) => representativeSha),
+        unjudgedShas: [],
         rateLimit: { remainingTokens: 0, resetAfterMs: 1, usedTokens: 100 },
       }))
       .mockResolvedValueOnce(jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502));
@@ -313,7 +323,7 @@ describe("fetchStageACandidatesFromApi", () => {
 
     vi.mocked(fetch).mockReset();
     vi.mocked(fetch).mockResolvedValue(jsonResponse({
-      candidates: [], unclassifiedShas: [], rateLimit: null,
+      candidates: [], unclassifiedShas: [], unjudgedShas: [], rateLimit: null,
     }));
     await fetchStageACandidatesFromApi(commits, [], () => undefined, checkpoint, async () => undefined);
     const resumed = parseRequest(vi.mocked(fetch).mock.calls[0][1]);
@@ -333,6 +343,7 @@ describe("fetchStageACandidatesFromApi", () => {
       return jsonResponse({
         candidates: [],
         unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
+        unjudgedShas: [],
         rateLimit: { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
       });
     });

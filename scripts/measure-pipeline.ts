@@ -439,39 +439,86 @@ async function runStageAChunks() {
   let calls = 0;
   let recoveryCalls = 0;
   const recoveredShaSet = new Set<string>();
-  let failedShas = 0;
   let rateLimitFailures = 0;
+  let providerFailures = 0;
+  let modelOutputFailures = 0;
+  let trimmedCandidates = 0;
+  const unjudgedShaSet = new Set<string>();
   const startedAt = ms();
 
   const call = async (chunk: readonly StageAUnitInput[], limit: number) => {
     const callStartedAt = ms();
     const input: StageAInput = { units: chunk, contributionItems: [], candidateLimit: limit };
+    // 라우트의 `selectWithRecovery`와 같은 동작을 재현합니다. 여기가 갈리면 측정이 프로덕션과
+    // 다른 것을 재게 됩니다.
+    const degrade = (
+      partial: { candidates: StageACandidate[]; unclassifiedShas: string[] },
+      unjudged: readonly string[]
+    ) => {
+      unjudged.forEach((sha) => unjudgedShaSet.add(sha));
+      return {
+        candidates: partial.candidates,
+        unclassifiedShas: partial.unclassifiedShas,
+        unjudgedShas: [...unjudged],
+        rateLimit: null,
+      };
+    };
     const recover = async (current: typeof input, attempts = 2): ReturnType<typeof selectStageACandidates> => {
       try {
         return await selectStageACandidates(current, chunkGenerate);
       } catch (error) {
+        if (error instanceof ExperienceCandidateOutputError && error.kind === "schema_validation" &&
+          !error.partialOutput && attempts > 0) {
+          modelOutputFailures += 1;
+          console.log(`[stage-a-chunks] 모델 출력 실패, 같은 입력 재시도 남은시도=${attempts}`);
+          return await recover(current, attempts - 1);
+        }
         if (!(error instanceof ExperienceCandidateOutputError) || !error.missingShas?.length ||
           !error.partialOutput) throw error;
+        const partial = {
+          candidates: [...error.partialOutput.candidates],
+          unclassifiedShas: [...error.partialOutput.unclassifiedShas],
+        };
         if (attempts === 0) {
-          failedShas += error.missingShas.length;
-          console.log(`[stage-a-chunks] 복구 실패 호출=${calls + 1} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
-          throw error;
+          console.log(`[stage-a-chunks] 판단 불가 호출=${calls + 1} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
+          return degrade(partial, error.missingShas);
         }
         recoveryCalls += 1;
         console.log(`[stage-a-chunks] 누락 복구 호출=${calls + 1} 남은시도=${attempts} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
         const missing = new Set(error.missingShas);
-        const recovered = await recover({
-          ...current,
-          units: current.units.filter(({ representativeSha }) => missing.has(representativeSha)),
-          candidateLimit: Math.max(
-            1,
-            current.candidateLimit - error.partialOutput.candidates.length
-          ),
-        }, attempts - 1);
+        let recovered: Awaited<ReturnType<typeof selectStageACandidates>>;
+        try {
+          recovered = await recover({
+            ...current,
+            units: current.units.filter(({ representativeSha }) => missing.has(representativeSha)),
+            candidateLimit: Math.max(1, current.candidateLimit - partial.candidates.length),
+          }, attempts - 1);
+        } catch (recoveryError) {
+          if (APICallError.isInstance(recoveryError)) throw recoveryError;
+          providerFailures += 1;
+          console.log(`[stage-a-chunks] 복구 호출 실패, 부분 응답 보존 호출=${calls + 1}`);
+          return degrade(partial, error.missingShas);
+        }
         error.missingShas.forEach((sha) => recoveredShaSet.add(sha));
+        const merged = [...partial.candidates, ...recovered.candidates];
+        const overflow = Math.max(0, merged.length - current.candidateLimit);
+        if (overflow > 0) trimmedCandidates += overflow;
+        const ranked = merged
+          .map((candidate, index) => ({ candidate, index }))
+          .sort((left, right) => {
+            const priority = (item: { candidate: StageACandidate }) =>
+              item.candidate.source === "contribution_match" ? 0 : 1;
+            return priority(left) - priority(right) || left.index - right.index;
+          });
         return {
-          candidates: [...error.partialOutput.candidates, ...recovered.candidates],
-          unclassifiedShas: [...error.partialOutput.unclassifiedShas, ...recovered.unclassifiedShas],
+          candidates: ranked.slice(0, current.candidateLimit)
+            .sort((l, r) => l.index - r.index).map(({ candidate }) => candidate),
+          unclassifiedShas: [
+            ...partial.unclassifiedShas,
+            ...recovered.unclassifiedShas,
+            ...ranked.slice(current.candidateLimit).map(({ candidate }) => candidate.sha),
+          ],
+          unjudgedShas: recovered.unjudgedShas,
           rateLimit: recovered.rateLimit,
         };
       }
@@ -538,7 +585,7 @@ async function runStageAChunks() {
     `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} LLM호출=${generateCalls} 총소요=${round(ms() - startedAt)}ms ` +
     `총토큰=${totalTokens} 최종후보=${candidates.length}/${initialChunks.length * quota} 묶음=${units.length} 누락=${units.length - finalShas.size} ` +
     `중복=${answeredShas.length - finalShas.size} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
-    `판단실패=${failedShas} provider한도=${rateLimitFailures}`
+    `판단불가=${unjudgedShaSet.size} 복구실패=${providerFailures} 출력실패=${modelOutputFailures} 트림=${trimmedCandidates} provider한도=${rateLimitFailures}`
   );
 
   // 어떤 묶음이 뽑혔는지 남긴다. SHA만 찍으면 선정 결과가 설명할 만한 작업인지 사람이

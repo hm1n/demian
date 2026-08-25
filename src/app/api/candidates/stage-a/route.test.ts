@@ -29,6 +29,7 @@ function unit(pullRequestNumber: number, representativeSha: string) {
 
 const SHA = "a".repeat(40);
 const SHA_2 = "b".repeat(40);
+const SHA_3 = "c".repeat(40);
 const body = { units: [unit(1, SHA)], contributionItems: [], candidateLimit: 1 };
 
 function request(value: unknown, authenticated = true) {
@@ -68,7 +69,7 @@ describe("POST /api/candidates/stage-a", () => {
     }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      candidates: [], unclassifiedShas: [SHA], rateLimit: null,
+      candidates: [], unclassifiedShas: [SHA], unjudgedShas: [], rateLimit: null,
     });
   });
 
@@ -164,15 +165,88 @@ describe("POST /api/candidates/stage-a", () => {
     expect(await response.json()).toMatchObject({ unclassifiedShas: [SHA, SHA_2] });
   });
 
-  it("단일 묶음을 세 번 누락하면 판단 실패 수와 재시도 불가를 반환한다", async () => {
+  it("부분 응답과 복구 응답을 합칠 때 요청 상한을 넘지 않는다", async () => {
+    // 복구에 넘기는 상한에 최소 1의 바닥이 있어 부분 응답이 이미 상한을 채워도 하나가 더 얹힙니다.
+    // 실측에서 상한 5에 후보 6개, 상한 2에 후보 3개가 나왔습니다.
+    const threeUnits = {
+      units: [unit(1, SHA), unit(2, SHA_2), unit(3, SHA_3)],
+      contributionItems: [],
+      candidateLimit: 1,
+    };
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: true }] })
+      .mockResolvedValue({ decisions: [
+        { pullRequestNumber: 2, contributionItem: null, recommended: true },
+        { pullRequestNumber: 3, contributionItem: null, recommended: true },
+      ] });
+
+    const response = await handleStageA(request(threeUnits), generate);
+    const output = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(output.candidates).toHaveLength(1);
+    // 잘린 후보는 버리지 않고 미분류로 내립니다. 셋 다 어딘가에는 남아야 합니다.
+    expect([
+      ...output.candidates.map(({ sha }: { sha: string }) => sha),
+      ...output.unclassifiedShas,
+      ...output.unjudgedShas,
+    ].sort()).toEqual([SHA, SHA_2, SHA_3].sort());
+  });
+
+  it("상한을 넘으면 기여 항목에 맞은 후보를 먼저 남긴다", async () => {
+    const twoUnits = {
+      units: [unit(1, SHA), unit(2, SHA_2)],
+      contributionItems: ["결제 연동"],
+      candidateLimit: 1,
+    };
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: true }] })
+      .mockResolvedValue({ decisions: [
+        { pullRequestNumber: 2, contributionItem: "결제 연동", recommended: true },
+      ] });
+
+    const response = await handleStageA(request(twoUnits), generate);
+    const output = await response.json();
+
+    expect(output.candidates).toEqual([
+      { sha: SHA_2, source: "contribution_match", contributionItem: "결제 연동" },
+    ]);
+    expect(output.unclassifiedShas).toContain(SHA);
+  });
+
+  it("복구 호출이 제공자 오류로 죽어도 이미 받은 부분 응답을 살린다", async () => {
+    // 실측에서 모델이 스키마를 못 맞춰 제공자가 400을 돌려주는 경우가 간헐적으로 있었고,
+    // 그때마다 정상 판단된 묶음까지 함께 버려졌습니다.
+    const twoUnits = {
+      units: [unit(1, SHA), unit(2, SHA_2)],
+      contributionItems: [],
+      candidateLimit: 2,
+    };
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: true }] })
+      .mockRejectedValue(new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다."));
+
+    const response = await handleStageA(request(twoUnits), generate);
+    const output = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(output.candidates).toEqual([
+      { sha: SHA, source: "automatic_recommendation", contributionItem: null },
+    ]);
+    expect(output.unjudgedShas).toEqual([SHA_2]);
+  });
+
+  it("세 번 판단하지 못한 묶음은 실패가 아니라 판단 불가로 돌려준다", async () => {
+    // 예외를 던지면 같은 응답에 담긴 정상 판단 묶음까지 함께 버려집니다. andbread 실측에서
+    // 청크 하나가 복구를 소진하자 이미 끝난 다섯 청크의 결과가 전부 사라졌습니다.
     const generate = vi.fn().mockResolvedValue({ decisions: [] });
     const response = await handleStageA(request(body), generate);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(200);
     expect(generate).toHaveBeenCalledTimes(3);
-    expect(await response.json()).toMatchObject({ error: {
-      kind: "schema_validation", failedCount: 1, retryable: false,
-    } });
+    expect(await response.json()).toEqual({
+      candidates: [], unclassifiedShas: [], unjudgedShas: [SHA], rateLimit: null,
+    });
   });
 
   it.each([
