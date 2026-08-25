@@ -305,3 +305,72 @@ describe("runInterviewStream", () => {
     expect(sink.errors).toEqual([]);
   });
 });
+
+describe("실제 생성 경로의 요청과 재개", () => {
+  it("본문이 있으면 POST로 보내고 Content-Type을 붙인다", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        sseResponse(
+          encodeSseEvent({ type: "chunk", seq: 1, text: "질문" }) +
+            encodeSseEvent({ type: "done", seq: 1 })
+        )
+      );
+    const sink = collect();
+    const body = JSON.stringify({ snapshot: { candidateSha: "a" } });
+
+    await runInterviewStream({ ...options, fetchImpl, body, resumeMode: "restart" }, sink.handlers);
+
+    expect(fetchImpl.mock.calls[0][1].method).toBe("POST");
+    expect(fetchImpl.mock.calls[0][1].body).toBe(body);
+    expect(fetchImpl.mock.calls[0][1].headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("이어받을 수 없는 스트림은 Last-Event-ID를 보내지 않는다", async () => {
+    // 실제 LLM 스트림은 seq N부터 이어 보낼 수 없습니다. 헤더를 보내면 서버가 거절하거나 이어받은
+    // 것처럼 보이는 다른 질문이 붙습니다.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        sseResponse(
+          encodeSseEvent({ type: "chunk", seq: 1, text: "처음부터" }) +
+            encodeSseEvent({ type: "done", seq: 1 })
+        )
+      );
+    const sink = collect();
+
+    await runInterviewStream(
+      { ...options, fetchImpl, resumeMode: "restart", startSeq: 7 },
+      sink.handlers
+    );
+
+    expect(fetchImpl.mock.calls[0][1].headers["Last-Event-ID"]).toBeUndefined();
+    expect(sink.text).toBe("처음부터");
+  });
+
+  it("이어받을 수 없는 스트림은 전송이 끊겨도 자동으로 다시 연결하지 않는다", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(sseResponse(encodeSseEvent({ type: "chunk", seq: 1, text: "앞부분" })));
+    const sink = collect();
+
+    await runInterviewStream(
+      { ...options, fetchImpl, resumeMode: "restart", retryDelaysMs: [1, 2] },
+      sink.handlers
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sink.errors.map((error) => error.kind)).toEqual(["stream_interrupted"]);
+  });
+
+  it("청크 없이 done으로 끝난 스트림은 정상 완료가 아니라 generation_empty로 알린다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(encodeSseEvent({ type: "done", seq: 0 })));
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl }, sink.handlers);
+
+    expect(sink.done).toBe(false);
+    expect(sink.errors.map((error) => error.kind)).toEqual(["generation_empty"]);
+    expect(sink.statuses.at(-1)).toBe("error");
+  });
+});

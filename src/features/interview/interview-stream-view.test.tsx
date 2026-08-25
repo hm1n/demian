@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InterviewStreamView } from "./interview-stream-view";
+import { evidenceSnapshotFixture } from "./question-fixture";
 import { encodeSseEvent } from "./sse";
 
 afterEach(cleanup);
@@ -200,5 +201,84 @@ describe("InterviewStreamView", () => {
     // 안내 문단은 내용이 비어 있어도 남아 있어야 합니다. live region은 붙어 있는 동안의 변경만
     // 알리므로, 내용을 담은 채 새로 나타나면 낭독되지 않는 스크린리더가 있습니다.
     expect(screen.queryByRole("button", { name: "새 메시지 보기" })).not.toBeInTheDocument();
+  });
+});
+
+describe("InterviewStreamView 실제 생성 경로", () => {
+  const snapshot = evidenceSnapshotFixture();
+
+  it("근거 스냅샷을 POST 본문으로 보낸다", async () => {
+    const source = controllableResponse();
+    const fetchImpl = vi.fn().mockResolvedValue(source.response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} snapshot={snapshot} {...renderOptions} />);
+
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    expect(fetchImpl.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ snapshot });
+  });
+
+  it("이어받을 수 없다고 안내하고 다시 시도는 처음부터 새로 만든다", async () => {
+    const first = controllableResponse();
+    const second = controllableResponse();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(first.response)
+      .mockResolvedValueOnce(second.response);
+
+    render(
+      <InterviewStreamView
+        fetchImpl={fetchImpl}
+        snapshot={snapshot}
+        retryDelaysMs={[]}
+        {...renderOptions}
+      />
+    );
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    first.push(encodeSseEvent({ type: "chunk", seq: 1, text: "앞부분" }));
+    await screen.findByText("앞부분");
+    first.close();
+
+    const retry = await screen.findByRole("button", { name: "다시 시도" });
+    const description = document.getElementById(retry.getAttribute("aria-describedby") ?? "");
+    expect(description).toHaveTextContent("처음부터 새로 만듭니다");
+    expect(description).not.toHaveTextContent("받은 지점부터 이어받습니다");
+
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    // 이어받기 헤더를 보내면 서버가 거절합니다. 이미 표시된 앞부분도 지웁니다. 남겨 두면 새로 만든
+    // 질문이 그 뒤에 붙어 한 메시지 안에서 서로 다른 질문이 이어집니다.
+    expect(fetchImpl.mock.calls[1][1].headers["Last-Event-ID"]).toBeUndefined();
+    await waitFor(() => expect(screen.queryByText("앞부분")).not.toBeInTheDocument());
+  });
+
+  it("청크 없이 끝난 스트림은 완료가 아니라 오류로 알린다", async () => {
+    const source = controllableResponse();
+    const fetchImpl = vi.fn().mockResolvedValue(source.response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} snapshot={snapshot} {...renderOptions} />);
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    source.push(encodeSseEvent({ type: "done", seq: 0 }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("질문을 만들지 못했습니다.");
+    expect(alert).toHaveTextContent("질문 내용이 한 조각도 오지 않았습니다.");
+    expect(screen.queryByText("질문이 모두 도착했습니다.")).not.toBeInTheDocument();
+  });
+
+  it("같은 근거로는 풀리지 않는 실패에는 재시도를 권하지 않는다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      body: null,
+      json: () =>
+        Promise.resolve({ error: { kind: "llm_auth", message: "LLM 인증에 실패했습니다." } }),
+    } as unknown as Response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} snapshot={snapshot} {...renderOptions} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("다시 시도해도 같은 결과가 나옵니다");
   });
 });
