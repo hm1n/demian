@@ -9,6 +9,7 @@ import {
   type AnalysisError,
   type AnalysisState,
   type CandidateRetryPoint,
+  type StageASelectionState,
 } from "./repository-analysis";
 import { parseContributionItems, RepositoryAnalysisView } from "./repository-analysis-view";
 
@@ -26,6 +27,13 @@ const RETRY_POINT: CandidateRetryPoint = {
   data: { allCommits: [], includedCommits: [], repository: { fileTree: [], treeTruncated: false, languages: {} } },
 };
 const GITHUB_TOKEN = "github_pat_secret_value";
+/** 이 화면 안내 스위트는 Stage A 선별 표시 자체가 아니라 후보 목록 표시를 검증하므로 빈 값을 씁니다. */
+const EMPTY_STAGE_A_SELECTION: StageASelectionState = {
+  excludedCommits: [],
+  excludedUnits: [],
+  thresholdScore: 0,
+  unjudgedShas: [],
+};
 
 function fillRepository() {
   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "octocat" } });
@@ -280,6 +288,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: "나머지 커밋은 diff 근거가 부족합니다.",
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();
@@ -302,6 +311,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: "하나뿐입니다.",
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();
@@ -330,6 +340,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: null,
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();

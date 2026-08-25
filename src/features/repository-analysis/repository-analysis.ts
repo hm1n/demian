@@ -3,10 +3,11 @@ import {
   fetchStageACandidatesFromApi,
   fetchStageBCandidatesFromApi,
   type CandidateStage,
+  type StageACandidateResult,
+  type StageASelectionSummary,
 } from "@/features/experience-candidates/candidate-client";
 import type {
   StageACheckpoint,
-  StageACandidateOutput,
   StageBCandidateResult,
 } from "@/features/experience-candidates/types";
 import { buildCandidateData } from "@/lib/github/candidate-data";
@@ -66,8 +67,17 @@ export interface CandidateRetryPoint {
   readonly repository: RepositoryRef;
   readonly contributionItems: readonly string[];
   readonly data: CandidateDataOutput;
-  readonly stageA?: StageACandidateOutput;
+  readonly stageA?: StageACandidateResult;
   readonly stageACheckpoint?: StageACheckpoint;
+}
+
+/**
+ * 성공 상태가 화면에 실어 보내는 Stage A 선별 정보입니다. `unjudgedShas`는 `StageACandidateOutput`에
+ * 이미 있지만 성공 경로에서는 그동안 어디에도 실리지 않았습니다. 화면이 "판단 불가" 건수를
+ * 보여주려면(Task 9-2) 이 값이 성공 상태까지 와야 합니다.
+ */
+export interface StageASelectionState extends StageASelectionSummary {
+  readonly unjudgedShas: readonly string[];
 }
 
 export type AnalysisState =
@@ -76,7 +86,12 @@ export type AnalysisState =
   | { status: "empty"; kind: EmptyKind }
   | { status: "empty"; kind: "no_final_candidates"; reason: string }
   | { status: "error"; error: AnalysisError; retryPoint?: CandidateRetryPoint }
-  | { status: "success"; data: CandidateDataOutput; candidates: StageBCandidateResult };
+  | {
+      status: "success";
+      data: CandidateDataOutput;
+      candidates: StageBCandidateResult;
+      stageASelection: StageASelectionState;
+    };
 
 interface AnalysisDependencies {
   fetchCommits(repository: RepositoryRef): Promise<AuthoredCommitsResult>;
@@ -278,7 +293,17 @@ export async function generateCandidates(
       });
       return;
     }
-    onStateChange({ status: "success", data, candidates });
+    onStateChange({
+      status: "success",
+      data,
+      candidates,
+      stageASelection: {
+        excludedCommits: stageA.excludedCommits,
+        excludedUnits: stageA.excludedUnits,
+        thresholdScore: stageA.thresholdScore,
+        unjudgedShas: stageA.unjudgedShas,
+      },
+    });
   } catch (error) {
     if (error instanceof CandidateRequestError && error.checkpoint) {
       stageACheckpoint = error.checkpoint;

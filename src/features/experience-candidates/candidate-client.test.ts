@@ -186,6 +186,9 @@ describe("fetchStageACandidatesFromApi", () => {
       candidates: output.candidates,
       unclassifiedShas: output.unclassifiedShas,
       unjudgedShas: [],
+      excludedCommits: [],
+      excludedUnits: [],
+      thresholdScore: 0,
     });
     expect(fetch).toHaveBeenCalledWith("/api/candidates/stage-a", expect.objectContaining({
       method: "POST",

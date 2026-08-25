@@ -256,18 +256,34 @@ export function splitUnitsIntoChunks(
   return result;
 }
 
+/**
+ * `fetchStageACandidatesFromApi`의 반환 타입입니다. `StageACandidateOutput`을 넓히되 그 타입
+ * 자체는 건드리지 않습니다. `StageACheckpoint`와 `StageAChunkOutput`이 `StageACandidateOutput`을
+ * 함께 상속하므로(`types.ts:50`), 화면 전용 값을 상위 타입에 얹으면 체크포인트와 청크 응답까지
+ * 커집니다. 두 값 다 화면이 쓰지 않는 값이라 실을 이유가 없습니다.
+ */
+export interface StageASelectionSummary {
+  readonly excludedCommits: readonly ExcludedCommit[];
+  /** 점수 선별에서 빠진 묶음입니다. 화면이 제외 사유를 보여주려면 이 값이 필요합니다. */
+  readonly excludedUnits: readonly ExcludedWorkUnit<ReadonlyCommitDetail>[];
+  /** 선택된 묶음 중 가장 낮은 점수입니다. */
+  readonly thresholdScore: number;
+}
+
+export interface StageACandidateResult extends StageACandidateOutput, StageASelectionSummary {}
+
 export async function fetchStageACandidatesFromApi(
   commits: readonly ReadonlyCommitDetail[],
   contributionItems: readonly string[],
   onProgress: (progress: StageAProgress) => void = () => undefined,
   checkpoint?: StageACheckpoint,
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-): Promise<StageACandidateOutput> {
+): Promise<StageACandidateResult> {
   const processed = new Set(checkpoint?.processedShas ?? []);
   const candidates = [...(checkpoint?.candidates ?? [])];
   const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
   const unjudgedShas = [...(checkpoint?.unjudgedShas ?? [])];
-  const { units, workUnits } = toStageAUnits(commits);
+  const { units, workUnits, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(commits);
   const pending = units.filter(({ representativeSha }) => !processed.has(representativeSha));
   const chunks = splitUnitsIntoChunks(pending, contributionItems);
   // 쿼터를 여기서 한 번 정합니다. 청크마다 전역 상한을 보내던 이전 방식은 실효 상한을
@@ -331,6 +347,9 @@ export async function fetchStageACandidatesFromApi(
     candidates: expandCandidatesToCommits(candidates, workUnits),
     unclassifiedShas,
     unjudgedShas,
+    excludedCommits,
+    excludedUnits,
+    thresholdScore,
   };
 }
 

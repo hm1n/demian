@@ -213,6 +213,7 @@ export function RepositoryAnalysisView() {
             repository={analyzedRepository}
             data={state.data}
             candidates={state.candidates}
+            stageASelection={state.stageASelection}
             onSelectRepository={selectRepository}
           />
         ) : null}

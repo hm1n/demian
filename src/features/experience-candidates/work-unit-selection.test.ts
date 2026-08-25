@@ -108,4 +108,13 @@ describe("selectWorkUnitsForStageA", () => {
   it("제외 사유마다 표시 문구가 있다", () => {
     expect(Object.values(WORK_UNIT_SELECTION_EXCLUSION_COPY).every((copy) => copy.length > 0)).toBe(true);
   });
+
+  it("제외된 묶음은 발화한 신호를 함께 돌려준다", () => {
+    // scoredUnit(3, 1)은 커밋 6개로만 1점을 얻어 many_commits 신호 하나만 발화시킵니다.
+    const units = [scoredUnit(1, 0), scoredUnit(2, 2), scoredUnit(3, 1)];
+    const selection = selectWorkUnitsForStageA(units, 400);
+
+    const excludedThree = selection.excluded.find(({ unit: item }) => item.pullRequestNumber === 3);
+    expect(excludedThree?.signals).toEqual(["many_commits"]);
+  });
 });

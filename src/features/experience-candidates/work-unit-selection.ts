@@ -1,4 +1,9 @@
-import { scoreWorkUnit, sortByScoreDescending, type ScorableCommit } from "./work-unit-score";
+import {
+  scoreWorkUnit,
+  sortByScoreDescending,
+  type ScorableCommit,
+  type WorkUnitSignal,
+} from "./work-unit-score";
 import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
 
@@ -26,6 +31,11 @@ export interface SelectedWorkUnit<TCommit extends ScorableCommit> {
 export interface ExcludedWorkUnit<TCommit extends ScorableCommit>
   extends SelectedWorkUnit<TCommit> {
   readonly reason: WorkUnitSelectionExclusionReason;
+  /**
+   * 발화한 신호입니다. `scoreWorkUnit`이 이미 계산해 두는 값이고, 화면이 "왜 이 점수인지"를
+   * 보여주려면 필요합니다. `selected`에는 화면이 쓰지 않아 싣지 않습니다.
+   */
+  readonly signals: readonly WorkUnitSignal[];
 }
 
 export interface WorkUnitSelection<TCommit extends ScorableCommit> {
@@ -69,9 +79,11 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
 ): WorkUnitSelection<TCommit> {
   const scored = units.map((unit) => {
     const summary = summarizeWorkUnit(unit);
+    const { score, signals } = scoreWorkUnit(unit, summary);
     return {
       unit,
-      score: scoreWorkUnit(unit, summary).score,
+      score,
+      signals,
       bytes: Buffer.byteLength(renderWorkUnitSummary(summary), "utf8"),
     };
   });
@@ -100,7 +112,7 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
     budgetExhausted = true;
     // 첫 무리가 통째로 예산을 넘을 때만 무리를 쪼갭니다. 입력이 비면 Stage A를 부를 수 없습니다.
     const allowSplit = selected.length === 0;
-    for (const { unit, score: itemScore, bytes } of group) {
+    for (const { unit, score: itemScore, bytes, signals } of group) {
       if (allowSplit && selectedBytes + bytes + selected.length <= maxBytes) {
         selected.push({ unit, score: itemScore });
         selectedBytes += bytes;
@@ -109,6 +121,7 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
       excluded.push({
         unit,
         score: itemScore,
+        signals,
         reason: allowSplit ? "over_byte_budget" : "below_score_threshold",
       });
     }
