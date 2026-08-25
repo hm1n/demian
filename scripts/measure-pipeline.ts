@@ -417,13 +417,25 @@ async function runStageAChunks() {
   const { included } = await loadCommits();
   const targets = included.slice(0, numericOption("limit", included.length));
   const chunkModel = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
-  const chunkGenerate = createStageAGenerate(chunkModel);
+  const baseGenerate = createStageAGenerate(chunkModel);
+  let totalTokens = 0;
+  let generateCalls = 0;
+  // selectStageACandidates가 전수 응답 위반으로 던지면 그 호출의 토큰이 반환값에 실리지
+  // 않는다. 복구 호출만 세면 실제 소비를 과소집계하므로 generate 자체를 감싸서 센다.
+  const chunkGenerate: GenerateStageA = async (payload, abortSignal) => {
+    const output = await baseGenerate(payload, abortSignal);
+    generateCalls += 1;
+    // GenerateStageA는 검증 전이라 unknown을 돌려준다. 토큰만 좁혀서 읽는다.
+    const observed = (output as { __rateLimit?: { usedTokens?: number } | null } | null)?.__rateLimit;
+    totalTokens += observed?.usedTokens ?? 0;
+    return output;
+  };
   console.log(`[stage-a-chunks] 모델=${chunkModel ?? STAGE_A_MODEL}`);
   const details = await fetchDetailsCached(targets);
   const candidates: StageACandidate[] = [];
   const unclassified = new Set<string>();
+  const answeredShas: string[] = [];
   let calls = 0;
-  let totalTokens = 0;
   let recoveryCalls = 0;
   const recoveredShaSet = new Set<string>();
   let failedShas = 0;
@@ -485,9 +497,8 @@ async function runStageAChunks() {
       }
     }
     calls += 1;
-    totalTokens += output.rateLimit?.usedTokens ?? 0;
     console.log(
-      `[stage-a-chunks] 호출=${calls} 입력묶음=${chunk.length} 쿼터=${limit} 후보=${output.candidates.length} ` +
+      `[stage-a-chunks] 호출=${calls} LLM호출=${generateCalls} 입력묶음=${chunk.length} 쿼터=${limit} 후보=${output.candidates.length} ` +
       `소요=${round(ms() - callStartedAt)}ms 토큰=${output.rateLimit?.usedTokens ?? 0} ` +
       `잔여=${output.rateLimit?.remainingTokens ?? -1} reset=${output.rateLimit?.resetAfterMs ?? -1}ms`
     );
@@ -511,14 +522,17 @@ async function runStageAChunks() {
     const output = await call(chunk, Math.min(quota, chunk.length));
     candidates.push(...output.candidates);
     output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
+    answeredShas.push(...output.candidates.map(({ sha }) => sha), ...output.unclassifiedShas);
     if (index + 1 < initialChunks.length) await pause(output.rateLimit);
   }
 
-  const finalShas = new Set([...candidates.map(({ sha }) => sha), ...unclassified]);
+  // 전수 응답 계약은 묶음 단위다. 커밋 수와 비교하면 묶기로 줄어든 차이가 누락으로 잡힌다.
+  // 중복은 집합 크기가 아니라 원본 배열 길이와의 차이로만 드러난다.
+  const finalShas = new Set(answeredShas);
   console.log(
-    `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} 총소요=${round(ms() - startedAt)}ms ` +
-    `총토큰=${totalTokens} 최종후보=${candidates.length} 누락=${details.length - finalShas.size} ` +
-    `중복=${finalShas.size - details.length} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
+    `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} LLM호출=${generateCalls} 총소요=${round(ms() - startedAt)}ms ` +
+    `총토큰=${totalTokens} 최종후보=${candidates.length}/${initialChunks.length * quota} 묶음=${units.length} 누락=${units.length - finalShas.size} ` +
+    `중복=${answeredShas.length - finalShas.size} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
     `판단실패=${failedShas} provider한도=${rateLimitFailures}`
   );
 }
