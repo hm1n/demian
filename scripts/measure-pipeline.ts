@@ -47,6 +47,7 @@ import {
   splitUnitsIntoChunks,
   toStageAUnits,
 } from "../src/features/experience-candidates/candidate-client";
+import { renderWorkUnitSummary } from "../src/features/experience-candidates/work-unit-summary";
 import {
   buildStageBPayload,
   createStageBGenerate,
@@ -510,12 +511,16 @@ async function runStageAChunks() {
     }
   };
 
-  const { units, excludedCommits } = toStageAUnits(details);
+  const { units, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(details);
   const initialChunks = splitUnitsIntoChunks(units, []);
   const quota = resolveChunkQuota(initialChunks.length);
   console.log(
     `[stage-a-chunks] 커밋=${details.length} 묶음=${units.length} 제외=${excludedCommits.length} ` +
     `청크=${initialChunks.length} 쿼터=${quota} 최대후보=${initialChunks.length * quota}`
+  );
+  console.log(
+    `[stage-a-chunks] 선별 입력묶음=${units.length} 제외묶음=${excludedUnits.length} 경계점수=${thresholdScore} ` +
+    `프롬프트바이트=${Buffer.byteLength(units.map(({ summary }) => renderWorkUnitSummary(summary)).join("\n"), "utf8")}`
   );
   for (let index = 0; index < initialChunks.length; index += 1) {
     const chunk = initialChunks[index];
@@ -535,6 +540,18 @@ async function runStageAChunks() {
     `중복=${answeredShas.length - finalShas.size} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
     `판단실패=${failedShas} provider한도=${rateLimitFailures}`
   );
+
+  // 어떤 묶음이 뽑혔는지 남긴다. SHA만 찍으면 선정 결과가 설명할 만한 작업인지 사람이
+  // 판단할 수 없다. 후보 SHA는 묶음 대표 SHA이므로 입력 묶음에서 그대로 되찾을 수 있다.
+  const unitBySha = new Map(units.map((unit) => [unit.representativeSha, unit]));
+  for (const { sha, source, contributionItem } of candidates) {
+    const unit = unitBySha.get(sha);
+    const matched = contributionItem === null ? "" : ` 기여=${contributionItem}`;
+    console.log(
+      `[stage-a-chunks] 후보 PR#${unit?.pullRequestNumber ?? "?"} ${source}${matched} ` +
+      `${unit?.summary.pullRequestTitle ?? sha}`
+    );
+  }
 }
 
 /**

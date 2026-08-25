@@ -8,6 +8,7 @@ import {
   splitUnitsIntoChunks,
   expandCandidatesToCommits,
 } from "./candidate-client";
+import { STAGE_A_CHUNK_MAX_BYTES } from "./stage-a";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
 
@@ -321,8 +322,12 @@ describe("fetchStageACandidatesFromApi", () => {
     )).toBe(false);
   });
 
-  it("프롬프트 바이트 경계에서 묶음을 다음 청크로 보존한다", async () => {
-    const commits = manyUnits(3).map((commit) => ({ ...commit, title: "x".repeat(2_800) }));
+  it("프롬프트 예산을 넘는 묶음은 청크로 쪼개지 않고 선별에서 제외한다", async () => {
+    // 점수 선별이 청크 분할보다 먼저 돌고 예산이 같으므로 요청은 항상 한 번입니다.
+    const commits = manyUnits(3).map((commit) => ({
+      ...commit,
+      title: "x".repeat(Math.floor(STAGE_A_CHUNK_MAX_BYTES / 2) - 250),
+    }));
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
       return jsonResponse({
@@ -334,9 +339,11 @@ describe("fetchStageACandidatesFromApi", () => {
 
     const output = await fetchStageACandidatesFromApi(commits, []);
 
-    expect(output.unclassifiedShas).toEqual(commits.map(({ sha }) => sha));
     expect(vi.mocked(fetch).mock.calls.map(([, init]) => parseRequest(init).units.length))
-      .toEqual([2, 1]);
+      .toEqual([2]);
+    expect(output.unclassifiedShas).toHaveLength(2);
+    expect(toStageAUnits(commits).excludedUnits).toHaveLength(1);
+    expect(toStageAUnits(commits).excludedUnits[0].reason).toBe("over_byte_budget");
   });
 });
 

@@ -1,3 +1,4 @@
+import { STAGE_A_CHUNK_MAX_BYTES } from "@/features/experience-candidates/stage-a";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -100,7 +101,7 @@ describe("POST /api/candidates/stage-a", () => {
     const generate = vi.fn();
     const long = unit(1, SHA);
     const response = await handleStageA(request({
-      units: [{ ...long, summary: { ...long.summary, commitTitles: ["x".repeat(7_000)] } }],
+      units: [{ ...long, summary: { ...long.summary, commitTitles: ["x".repeat(STAGE_A_CHUNK_MAX_BYTES + 500)] } }],
       contributionItems: [],
       candidateLimit: 1,
     }), generate);

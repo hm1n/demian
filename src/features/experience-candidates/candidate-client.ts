@@ -9,6 +9,10 @@ import type {
   StageBCandidateResult,
 } from "./types";
 import { validateExperienceCandidateOutput } from "./schema";
+import {
+  selectWorkUnitsForStageA,
+  type ExcludedWorkUnit,
+} from "./work-unit-selection";
 import { groupCommitsIntoWorkUnits, type ExcludedCommit, type WorkUnit } from "./work-unit";
 import {
   allocateCommitQuota,
@@ -136,21 +140,38 @@ function isStageACandidate(value: unknown): value is StageACandidate {
  * patch는 보내지 않습니다. 입력 계약 위반(422)입니다. 커밋 메시지 본문과 파일별 숫자도 더는
  * 보내지 않습니다. 묶음 요약이 그 자리를 대신합니다.
  */
+/**
+ * 커밋을 묶음으로 접고 점수 상위 묶음만 Stage A 입력으로 고릅니다.
+ *
+ * 전체 묶음을 청크로 쪼개 보내던 방식을 대신합니다. 그 방식은 `andbread` 66묶음 7청크 실측에서
+ * 첫 시도 계약 준수가 33퍼센트였고, 청크 하나가 복구를 소진하면 이미 끝난 청크의 결과까지 버리고
+ * 전체가 실패했습니다. 근거는 `selectWorkUnitsForStageA`에 있습니다.
+ *
+ * `workUnits`는 선별에서 빠진 묶음까지 전부 담습니다. 후보를 커밋으로 펼칠 때 쓰는 값이라
+ * 선별 결과와 무관하게 원본을 유지해야 합니다.
+ */
 export function toStageAUnits(commits: readonly ReadonlyCommitDetail[]): {
   units: StageAUnitInput[];
   /** Stage B 근거를 펼칠 때 필요합니다. Stage A 요청에는 실리지 않습니다. */
   workUnits: readonly WorkUnit<ReadonlyCommitDetail>[];
   excludedCommits: readonly ExcludedCommit[];
+  /** 점수 선별에서 빠진 묶음입니다. 화면이 제외 사유를 보여주려면 이 값이 필요합니다. */
+  excludedUnits: readonly ExcludedWorkUnit<ReadonlyCommitDetail>[];
+  /** 선택된 묶음 중 가장 낮은 점수입니다. */
+  thresholdScore: number;
 } {
   const { units, excludedCommits } = groupCommitsIntoWorkUnits(commits);
+  const selection = selectWorkUnitsForStageA(units);
   return {
-    units: units.map((unit) => ({
+    units: selection.selected.map(({ unit }) => ({
       pullRequestNumber: unit.pullRequestNumber,
       representativeSha: selectRepresentativeCommits(unit, 1)[0].sha,
       summary: summarizeWorkUnit(unit),
     })),
     workUnits: units,
     excludedCommits,
+    excludedUnits: selection.excluded,
+    thresholdScore: selection.thresholdScore,
   };
 }
 

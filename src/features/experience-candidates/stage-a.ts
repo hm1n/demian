@@ -24,12 +24,23 @@ export const STAGE_A_TIMEOUT_MS = 55_000;
  * 한 청크가 모델에 보내는 프롬프트 바이트 상한입니다.
  *
  * 요청 본문이 아니라 접힌 묶음 문자열을 잽니다. 요청 본문은 구조화 요약이라 같은 내용이라도
- * 필드 이름과 따옴표 때문에 더 큽니다. 모델 한도에 걸리는 것은 프롬프트 쪽이므로 둘을
- * 나눠서 잽니다.
+ * 필드 이름과 따옴표 때문에 더 큽니다. 둘을 나눠서 잽니다.
+ *
+ * 이 값을 정하는 것은 모델 컨텍스트가 아니라 Groq 무료 등급의 분당 토큰 한도(TPM) 8,000입니다.
+ * `gpt-oss` 계열 컨텍스트는 131,072토큰이라 저장소 전체를 한 번에 넣고도 남습니다. 하지만 TPM을
+ * 넘는 요청은 기다려도 통과하지 않습니다. 근거는 `STAGE_A_MAX_SELECTION_BYTES`에 있습니다.
+ *
+ * 점수 선별이 입력을 이 상한 안으로 줄이므로 실측 두 저장소 모두 청크가 하나입니다. 청크 분할은
+ * 선별이 예상보다 큰 입력을 넘길 때를 위한 안전장치로 남습니다.
  */
-export const STAGE_A_CHUNK_MAX_BYTES = 6_000;
-/** 요청 본문 상한입니다. 구조화 요약의 필드 이름과 구분자를 감안해 프롬프트 상한보다 크게 둡니다. */
-export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 16_000;
+export const STAGE_A_CHUNK_MAX_BYTES = 10_500;
+/**
+ * 요청 본문 상한입니다.
+ *
+ * 구조화 요약의 필드 이름과 구분자 때문에 프롬프트보다 큽니다. 실측 배율은 `demian` 1.52,
+ * `andbread` 1.25입니다. 프롬프트 상한 10,500에 최대 배율을 적용하면 15,960이라 여유를 둡니다.
+ */
+export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 20_000;
 /** 한 청크에 담을 작업 묶음 수 상한입니다. 바이트 상한보다 먼저 걸리는 경우를 막는 안전장치입니다. */
 export const STAGE_A_CHUNK_MAX_UNITS = 20;
 /**
@@ -38,8 +49,11 @@ export const STAGE_A_CHUNK_MAX_UNITS = 20;
  * 이 값이 재판단 라운드를 없앱니다. 이전에는 청크마다 전역 상한 20을 그대로 보내서 청크가
  * 14개면 실효 상한이 280개가 되었고, 넘친 후보를 다시 줄이려고 재판단 라운드를 돌았습니다.
  * 청크마다 쿼터를 고정하면 후보 수가 `청크 수 × 쿼터`로 결정되므로 넘칠 일이 없습니다.
+ *
+ * 점수 선별을 넣으면서 2에서 5로 올렸습니다. 선별 뒤에는 청크가 하나뿐이라 2로 두면 저장소당
+ * 후보가 2개로 끝납니다. 5면 Stage B 커밋 상한 30을 나눠 후보당 6커밋이 실려 근거가 두터워집니다.
  */
-export const STAGE_A_CHUNK_QUOTA = 2;
+export const STAGE_A_CHUNK_QUOTA = 5;
 export const STAGE_A_TOKEN_RESERVE = 6_000;
 export const STAGE_A_RESET_SAFETY_MS = 1_000;
 
