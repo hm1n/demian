@@ -212,9 +212,65 @@ describe("renderWorkUnitSummary", () => {
       [
         "PR#113 PWA 알림 구현 [2커밋 2일 +105-23 2파일]",
         "  feat: 알림 저장 / fix: 아이콘 경로",
-        "  src/a.ts src/b.ts",
+        "  src/{a.ts,b.ts}",
       ].join("\n")
     );
+  });
+
+  it("같은 디렉터리의 파일을 한 번만 적는다", () => {
+    const text = renderWorkUnitSummary(
+      summarizeWorkUnit(
+        unit([
+          commit({
+            files: [
+              { path: "src/features/chat/list.tsx", changes: 30 },
+              { path: "src/features/chat/item.tsx", changes: 20 },
+              { path: "src/features/chat/list.module.css", changes: 10 },
+            ],
+          }),
+        ])
+      )
+    );
+
+    expect(text.split("\n")[2]).toBe(
+      "  src/features/chat/{list.tsx,item.tsx,list.module.css}"
+    );
+  });
+
+  it("디렉터리가 여러 개면 각각 접는다", () => {
+    const text = renderWorkUnitSummary(
+      summarizeWorkUnit(
+        unit([
+          commit({
+            files: [
+              { path: "src/a/one.ts", changes: 30 },
+              { path: "src/b/two.ts", changes: 20 },
+              { path: "src/a/three.ts", changes: 10 },
+            ],
+          }),
+        ])
+      )
+    );
+
+    expect(text.split("\n")[2]).toBe("  src/a/{one.ts,three.ts} src/b/{two.ts}");
+  });
+
+  it("최상위 파일은 접지 않고 그대로 둔다", () => {
+    const text = renderWorkUnitSummary(
+      summarizeWorkUnit(
+        unit([
+          commit({
+            files: [
+              { path: "eslint.config.mjs", changes: 30 },
+              { path: "src/a/one.ts", changes: 20 },
+              { path: "package.json", changes: 10 },
+            ],
+          }),
+        ])
+      )
+    );
+
+    expect(text.split("\n")[2]).toBe("  eslint.config.mjs package.json src/a/{one.ts}");
   });
 
   it("남은 파일 경로 수를 뒤에 접어서 붙인다", () => {
