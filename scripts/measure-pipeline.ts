@@ -43,6 +43,7 @@ import {
   type StageAUnitInput,
 } from "../src/features/experience-candidates/stage-a";
 import {
+  expandCandidatesToCommits,
   splitUnitsIntoChunks,
   toStageAUnits,
 } from "../src/features/experience-candidates/candidate-client";
@@ -261,15 +262,17 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
   }));
   const stageB = buildStageBPayload(capped, candidates);
   const stageBBytes = encoder.encode(JSON.stringify(stageB)).byteLength;
-  const usedPatch = stageB.commits.reduce(
+  // 페이로드가 Pull Request 단위 묶음으로 바뀌었다(Codex 리뷰 P1-1). 커밋 단위 집계는 펼쳐서 센다.
+  const stageBCommits = stageB.workUnits.flatMap((unit) => unit.commits);
+  const usedPatch = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.reduce((inner, file) => inner + (file.patch?.length ?? 0), 0),
     0
   );
-  const truncatedFiles = stageB.commits.reduce(
+  const truncatedFiles = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.filter((file) => file.patchTruncated === true).length,
     0
   );
-  const droppedFiles = stageB.commits.reduce(
+  const droppedFiles = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.filter((file) => file.patch === undefined).length,
     0
   );
@@ -392,7 +395,8 @@ async function runStageA() {
   try {
     // 후보 상한은 프로덕션이 쓰는 값과 같아야 합니다. 전역 상한 20을 그대로 쓰면 클라이언트가
     // 실제로 보내는 쿼터와 다른 것을 재게 되고, Stage B로 넘어가는 후보 수도 달라집니다.
-    const stageAUnits = toStageAUnits(details).units;
+    // 기여 항목이 선별 예산을 먹는다. 프로덕션과 같게 넘겨야 같은 묶음 수를 잰다.
+    const { units: stageAUnits, workUnits: stageAWorkUnits } = toStageAUnits(details, contributionItems);
     const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
     if (stageAChunks.length > 1) {
       console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
@@ -421,7 +425,7 @@ async function runStageA() {
           `+${detail?.additions}/-${detail?.deletions} files=${detail?.changedFiles} | ${detail?.title}`
       );
     }
-    return { details, candidates: output.candidates };
+    return { details, candidates: output.candidates, workUnits: stageAWorkUnits };
   } catch (error) {
     const elapsed = ms() - startedAt;
     console.log(`[stage-a] 실패 소요=${round(elapsed)}ms kind=${(error as Error & { kind?: string }).kind ?? "unknown"} ${(error as Error).message}
@@ -625,13 +629,15 @@ async function stageBInputWithoutStageA() {
   const { included } = await loadCommits();
   const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_INPUT_COMMITS));
   const details = await fetchDetailsCached(targets);
-  const candidates: StageACandidate[] = details.map(({ sha }) => ({
-    sha,
+  // 커밋 하나하나를 후보로 두면 프로덕션과 다른 것을 잰다. 프로덕션 후보는 PR 묶음이다.
+  const { units, workUnits } = toStageAUnits(details);
+  const candidates: StageACandidate[] = units.map(({ representativeSha }) => ({
+    sha: representativeSha,
     source: "automatic_recommendation",
     contributionItem: null,
   }));
-  console.log(`[stage-b] Stage A 생략, 캐시 상세 ${details.length}건을 후보로 사용`);
-  return { details, candidates };
+  console.log(`[stage-b] Stage A 생략, 캐시 상세 ${details.length}건에서 묶음 ${candidates.length}개를 후보로 사용`);
+  return { details, candidates, workUnits };
 }
 
 /**
@@ -640,7 +646,7 @@ async function stageBInputWithoutStageA() {
  */
 function reportPatchBudgetShare(commits: readonly CommitDetail[], candidates: readonly StageACandidate[]) {
   const payload = buildStageBPayload(commits, candidates);
-  const shares = payload.commits.map((commit, index) => ({
+  const shares = payload.workUnits.flatMap((unit) => unit.commits).map((commit, index) => ({
     index,
     sha: commit.sha,
     chars: commit.files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0),
@@ -655,19 +661,45 @@ function reportPatchBudgetShare(commits: readonly CommitDetail[], candidates: re
 }
 
 async function runStageB() {
-  const { details, candidates } = rest.includes("--skip-stage-a")
+  const { details, candidates, workUnits } = rest.includes("--skip-stage-a")
     ? await stageBInputWithoutStageA()
     : await runStageA();
-  const capped = candidates.slice(0, STAGE_B_MAX_INPUT_COMMITS);
-  console.log(`[stage-b] Stage A 후보=${candidates.length} STAGE_B_MAX_INPUT_COMMITS=${STAGE_B_MAX_INPUT_COMMITS} 422 유발=${candidates.length > STAGE_B_MAX_INPUT_COMMITS}`);
-  const commits = details.filter((detail) => capped.some(({ sha }) => sha === detail.sha));
-  const patchShare = reportPatchBudgetShare(commits, capped);
+  // 프로덕션은 후보 묶음을 대표 커밋 여럿으로 펼쳐서 Stage B에 넣는다(`candidate-client.ts`의
+  // `fetchStageBCandidatesFromApi`). 예전에는 여기서 묶음당 SHA 하나를 그대로 잘라 써서 조회
+  // 시간과 patch 몫을 운영 입력이 아닌 것에서 재고 있었다(Codex 리뷰 P2-3).
+  const expanded = expandCandidatesToCommits(candidates, workUnits, STAGE_B_MAX_INPUT_COMMITS);
+  const commits = details.filter((detail) => expanded.some(({ sha }) => sha === detail.sha));
+
+  // 같은 PR에서 커밋 여러 개가 실제로 펼쳐졌는지 확인한다. 하나도 없으면 이 측정은 커밋 단위
+  // 입력과 구별되지 않으므로 운영 경로를 검증하지 못한다.
+  const commitsByPullRequest = new Map<number, string[]>();
+  for (const detail of commits) {
+    for (const pullRequest of detail.pullRequests) {
+      const bucket = commitsByPullRequest.get(pullRequest.number) ?? [];
+      bucket.push(detail.sha);
+      commitsByPullRequest.set(pullRequest.number, bucket);
+    }
+  }
+  const multiCommitUnits = [...commitsByPullRequest.entries()].filter(([, shas]) => shas.length > 1);
+  const uniqueShas = new Set(expanded.map(({ sha }) => sha)).size;
+
+  console.log(
+    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${STAGE_B_MAX_INPUT_COMMITS} ` +
+      `SHA 중복=${expanded.length - uniqueShas} 상세=${commits.length}건`
+  );
+  console.log(
+    `[stage-b] PR 수=${commitsByPullRequest.size} 커밋 2개 이상 PR=${multiCommitUnits.length}` +
+      (multiCommitUnits.length === 0
+        ? "  경고: 펼쳐도 PR마다 커밋 1개뿐이다. 운영 입력을 검증하지 못한다"
+        : `  최대=${Math.max(...multiCommitUnits.map(([, shas]) => shas.length))}커밋`)
+  );
+  const patchShare = reportPatchBudgetShare(commits, expanded);
 
   const startedAt = ms();
   try {
     const stageBModel = rest.find((option) => option.startsWith("--stage-b-model="))?.slice("--stage-b-model=".length);
     console.log(`[stage-b] 모델=${stageBModel ?? STAGE_B_MODEL}`);
-    const output = await selectStageBCandidates(commits, capped, createStageBGenerate(stageBModel));
+    const output = await selectStageBCandidates(commits, expanded, createStageBGenerate(stageBModel));
     const elapsed = ms() - startedAt;
     console.log(`[stage-b] 성공 소요=${round(elapsed)}ms 최종 후보=${output.candidates.length}`);
     for (const candidate of output.candidates) {
