@@ -142,6 +142,12 @@ export async function runInterviewStream(
           }
           await reader.cancel().catch(() => {});
           if (event.type === "done") {
+            // `done`이 도착했다는 사실은 완결의 대리 지표일 뿐입니다. 서버가 말한 마지막 `seq`와
+            // 실제로 받은 `seq`가 다르면 중간 청크가 빠진 것이고, 그대로 완료로 두면 잘린 질문이
+            // 완성된 것처럼 남습니다. 단절로 처리해야 `Last-Event-ID`로 빠진 지점부터 이어받습니다.
+            if (event.seq !== lastSeq) {
+              throw transportError("stream_interrupted");
+            }
             handlers.onDone?.();
             setStatus("done");
             return;

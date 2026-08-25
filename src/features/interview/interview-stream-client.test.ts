@@ -85,6 +85,42 @@ describe("runInterviewStream", () => {
     expect(sink.statuses.at(-1)).toBe("error");
   });
 
+  it("done의 seq가 실제로 받은 seq와 다르면 완료로 두지 않는다", async () => {
+    // 청크 2·3이 빠진 채 done만 온 경우입니다. done 도착을 완결의 대리 지표로 쓰면 잘린 질문이
+    // 완성된 것처럼 남습니다.
+    const truncated =
+      encodeSseEvent({ type: "chunk", seq: 1, text: "앞부분" }) +
+      encodeSseEvent({ type: "done", seq: 3 });
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(truncated));
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl, retryDelaysMs: [] }, sink.handlers);
+
+    expect(sink.done).toBe(false);
+    expect(sink.text).toBe("앞부분");
+    expect(sink.errors.map((error) => error.kind)).toEqual(["stream_interrupted"]);
+    expect(sink.statuses.at(-1)).toBe("error");
+  });
+
+  it("done의 seq가 맞으면 이어받은 스트림도 완료로 본다", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(sseResponse(encodeSseEvent({ type: "chunk", seq: 1, text: "앞" })))
+      .mockResolvedValue(
+        sseResponse(
+          encodeSseEvent({ type: "chunk", seq: 2, text: "뒤" }) +
+            encodeSseEvent({ type: "done", seq: 2 })
+        )
+      );
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl }, sink.handlers);
+
+    expect(sink.done).toBe(true);
+    expect(sink.text).toBe("앞뒤");
+    expect(sink.errors).toEqual([]);
+  });
+
   it("스트림 시작 전 오류는 서버가 보낸 분류와 문구를 그대로 전달한다", async () => {
     // 질문 생성 route는 첫 토큰 전에 나는 실패를 stage-a·stage-b와 같이 HTTP 상태와 JSON 본문에
     // 실어 보냅니다. 본문을 버리면 한도 초과에 네트워크 확인 안내가 나갑니다.
