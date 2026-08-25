@@ -1,6 +1,10 @@
 import { createGoogle } from "@ai-sdk/google";
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
-import { ExperienceCandidateOutputError, isRateLimitResponseBody } from "./errors";
+import {
+  ExperienceCandidateOutputError,
+  isModelOutputFailureResponseBody,
+  isRateLimitResponseBody,
+} from "./errors";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
@@ -10,10 +14,26 @@ import type { CommitDetail } from "@/lib/github/types";
 // 모델별로 따로 걸립니다. 측정에서 관측된 낮은 성공률은 모델의 일시적 과부하가 아니라 이 일일
 // 쿼터 소진이 주 원인이었습니다. 근거는 위키 측정 문서에 있습니다.
 export const STAGE_B_MODEL = "gemini-3.7-flash";
-// Stage A 후보 전체가 입력되므로 INITIAL_STAGE_A_CANDIDATE_LIMIT과 같아야 정상 흐름이 422로 막히지 않습니다.
-// 이슈 #19 실측으로 확정: 20개 전원이 patch 예산을 받습니다. 선착순 배분이던 시절에는 앞쪽 9개가
-// 예산을 다 써서 11개가 diff 없이 판단됐고, `buildStageBPayload`의 균등 배분으로 해소했습니다.
-export const STAGE_B_MAX_CANDIDATES = 20;
+/**
+ * Stage B 입력 커밋 수 상한입니다.
+ *
+ * 이 값은 후보 수가 아니라 커밋 수입니다. Stage A가 PR 묶음을 판단하도록 바뀌면서 후보 하나가
+ * 커밋 여러 개로 펼쳐지기 때문입니다. 이름도 `STAGE_B_MAX_CANDIDATES`에서 바꿨습니다.
+ *
+ * 30으로 정한 근거는 두 가지 실측 한도입니다.
+ * - 상세 재조회가 커밋당 868밀리초입니다. 라우트 전체 예산 55초에서 최소 LLM 예산 20초를 빼면
+ *   조회에 쓸 수 있는 시간이 35초이므로 약 40커밋이 한계입니다. 30커밋은 약 26초입니다.
+ * - patch 전체 예산 60,000자를 30으로 나누면 커밋당 2,000자입니다. 파일별 patch 중앙값이
+ *   1,257자이므로 커밋마다 최소 한 파일은 온전히 실립니다.
+ *
+ * 상한을 두지 않으면 `andbread` 후보 14묶음이 커밋 148개로 펼쳐져 조회 128초에 커밋당 405자가
+ * 됩니다. 시간도 넘고 근거도 무의미해집니다. 근거는
+ * `llm-wiki/wiki/2026-08-24-경험-판단단위-PR-묶음-전환-검토.md`에 있습니다.
+ *
+ * 이슈 #19 실측으로 확정한 균등 배분은 그대로 둡니다. 선착순 배분이던 시절에는 앞쪽 9개가
+ * 예산을 다 써서 11개가 diff 없이 판단됐고, `buildStageBPayload`의 균등 배분으로 해소했습니다.
+ */
+export const STAGE_B_MAX_INPUT_COMMITS = 30;
 // 이슈 #19 실측으로 확정: 파일별 patch는 중앙 1,257자, p90 5,235자, 최대 44,013자였고
 // 4,000자는 279개 파일 중 40개(14%)만 절단합니다.
 export const STAGE_B_MAX_PATCH_CHARS = 4_000;
@@ -39,49 +59,98 @@ export type GenerateStageB = (payload: unknown, abortSignal: AbortSignal) => Pro
  * - 몫을 다 쓰지 않은 후보의 잔액은 뒤 후보로 이월합니다. 이월은 앞에서 뒤로만 흐르므로 어떤
  *   후보도 자기 몫보다 적게 받지 않습니다.
  */
+function mapPullRequest(pullRequest: CommitDetail["pullRequests"][number]) {
+  const { number, title, state, baseBranch, headBranch } = pullRequest;
+  return { number, title, state, baseBranch, headBranch };
+}
+
+/**
+ * 커밋이 속한 Pull Request 중 대표 하나를 고릅니다. 번호가 가장 작은 것을 대표로 삼습니다.
+ * `work-unit.ts`의 `resolvePullRequest`와 같은 규칙입니다. 커밋 하나가 PR 여러 개에 걸치는
+ * 경우에도 항상 같은 대표를 골라야 묶음 키가 안정적입니다.
+ */
+function pickRepresentativePullRequest(
+  pullRequests: readonly CommitDetail["pullRequests"][number][]
+): CommitDetail["pullRequests"][number] | null {
+  return pullRequests.reduce<CommitDetail["pullRequests"][number] | null>(
+    (selected, pullRequest) =>
+      selected === null || pullRequest.number < selected.number ? pullRequest : selected,
+    null
+  );
+}
+
+/**
+ * 같은 Pull Request에 속한 커밋을 한 작업 묶음으로 묶는 키입니다. PR이 없는 커밋은 자기 SHA로
+ * 자기 자신만의 묶음을 이룹니다. PR 없는 커밋은 원래 Stage A 그룹핑(`work-unit.ts`의
+ * `no_pull_request` 제외)에서 걸러지므로 여기까지 오지 않는 게 정상이지만, 방어적으로 처리합니다.
+ */
+function resolveWorkUnitKey(commit: CommitDetail): string {
+  const representative = pickRepresentativePullRequest(commit.pullRequests);
+  return representative ? `pr:${representative.number}` : `commit:${commit.sha}`;
+}
+
+/**
+ * Stage B 입력을 Pull Request 단위 묶음(`workUnits`)으로 구성합니다.
+ *
+ * 이전에는 커밋이 최상위 배열이라 같은 PR의 커밋들이 서로 독립인 항목처럼 보였습니다. 모델이
+ * 그중 둘 이상을 최종 후보로 고르면 최종 후보 3개가 실제로는 경험 1개일 수 있었습니다
+ * (Codex 리뷰 P1-1). 같은 PR의 커밋을 한 항목 안에 모아 모델이 "이건 한 경험"으로 읽게 합니다.
+ *
+ * patch 예산 배분은 그대로 커밋 전체 수를 분모로 씁니다. 묶음으로 감싸는 건 표현 방식일 뿐
+ * 배분 로직과는 무관해야 하기 때문입니다.
+ */
 export function buildStageBPayload(commits: readonly CommitDetail[], candidates: readonly StageACandidate[]) {
   const share =
     commits.length === 0 ? 0 : Math.floor(STAGE_B_MAX_TOTAL_PATCH_CHARS / commits.length);
   let carried = 0;
   const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
-  return {
-    commits: commits.map((commit) => {
-      let available = share + carried;
-      const files = commit.files.map((file) => {
-        const patch = file.patch?.slice(0, Math.min(STAGE_B_MAX_PATCH_CHARS, available));
-        available -= patch?.length ?? 0;
-        return {
-          path: file.path,
-          status: file.status,
-          additions: file.additions,
-          deletions: file.deletions,
-          changes: file.changes,
-          ...(patch ? { patch } : {}),
-          ...(file.patch !== undefined && patch?.length !== file.patch.length ? { patchTruncated: true } : {}),
-        };
-      });
-      carried = available;
+
+  const payloadCommits = commits.map((commit) => {
+    let available = share + carried;
+    const files = commit.files.map((file) => {
+      const patch = file.patch?.slice(0, Math.min(STAGE_B_MAX_PATCH_CHARS, available));
+      available -= patch?.length ?? 0;
       return {
-        sha: commit.sha,
-        message: commit.message,
-        additions: commit.additions,
-        deletions: commit.deletions,
-        changedFiles: commit.changedFiles,
-        source: candidateBySha.get(commit.sha)!.source,
-        contributionItem: candidateBySha.get(commit.sha)!.contributionItem,
-        pullRequests: commit.pullRequests.map(
-          ({ number, title, state, baseBranch, headBranch }) => ({
-            number,
-            title,
-            state,
-            baseBranch,
-            headBranch,
-          })
-        ),
-        files,
+        path: file.path,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+        ...(patch ? { patch } : {}),
+        ...(file.patch !== undefined && patch?.length !== file.patch.length ? { patchTruncated: true } : {}),
       };
-    }),
-  };
+    });
+    carried = available;
+    return {
+      sha: commit.sha,
+      message: commit.message,
+      additions: commit.additions,
+      deletions: commit.deletions,
+      changedFiles: commit.changedFiles,
+      source: candidateBySha.get(commit.sha)!.source,
+      contributionItem: candidateBySha.get(commit.sha)!.contributionItem,
+      pullRequests: commit.pullRequests.map(mapPullRequest),
+      files,
+    };
+  });
+  type PayloadCommit = (typeof payloadCommits)[number];
+
+  const workUnits: { pullRequest: ReturnType<typeof mapPullRequest> | null; commits: PayloadCommit[] }[] = [];
+  const groupIndexByKey = new Map<string, number>();
+
+  commits.forEach((commit, index) => {
+    const key = resolveWorkUnitKey(commit);
+    let groupIndex = groupIndexByKey.get(key);
+    if (groupIndex === undefined) {
+      groupIndex = workUnits.length;
+      groupIndexByKey.set(key, groupIndex);
+      const representative = pickRepresentativePullRequest(commit.pullRequests);
+      workUnits.push({ pullRequest: representative ? mapPullRequest(representative) : null, commits: [] });
+    }
+    workUnits[groupIndex].commits.push(payloadCommits[index]);
+  });
+
+  return { workUnits };
 }
 
 function mapLlmError(error: unknown): ExperienceCandidateOutputError {
@@ -153,6 +222,15 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         { cause: error }
       );
     }
+    // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
+    // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
+    if (error.statusCode === 400 && isModelOutputFailureResponseBody(error.responseBody)) {
+      return new ExperienceCandidateOutputError(
+        "schema_validation",
+        "LLM이 형식에 맞는 응답을 만들지 못했습니다.",
+        { cause: error }
+      );
+    }
     if ([400, 409, 422].includes(error.statusCode ?? 0)) {
       return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", {
         cause: error,
@@ -176,6 +254,9 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
       schema: experienceCandidateOutputSchema,
       system:
         "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. " +
+        "입력 commits는 Pull Request 단위 묶음(workUnits)으로 그룹돼 있습니다. 최종 후보 3개는 " +
+        "서로 다른 workUnits 항목에서 하나씩만 고르세요. 같은 workUnits 항목에서 대표 커밋을 " +
+        "둘 이상 최종 후보로 고르지 마세요. " +
         "관련 커밋은 대표 커밋과 같은 PR에 속한 입력 SHA만 사용하세요. " +
         "억지로 3개를 채우지 말고, evidence에는 대표 선정 이유와 관련 커밋이 근거가 되는 이유를 함께 쓰세요. " +
         "citedFilePaths는 제공된 diff 경로만 사용하세요. " +
@@ -188,6 +269,45 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
 }
 
 const generateWithGemini: GenerateStageB = createStageBGenerate();
+
+/**
+ * 같은 Pull Request(작업 묶음)에서 나온 최종 후보가 여럿이면 입력 순서상 첫 번째만 남기고
+ * 나머지를 버립니다. 프롬프트로 규칙을 알려도 모델이 어길 수 있으니 그 경우의 마지막 방어선입니다.
+ *
+ * 502로 거부하지 않습니다(핸드오프 2-1). 같은 PR 중복은 조작이 아니라 실제 커밋·실제 diff 중
+ * 고른 결과이고, 지금까지 프롬프트가 "다른 PR에서 골라라"를 명시한 적이 없었기 때문입니다.
+ * 대신 조용히 정리하고 그만큼 `insufficientCandidatesReason`을 채워 화면에 알립니다.
+ */
+function dedupeCandidatesByWorkUnit(
+  output: ExperienceCandidateOutput,
+  commits: readonly CommitDetail[]
+): ExperienceCandidateOutput {
+  const commitsBySha = new Map(commits.map((commit) => [commit.sha, commit]));
+  const seenWorkUnitKeys = new Set<string>();
+  const deduped = output.candidates.filter((candidate) => {
+    // assertCandidateEvidence가 입력 밖 SHA를 이미 거부했으므로 대표 커밋은 항상 존재합니다.
+    const key = resolveWorkUnitKey(commitsBySha.get(candidate.sha)!);
+    if (seenWorkUnitKeys.has(key)) return false;
+    seenWorkUnitKeys.add(key);
+    return true;
+  });
+
+  if (deduped.length === output.candidates.length) return output;
+
+  // 묶음마다 첫 후보는 항상 남으므로 입력 후보가 있었다면 출력도 있어야 합니다. 여기 걸리면
+  // 이 함수 자체의 버그입니다.
+  if (deduped.length === 0) {
+    throw new Error("Stage B 최종 후보 정리 후 후보가 모두 사라졌습니다.");
+  }
+
+  // 모델이 이미 부족 사유를 준 경우(원래 3개 미만)라도 정리 사유로 덮어씁니다. 정리가 최종
+  // 개수를 바꾼 직접 원인이므로, 정리를 언급하지 않는 기존 사유를 남기면 화면 설명이 실제
+  // 결과와 어긋납니다.
+  return {
+    candidates: deduped,
+    insufficientCandidatesReason: `같은 Pull Request에서 나온 후보를 하나로 합쳐 ${deduped.length}개가 되었습니다.`,
+  };
+}
 
 export async function selectStageBCandidates(
   commits: readonly CommitDetail[],
@@ -205,10 +325,11 @@ export async function selectStageBCandidates(
     const output = validateExperienceCandidateOutput(await generate(payload, controller.signal));
     // ponytail: 인용은 입력 diff 경로로 제한합니다. 이슈 #32가 전체 트리 근거를 요구하면 fileTree를 입력에 추가합니다.
     assertCandidateEvidence(output, { commits, fileTree: [] });
+    const deduped = dedupeCandidatesByWorkUnit(output, commits);
     const sources = new Map(candidates.map(({ sha, source }) => [sha, source]));
     return {
-      ...output,
-      candidates: output.candidates.map((candidate) => ({
+      ...deduped,
+      candidates: deduped.candidates.map((candidate) => ({
         ...candidate,
         // assertCandidateEvidence가 입력 밖 SHA를 이미 거부했으므로 source는 항상 존재합니다.
         source: sources.get(candidate.sha)!,

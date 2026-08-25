@@ -5,7 +5,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 import type { ExperienceCandidate, StageBCandidateResult } from "./types";
-import { createExperienceCandidateListItems, ExperienceCandidateList } from "./experience-candidate-list";
+import {
+  createExperienceCandidateListItems,
+  ExperienceCandidateList,
+  type StageASelectionDisplay,
+} from "./experience-candidate-list";
+import type { ExcludedCommit } from "./work-unit";
+import type { ExcludedWorkUnit } from "./work-unit-selection";
+import type { WorkUnit } from "./work-unit";
 
 const commit = (sha: string, title: string, pullRequests: ReadonlyCommitDetail["pullRequests"] = []): ReadonlyCommitDetail => ({
   sha,
@@ -29,6 +36,25 @@ const candidate = (sha: string, overrides: Partial<ExperienceCandidate> = {}): E
   source: "automatic_recommendation",
   ...overrides,
 });
+
+const excludedCommit = (sha: string, title: string): ExcludedCommit => ({ sha, title, reason: "no_pull_request" });
+
+function workUnit(number: number): WorkUnit<ReadonlyCommitDetail> {
+  return {
+    pullRequestNumber: number,
+    pullRequest: { number, title: `묶음 제목 ${number}`, state: "closed", baseBranch: "develop", headBranch: `f-${number}` },
+    commits: [commit(`sha-unit-${number}`, `묶음 제목 ${number}`)],
+  };
+}
+
+function excludedUnit(
+  number: number,
+  score: number,
+  reason: ExcludedWorkUnit<ReadonlyCommitDetail>["reason"],
+  signals: ExcludedWorkUnit<ReadonlyCommitDetail>["signals"] = []
+): ExcludedWorkUnit<ReadonlyCommitDetail> {
+  return { unit: workUnit(number), score, reason, signals };
+}
 
 function renderList(candidateItems: readonly ExperienceCandidate[], commits: readonly ReadonlyCommitDetail[], reason: string | null) {
   const data: CandidateDataOutput = {
@@ -185,5 +211,157 @@ describe("ExperienceCandidateList", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "← 후보 목록으로" }));
     expect(screen.getByText(/경험 후보 1개를 선정했습니다/)).toBeInTheDocument();
+  });
+});
+
+const EMPTY_SELECTION: StageASelectionDisplay = {
+  excludedCommits: [],
+  excludedUnits: [],
+  thresholdScore: 0,
+  unjudgedShas: [],
+};
+
+function renderListWithSelection(stageASelection: StageASelectionDisplay) {
+  const commits = [commit("a", "선별 화면 검증")];
+  const data: CandidateDataOutput = {
+    allCommits: commits,
+    includedCommits: commits,
+    repository: { fileTree: [], treeTruncated: false, languages: {} },
+  };
+  const candidates: StageBCandidateResult = {
+    candidates: [candidate("a")],
+    insufficientCandidatesReason: "하나뿐입니다.",
+    diffs: [],
+  };
+  render(
+    <ExperienceCandidateList
+      repository={{ owner: "hm1n", repo: "demian" }}
+      data={data}
+      candidates={candidates}
+      stageASelection={stageASelection}
+      onSelectRepository={vi.fn()}
+    />
+  );
+}
+
+describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)", () => {
+  it("제외된 값이 전부 비어 있으면 제외 구획을 렌더하지 않는다", () => {
+    renderListWithSelection(EMPTY_SELECTION);
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+  });
+
+  it("stageASelection을 넘기지 않아도 목록이 정상 렌더된다", () => {
+    renderList([candidate("a")], [commit("a", "선택 없이 렌더")], "하나뿐입니다.");
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+    expect(screen.getByText("선택 없이 렌더")).toBeInTheDocument();
+  });
+
+  it("PR 없는 커밋 건수와 사유를 표시하고 펼치면 SHA 7자와 제목을 보여준다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋"), excludedCommit("0123456789abcdef", "오타 수정")],
+    });
+
+    expect(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 2건")).toBeInTheDocument();
+    expect(screen.getByText(/커밋 하나만으로는 설명할 경험을 판단하기 어려워/)).toBeInTheDocument();
+    expect(screen.getByText("abcdef1")).toBeInTheDocument();
+    expect(screen.getByText("잡무 커밋")).toBeInTheDocument();
+    expect(screen.getByText("0123456")).toBeInTheDocument();
+  });
+
+  it("PR 없는 커밋이 0건이면 그 구획을 렌더하지 않는다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      excludedUnits: [excludedUnit(1, 1, "below_score_threshold")],
+      thresholdScore: 1,
+    });
+
+    expect(screen.queryByText(/제외한 커밋/)).not.toBeInTheDocument();
+  });
+
+  it("점수 컷에서 밀린 묶음을 점수 내림차순으로 보여주고 PR·제목·점수·신호를 표시한다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      thresholdScore: 3,
+      excludedUnits: [
+        excludedUnit(1, 1, "below_score_threshold", ["many_commits"]),
+        excludedUnit(2, 2, "below_score_threshold", ["many_files", "long_span"]),
+      ],
+    });
+
+    expect(screen.getByText("점수 3점 미만 2묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
+    expect(screen.getByText("PR #2")).toBeInTheDocument();
+    expect(screen.getByText("PR #1")).toBeInTheDocument();
+    expect(screen.getByText("2점 · 휴리스틱")).toBeInTheDocument();
+    expect(screen.getByText("고친 파일이 많습니다")).toBeInTheDocument();
+    expect(screen.getByText("여러 날에 걸쳐 작업했습니다")).toBeInTheDocument();
+
+    // 컷 바로 아래(점수가 더 높은) 묶음이 먼저 나옵니다.
+    const items = screen.getAllByText(/^PR #\d+$/);
+    expect(items.map((el) => el.textContent)).toEqual(["PR #2", "PR #1"]);
+  });
+
+  it("분량 상한 제외와 점수 컷 제외를 서로 다른 구획으로 나눠 보여준다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      thresholdScore: 2,
+      excludedUnits: [
+        excludedUnit(1, 2, "below_score_threshold"),
+        excludedUnit(2, 5, "over_byte_budget"),
+      ],
+    });
+
+    expect(screen.getByText("점수 2점 미만 1묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
+    expect(screen.getByText("한 번에 보낼 수 있는 분량을 넘어 1묶음을 제외했습니다")).toBeInTheDocument();
+  });
+
+  it("모델이 판단하지 못한 묶음 건수를 표시한다", () => {
+    renderListWithSelection({ ...EMPTY_SELECTION, unjudgedShas: ["deadbeef00112233"] });
+
+    expect(screen.getByText("모델이 판단하지 못한 묶음 1건")).toBeInTheDocument();
+    expect(screen.getByText(/제외한 것이 아니라 판단이 없는 상태입니다/)).toBeInTheDocument();
+    expect(screen.getByText("deadbee")).toBeInTheDocument();
+  });
+
+  it("점수는 확인 가능 태그를 쓰지 않고 PR 정보는 확인 가능 태그로 표시한다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      thresholdScore: 1,
+      excludedUnits: [excludedUnit(1, 1, "below_score_threshold")],
+    });
+
+    const scoreEl = screen.getByText("1점 · 휴리스틱");
+    expect(scoreEl).not.toHaveTextContent("확인 가능");
+    const prEl = screen.getByText("PR #1");
+    expect(prEl.previousElementSibling).toHaveTextContent("확인 가능");
+  });
+
+  it("제외 구획은 키보드로 펼치고 접을 수 있고 펼침 상태가 details의 open 속성으로 드러난다", () => {
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+    });
+
+    const details = screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건").closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).toHaveAttribute("open");
+
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).not.toHaveAttribute("open");
+  });
+
+  it("andbread처럼 제외 묶음이 많아도 목록이 스크롤 영역에 담겨 후보 목록을 밀어내지 않는다", () => {
+    const many = Array.from({ length: 56 }, (_, index) => excludedUnit(index + 1, 1, "below_score_threshold"));
+    renderListWithSelection({ ...EMPTY_SELECTION, thresholdScore: 2, excludedUnits: many });
+
+    expect(screen.getByText("점수 2점 미만 56묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
+    const details = screen.getByText("점수 2점 미만 56묶음을 판단 대상에서 제외했습니다").closest("details");
+    const list = details?.querySelector("ul");
+    expect(list?.className).toMatch(/scrollableList/);
   });
 });

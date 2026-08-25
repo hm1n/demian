@@ -1,52 +1,54 @@
-import { APICallError, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
+import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
 import {
   buildStageAPayload,
+  createStageAGenerate,
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
+  renderStageAPrompt,
   selectStageACandidates,
   type StageAInput,
+  type StageAUnitInput,
 } from "./stage-a";
+
+// `createStageAGenerate`가 실제로 Groq에 보내는 프롬프트를 가로채기 위한 부분 모킹입니다.
+// `generateObject`만 대체하고 나머지(`jsonSchema`, `APICallError` 등)는 실제 구현을 씁니다.
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: vi.fn() };
+});
+
+function unit(
+  pullRequestNumber: number,
+  representativeSha: string,
+  pullRequestTitle: string,
+  commitTitles: readonly string[],
+  topFilePaths: readonly string[]
+): StageAUnitInput {
+  return {
+    pullRequestNumber,
+    representativeSha,
+    summary: {
+      pullRequestNumber,
+      pullRequestTitle,
+      commitCount: commitTitles.length,
+      spanDays: 1,
+      additions: 20,
+      deletions: 2,
+      commitTitles: [...commitTitles],
+      changedFilePathCount: topFilePaths.length,
+      topFilePaths: [...topFilePaths],
+    },
+  };
+}
 
 const input: StageAInput = {
   contributionItems: ["인증 구현"],
-  commits: [
-    {
-      sha: "matched",
-      message: "feat: 인증 구현",
-      additions: 20,
-      deletions: 2,
-      changedFiles: 1,
-      files: [{
-        path: "src/auth.ts",
-        status: "modified",
-        additions: 20,
-        deletions: 2,
-        changes: 22,
-      }],
-    },
-    {
-      sha: "automatic",
-      message: "fix: 오류 처리",
-      additions: 5,
-      deletions: 1,
-      changedFiles: 1,
-      files: [{
-        path: "src/error.ts",
-        status: "modified",
-        additions: 5,
-        deletions: 1,
-        changes: 6,
-      }],
-    },
-    {
-      sha: "unclassified",
-      message: "docs: 문서",
-      additions: 1,
-      deletions: 0,
-      changedFiles: 1,
-      files: [{ path: "README.md", status: "modified", additions: 1, deletions: 0, changes: 1 }],
-    },
+  candidateLimit: INITIAL_STAGE_A_CANDIDATE_LIMIT,
+  units: [
+    unit(1, "matched", "인증 구현", ["feat: 인증 구현"], ["src/auth.ts"]),
+    unit(2, "automatic", "오류 처리", ["fix: 오류 처리"], ["src/error.ts"]),
+    unit(3, "unclassified", "문서", ["docs: 문서"], ["README.md"]),
   ],
 };
 
@@ -57,9 +59,9 @@ afterEach(() => {
 describe("Stage A 후보 선별", () => {
   it("기여 항목 매칭과 미분류 자동 추천을 한 경로에서 조합한다", async () => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "matched", contributionItem: "인증 구현", recommended: true },
-      { sha: "automatic", contributionItem: "미분류", recommended: true },
-      { sha: "unclassified", contributionItem: "미분류", recommended: false },
+      { pullRequestNumber: 1, contributionItem: "인증 구현", recommended: true },
+      { pullRequestNumber: 2, contributionItem: "미분류", recommended: true },
+      { pullRequestNumber: 3, contributionItem: "미분류", recommended: false },
     ] }));
 
     expect(output).toEqual({
@@ -68,6 +70,7 @@ describe("Stage A 후보 선별", () => {
         { sha: "automatic", source: "automatic_recommendation", contributionItem: null },
       ],
       unclassifiedShas: ["unclassified"],
+      unjudgedShas: [],
       rateLimit: null,
     });
   });
@@ -75,7 +78,7 @@ describe("Stage A 후보 선별", () => {
   it("기여 항목이 없으면 추천된 SHA를 자동 추천 후보로 만든다", async () => {
     const output = await selectStageACandidates(
       { ...input, contributionItems: [] },
-      async () => ({ decisions: input.commits.map(({ sha }) => ({ sha, contributionItem: null, recommended: sha === "automatic" })) })
+      async () => ({ decisions: input.units.map(({ pullRequestNumber }) => ({ pullRequestNumber, contributionItem: null, recommended: pullRequestNumber === 2 })) })
     );
     expect(output.candidates).toEqual([
       { sha: "automatic", source: "automatic_recommendation", contributionItem: null },
@@ -84,9 +87,9 @@ describe("Stage A 후보 선별", () => {
 
   it("기여 항목만 있으면 일치한 SHA를 해당 항목 후보로 만든다", async () => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "matched", contributionItem: "인증 구현", recommended: false },
-      { sha: "automatic", contributionItem: null, recommended: false },
-      { sha: "unclassified", contributionItem: null, recommended: false },
+      { pullRequestNumber: 1, contributionItem: "인증 구현", recommended: false },
+      { pullRequestNumber: 2, contributionItem: null, recommended: false },
+      { pullRequestNumber: 3, contributionItem: null, recommended: false },
     ] }));
     expect(output.candidates[0]).toEqual({
       sha: "matched",
@@ -97,9 +100,9 @@ describe("Stage A 후보 선별", () => {
 
   it.each(["미분류", "존재하지 않는 항목"])("%s 라벨도 추천되면 자동 추천 후보로 정규화한다", async (label) => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "matched", contributionItem: label, recommended: true },
-      { sha: "automatic", contributionItem: null, recommended: false },
-      { sha: "unclassified", contributionItem: null, recommended: false },
+      { pullRequestNumber: 1, contributionItem: label, recommended: true },
+      { pullRequestNumber: 2, contributionItem: null, recommended: false },
+      { pullRequestNumber: 3, contributionItem: null, recommended: false },
     ] }));
     expect(output.candidates).toEqual([
       { sha: "matched", source: "automatic_recommendation", contributionItem: null },
@@ -108,9 +111,9 @@ describe("Stage A 후보 선별", () => {
 
   it("recommended가 false인 커밋만 미분류로 남긴다", async () => {
     const output = await selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "matched", contributionItem: null, recommended: false },
-      { sha: "automatic", contributionItem: null, recommended: true },
-      { sha: "unclassified", contributionItem: "미분류", recommended: false },
+      { pullRequestNumber: 1, contributionItem: null, recommended: false },
+      { pullRequestNumber: 2, contributionItem: null, recommended: true },
+      { pullRequestNumber: 3, contributionItem: "미분류", recommended: false },
     ] }));
     expect(output.unclassifiedShas).toEqual(["matched", "unclassified"]);
   });
@@ -119,54 +122,53 @@ describe("Stage A 후보 선별", () => {
     const output = await selectStageACandidates(
       { ...input, contributionItems: ["미분류"] },
       async () => ({ decisions: [
-        { sha: "matched", contributionItem: "미분류", recommended: false },
-        { sha: "automatic", contributionItem: null, recommended: false },
-        { sha: "unclassified", contributionItem: null, recommended: false },
+        { pullRequestNumber: 1, contributionItem: "미분류", recommended: false },
+        { pullRequestNumber: 2, contributionItem: null, recommended: false },
+        { pullRequestNumber: 3, contributionItem: null, recommended: false },
       ] })
     );
     expect(output.candidates).toEqual([]);
     expect(output.unclassifiedShas).toContain("matched");
   });
 
-  it("실제 LLM payload에서 patch와 불필요한 메타데이터를 제외한다", () => {
+  it("LLM payload에 patch와 커밋 본문이 실리지 않는다", () => {
     const taintedInput = {
       ...input,
-      commits: [{
-        ...input.commits[0],
-        files: [{ ...input.commits[0].files[0], patch: "secret diff" }],
+      units: [{
+        ...input.units[0],
+        summary: { ...input.units[0].summary, patch: "secret diff" },
       }],
     } as unknown as StageAInput;
     const payload = buildStageAPayload(taintedInput);
     expect(JSON.stringify(payload)).not.toContain("patch");
-    expect(payload.commits[0]).toEqual({
-      sha: "matched",
-      message: "feat: 인증 구현",
-      additions: 20,
-      deletions: 2,
-      changedFiles: 1,
-      files: [{ path: "src/auth.ts", status: "modified", additions: 20, deletions: 2, changes: 22 }],
+    expect(payload.units[0]).toEqual({
+      pullRequestNumber: 1,
+      summary: [
+        "PR#1 인증 구현 [1커밋 1일 +20-2 1파일]",
+        "  feat: 인증 구현",
+        "  src/{auth.ts}",
+      ].join("\n"),
     });
   });
 
   it("구조 위반, 환각 SHA, 누락 SHA를 전체 거부한다", async () => {
     await expect(selectStageACandidates(input, async () => ({ decisions: "invalid" }))).rejects.toMatchObject({ kind: "schema_validation" });
     await expect(selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "invented", contributionItem: null, recommended: true },
-    ] }))).rejects.toMatchObject({ kind: "unknown_sha", unknownShas: ["invented"] });
+      { pullRequestNumber: 99, contributionItem: null, recommended: true },
+    ] }))).rejects.toMatchObject({ kind: "unknown_sha", unknownShas: ["#99"] });
     await expect(selectStageACandidates(input, async () => ({ decisions: [
-      { sha: "matched", contributionItem: "인증 구현", recommended: true },
+      { pullRequestNumber: 1, contributionItem: "인증 구현", recommended: true },
     ] }))).rejects.toMatchObject({ kind: "schema_validation" });
   });
 
-  it("초기 후보 상한을 넘긴 응답을 순서대로 절단하지 않고 전체 거부한다", async () => {
-    const commits = Array.from({ length: INITIAL_STAGE_A_CANDIDATE_LIMIT + 1 }, (_, index) => ({
-      ...input.commits[0],
-      sha: `sha-${index}`,
-    }));
+  it("청크 쿼터를 넘긴 응답을 순서대로 절단하지 않고 전체 거부한다", async () => {
+    const units = Array.from({ length: 4 }, (_, index) =>
+      unit(index + 1, `sha-${index}`, "제목", ["feat: 작업"], ["src/a.ts"])
+    );
     await expect(selectStageACandidates(
-      { commits, contributionItems: [] },
-      async () => ({ decisions: commits.map(({ sha }) => ({
-        sha,
+      { units, contributionItems: [], candidateLimit: 2 },
+      async () => ({ decisions: units.map(({ pullRequestNumber }) => ({
+        pullRequestNumber,
         contributionItem: null,
         recommended: true,
       })) })
@@ -255,8 +257,8 @@ describe("Stage A 후보 선별", () => {
     let signal: AbortSignal | undefined;
     await selectStageACandidates(input, async (_payload, receivedSignal) => {
       signal = receivedSignal;
-      return { decisions: input.commits.map(({ sha }) => ({
-        sha,
+      return { decisions: input.units.map(({ pullRequestNumber }) => ({
+        pullRequestNumber,
         contributionItem: null,
         recommended: false,
       })) };
@@ -264,5 +266,41 @@ describe("Stage A 후보 선별", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(signal?.aborted).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("renderStageAPrompt", () => {
+  it("기여 항목이 없으면 빈 섹션을 붙이지 않는다", () => {
+    const payload = buildStageAPayload({ ...input, contributionItems: [] });
+    const prompt = renderStageAPrompt(payload);
+    expect(prompt).not.toContain("기여 항목:");
+    expect(prompt).toBe(payload.units.map(({ summary }) => summary).join("\n"));
+  });
+
+  it("기여 항목이 있으면 구분된 문단으로 붙인다", () => {
+    const payload = buildStageAPayload(input);
+    const prompt = renderStageAPrompt(payload);
+    expect(prompt).toContain("\n\n기여 항목:\n인증 구현");
+  });
+
+  // 이 테스트가 핵심입니다. 라우트가 예산을 재는 문자열과 모델에 실제로 실리는 문자열이
+  // 다시 어긋나면(Codex 리뷰 P2-1처럼) 이 테스트가 잡습니다.
+  it("createStageAGenerate가 Groq에 실제로 보내는 프롬프트와 같은 문자열을 만든다", async () => {
+    const payload = buildStageAPayload(input);
+    const generateObjectMock = vi.mocked(generateObject);
+    generateObjectMock.mockResolvedValue({
+      object: { decisions: payload.units.map(({ pullRequestNumber }) => ({
+        pullRequestNumber, contributionItem: null, recommended: false,
+      })) },
+      response: { headers: {} },
+      usage: { totalTokens: 0 },
+    } as unknown as Awaited<ReturnType<typeof generateObject>>);
+
+    const generate = createStageAGenerate("test-model");
+    await generate(payload, new AbortController().signal);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    const actualPrompt = generateObjectMock.mock.calls[0]![0].prompt;
+    expect(actualPrompt).toBe(renderStageAPrompt(payload));
   });
 });

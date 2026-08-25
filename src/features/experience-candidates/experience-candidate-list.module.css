@@ -26,4 +26,17 @@
 .secondaryButton, .backButton { min-height: 44px; border: 1px solid #d7d5df; border-radius: 10px; background: #fff; color: #34333d; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
 .backButton { width: fit-content; border: 0; padding: 0; }
 .detailNotice { border-radius: 10px; background: #f5f4fa; padding: 12px 14px; }
+.exclusions { display: grid; gap: 10px; border-top: 1px solid #ecebf0; padding-top: 16px; }
+.exclusions h3 { color: #383743; font-size: 14px; font-weight: 750; }
+.exclusionDetails { border: 1px solid #ecebf0; border-radius: 10px; background: #fafafd; padding: 10px 14px; }
+.exclusionDetails summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #34333d; cursor: pointer; font-size: 13px; font-weight: 700; }
+.exclusionReason { margin: 8px 0 0; color: #696773; font-size: 12px; line-height: 1.6; }
+.heuristicNotice { color: #8a8794; }
+.exclusionList { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.exclusionList li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: #52505c; font-size: 12px; }
+.exclusionList code { border-radius: 6px; background: #eeecff; color: #5148c7; font-size: 11px; padding: 2px 6px; }
+.scrollableList { max-height: 260px; overflow-y: auto; padding-right: 4px; }
+.signalList { display: flex; flex-wrap: wrap; gap: 4px; }
+.signalList span { border-radius: 999px; background: #f5f4fa; color: #696773; font-size: 11px; padding: 2px 8px; }
+.heuristicScore { color: #8a8794; font-style: italic; }
 @media (max-width: 560px) { .summary { grid-template-columns: 1fr; } .secondaryButton { width: 100%; } }

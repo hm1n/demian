@@ -3,14 +3,18 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExcludedCommit } from "@/features/experience-candidates/work-unit";
 import {
   analyzeRepository,
   generateCandidates,
   type AnalysisError,
   type AnalysisState,
   type CandidateRetryPoint,
+  type StageASelectionState,
 } from "./repository-analysis";
 import { parseContributionItems, RepositoryAnalysisView } from "./repository-analysis-view";
+
+const excludedCommit = (sha: string, title: string): ExcludedCommit => ({ sha, title, reason: "no_pull_request" });
 
 vi.mock("./repository-analysis", async (importOriginal) => {
   const original = await importOriginal<typeof import("./repository-analysis")>();
@@ -26,6 +30,13 @@ const RETRY_POINT: CandidateRetryPoint = {
   data: { allCommits: [], includedCommits: [], repository: { fileTree: [], treeTruncated: false, languages: {} } },
 };
 const GITHUB_TOKEN = "github_pat_secret_value";
+/** 이 화면 안내 스위트는 Stage A 선별 표시 자체가 아니라 후보 목록 표시를 검증하므로 빈 값을 씁니다. */
+const EMPTY_STAGE_A_SELECTION: StageASelectionState = {
+  excludedCommits: [],
+  excludedUnits: [],
+  thresholdScore: 0,
+  unjudgedShas: [],
+};
 
 function fillRepository() {
   fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "octocat" } });
@@ -159,6 +170,101 @@ describe("RepositoryAnalysisView Empty", () => {
   });
 });
 
+// 이슈 #58 Codex 리뷰 P1-2: 후보 0개 빈 상태가 Stage A 제외 정보를 버리면 기능의 목적이 무너집니다.
+// 성공 상태와 같은 StageAExclusions를 재사용하므로 여기서는 배선(빈 상태에서도 렌더되는지, 빈 값이면
+// 렌더하지 않는지, Stage A 전 빈 상태는 영향받지 않는지)만 확인합니다. 세부 렌더 규칙(정렬·구획 분리
+// 등)은 experience-candidate-list.test.tsx가 이미 검증합니다.
+describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
+  it("no_stage_a_candidates에서도 제외 요약이 화면에 보인다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByRole("heading", { name: "1차 선별에서 제외된 항목" })).toBeInTheDocument();
+    expect(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건")).toBeInTheDocument();
+  });
+
+  it("제외 0건이면 제외 섹션이 렌더되지 않는다", async () => {
+    mockState({ status: "empty", kind: "no_stage_a_candidates", stageASelection: EMPTY_STAGE_A_SELECTION });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+  });
+
+  it("Stage A 전에 나는 빈 상태는 stageASelection이 없어도 지금과 똑같이 동작한다", async () => {
+    mockState({ status: "empty", kind: "no_commits" });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.queryByRole("heading", { name: "1차 선별에서 제외된 항목" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "분석할 커밋이 없습니다" })).toBeInTheDocument();
+  });
+
+  it("unjudgedShas가 있으면 no_final_candidates에서도 판단 불가 표시가 보인다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_final_candidates",
+      reason: "실제 diff 근거로 설명할 수 있는 커밋이 없습니다.",
+      stageASelection: { ...EMPTY_STAGE_A_SELECTION, unjudgedShas: ["deadbeef00112233"] },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    expect(screen.getByText("모델이 판단하지 못한 묶음 1건")).toBeInTheDocument();
+    expect(screen.getByText("deadbee")).toBeInTheDocument();
+  });
+
+  it("빈 상태 섹션의 aria-live=\"polite\"를 유지한다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    const heading = screen.getByRole("heading", { name: "설명할 만한 경험 후보를 찾지 못했습니다" });
+    expect(heading.closest("section")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("제외 구획은 빈 상태에서도 키보드로 펼치고 접을 수 있다", async () => {
+    mockState({
+      status: "empty",
+      kind: "no_stage_a_candidates",
+      stageASelection: {
+        excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
+        excludedUnits: [],
+        thresholdScore: 3,
+        unjudgedShas: [],
+      },
+    });
+    render(<RepositoryAnalysisView />);
+    await submitRepository();
+
+    const details = screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건").closest("details");
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Pull Request에 속하지 않아 제외한 커밋 1건"));
+    expect(details).not.toHaveAttribute("open");
+  });
+});
+
 describe("RepositoryAnalysisView Error", () => {
   const errors: Array<[AnalysisError, string]> = [
     [{ kind: "rate_limit", title: "호출 한도", message: "잠시 후 재시도", recovery: "retry" }, "전체 조회 다시 시도"],
@@ -280,6 +386,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: "나머지 커밋은 diff 근거가 부족합니다.",
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();
@@ -302,6 +409,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: "하나뿐입니다.",
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();
@@ -330,6 +438,7 @@ describe("RepositoryAnalysisView 후보 생성 상태", () => {
         insufficientCandidatesReason: null,
         diffs: [],
       },
+      stageASelection: EMPTY_STAGE_A_SELECTION,
     });
     render(<RepositoryAnalysisView />);
     await submitRepository();

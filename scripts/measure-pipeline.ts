@@ -10,7 +10,7 @@
  *   parallel  상세 조회 병렬도별 소요 시간과 secondary rate limit 관측
  *   commit    단일 커밋 상세 조회. changedFiles 3000 상한 왜곡 관측용
  *   stage-a   실제 Groq 호출 소요 시간과 선정 결과 (GROQ_API_KEY 필요)
- *   stage-a-chunks  Stage A 12개 청크 분할·재판단 완주 측정
+ *   stage-a-chunks  점수 선별·청크 분할·누락 복구 완주 측정
  *   stage-b   실제 Gemini 호출 소요 시간과 선정 결과 (GOOGLE_GENERATIVE_AI_API_KEY 필요)
  *
  * 옵션:
@@ -33,21 +33,26 @@ import { fetchCommitDetail } from "../src/lib/github/contributions";
 import {
   buildStageAPayload,
   createStageAGenerate,
-  INITIAL_STAGE_A_CANDIDATE_LIMIT,
   selectStageACandidates,
   STAGE_A_MODEL,
-  STAGE_A_CHUNK_SIZE,
-  STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_FILES,
+  resolveChunkQuota,
   STAGE_A_TIMEOUT_MS,
   STAGE_A_RESET_SAFETY_MS,
   STAGE_A_TOKEN_RESERVE,
+  type StageAInput,
+  type StageAUnitInput,
 } from "../src/features/experience-candidates/stage-a";
+import {
+  expandCandidatesToCommits,
+  splitUnitsIntoChunks,
+  toStageAUnits,
+} from "../src/features/experience-candidates/candidate-client";
+import { renderWorkUnitSummary } from "../src/features/experience-candidates/work-unit-summary";
 import {
   buildStageBPayload,
   createStageBGenerate,
   selectStageBCandidates,
-  STAGE_B_MAX_CANDIDATES,
+  STAGE_B_MAX_INPUT_COMMITS,
   STAGE_B_MODEL,
   STAGE_B_MAX_PATCH_CHARS,
   STAGE_B_MAX_TOTAL_PATCH_CHARS,
@@ -240,14 +245,8 @@ function reportDetailShape(details: readonly CommitDetail[]) {
 function reportPayloadSizes(details: readonly CommitDetail[]) {
   const encoder = new TextEncoder();
   const stageA = buildStageAPayload({
-    commits: details.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
-      sha,
-      message,
-      additions,
-      deletions,
-      changedFiles,
-      files,
-    })),
+    units: toStageAUnits(details).units,
+    candidateLimit: 1,
     contributionItems: [],
   });
   const stageABytes = encoder.encode(JSON.stringify(stageA)).byteLength;
@@ -255,7 +254,7 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
     `[payload] Stage A 입력 커밋=${details.length} 직렬화=${stageABytes}B (${(stageABytes / 1024).toFixed(1)}KB, 4.5MB의 ${((stageABytes / (4.5 * 1024 * 1024)) * 100).toFixed(2)}%)`
   );
 
-  const capped = details.slice(0, STAGE_B_MAX_CANDIDATES);
+  const capped = details.slice(0, STAGE_B_MAX_INPUT_COMMITS);
   const candidates: StageACandidate[] = capped.map(({ sha }) => ({
     sha,
     source: "automatic_recommendation",
@@ -263,15 +262,17 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
   }));
   const stageB = buildStageBPayload(capped, candidates);
   const stageBBytes = encoder.encode(JSON.stringify(stageB)).byteLength;
-  const usedPatch = stageB.commits.reduce(
+  // 페이로드가 Pull Request 단위 묶음으로 바뀌었다(Codex 리뷰 P1-1). 커밋 단위 집계는 펼쳐서 센다.
+  const stageBCommits = stageB.workUnits.flatMap((unit) => unit.commits);
+  const usedPatch = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.reduce((inner, file) => inner + (file.patch?.length ?? 0), 0),
     0
   );
-  const truncatedFiles = stageB.commits.reduce(
+  const truncatedFiles = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.filter((file) => file.patchTruncated === true).length,
     0
   );
-  const droppedFiles = stageB.commits.reduce(
+  const droppedFiles = stageBCommits.reduce(
     (sum, commit) => sum + commit.files.filter((file) => file.patch === undefined).length,
     0
   );
@@ -302,7 +303,7 @@ async function runDetails() {
   distribution("[details] 커밋별 조회 소요(ms)", durations);
   console.log(`[details] core rate limit 소비=${consumed(before, after)} 잔량=${after.remaining}/${after.limit}`);
   console.log(
-    `[details] 커밋 ${STAGE_B_MAX_CANDIDATES}개 순차 환산=${round((elapsed / (details.length || 1)) * STAGE_B_MAX_CANDIDATES)}ms`
+    `[details] 커밋 ${STAGE_B_MAX_INPUT_COMMITS}개 순차 환산=${round((elapsed / (details.length || 1)) * STAGE_B_MAX_INPUT_COMMITS)}ms`
   );
   reportDetailShape(details);
   reportPayloadSizes(details);
@@ -311,7 +312,7 @@ async function runDetails() {
 /** 병렬도를 바꿔가며 같은 커밋 집합을 조회하고 secondary rate limit 발생 여부를 본다. */
 async function runParallel() {
   const { included } = await loadCommits();
-  const limit = numericOption("limit", Math.min(STAGE_B_MAX_CANDIDATES, included.length));
+  const limit = numericOption("limit", Math.min(STAGE_B_MAX_INPUT_COMMITS, included.length));
   const targets = included.slice(0, limit);
   const listed = rest.find((option) => option.startsWith("--concurrency="));
   const concurrencies =
@@ -351,17 +352,24 @@ async function runParallel() {
  * Stage A의 "입력 SHA를 정확히 한 번씩" 계약은 모델이 지키지 못하면 schema_validation으로
  * 끝나 원인이 보이지 않는다. 검증 전에 실제 decision 수와 누락·중복 수를 남긴다.
  */
-function instrumentedStageAGenerate(model: string | undefined, expected: number): GenerateStageA {
+/**
+ * 전수 응답 계약은 입력 묶음 수를 기준으로 잽니다.
+ *
+ * 이전에는 기대값으로 커밋 수를 받았습니다. 판단 단위가 PR 묶음으로 바뀌면서 `demian`에서
+ * 묶음 15개를 커밋 90개와 비교하게 되어 계약 충족 판정이 구조적으로 항상 거짓이었습니다.
+ * 같은 줄의 누락은 `payload.units`로 계산해 맞았으므로 한 줄 안에서 두 지표가 서로 모순했습니다.
+ */
+function instrumentedStageAGenerate(model: string | undefined): GenerateStageA {
   const generate = createStageAGenerate(model);
   return async (payload, abortSignal) => {
     const output = await generate(payload, abortSignal);
-    const decisions = (output as { decisions?: { sha?: string }[] }).decisions ?? [];
-    const returned = decisions.map((decision) => decision.sha);
+    const decisions =
+      (output as { decisions?: { pullRequestNumber?: number }[] }).decisions ?? [];
+    const returned = decisions.map((decision) => decision.pullRequestNumber);
     const unique = new Set(returned);
-    const inputShas = new Set(
-      (payload as { commits: readonly { readonly sha: string }[] }).commits.map(({ sha }) => sha)
-    );
-    const missing = [...inputShas].filter((sha) => !unique.has(sha)).length;
+    const expected = payload.units.length;
+    const inputNumbers = new Set(payload.units.map(({ pullRequestNumber }) => pullRequestNumber));
+    const missing = [...inputNumbers].filter((number) => !unique.has(number)).length;
     console.log(
       `[stage-a] 모델 응답 decision=${returned.length}/${expected} 고유=${unique.size} ` +
         `누락=${missing} 중복=${returned.length - unique.size} 계약충족=${returned.length === expected && unique.size === expected && missing === 0}`
@@ -385,24 +393,28 @@ async function runStageA() {
 
   const startedAt = ms();
   try {
+    // 후보 상한은 프로덕션이 쓰는 값과 같아야 합니다. 전역 상한 20을 그대로 쓰면 클라이언트가
+    // 실제로 보내는 쿼터와 다른 것을 재게 되고, Stage B로 넘어가는 후보 수도 달라집니다.
+    // 기여 항목이 선별 예산을 먹는다. 프로덕션과 같게 넘겨야 같은 묶음 수를 잰다.
+    const { units: stageAUnits, workUnits: stageAWorkUnits } = toStageAUnits(details, contributionItems);
+    const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
+    if (stageAChunks.length > 1) {
+      console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
+    }
+    const candidateLimit = Math.min(resolveChunkQuota(stageAChunks.length), stageAUnits.length);
+    console.log(`[stage-a] 선별 입력묶음=${stageAUnits.length} 후보상한=${candidateLimit}`);
     const output = await selectStageACandidates(
       {
-        commits: details.map(({ sha, message, additions, deletions, changedFiles, files }) => ({
-          sha,
-          message,
-          additions,
-          deletions,
-          changedFiles,
-          files,
-        })),
+        units: stageAUnits,
+        candidateLimit,
         contributionItems,
       },
-      instrumentedStageAGenerate(model, details.length)
+      instrumentedStageAGenerate(model)
     );
     const elapsed = ms() - startedAt;
     console.log(`[stage-a] 성공 소요=${round(elapsed)}ms 예산=${STAGE_A_TIMEOUT_MS}ms 사용률=${((elapsed / STAGE_A_TIMEOUT_MS) * 100).toFixed(1)}%`);
     console.log(
-      `[stage-a] 후보=${output.candidates.length}/${INITIAL_STAGE_A_CANDIDATE_LIMIT} 미분류=${output.unclassifiedShas.length} ` +
+      `[stage-a] 후보=${output.candidates.length}/${candidateLimit} 미분류=${output.unclassifiedShas.length} 판단불가=${output.unjudgedShas.length} ` +
         `기여항목매칭=${output.candidates.filter((candidate) => candidate.source === "contribution_match").length}`
     );
     // 품질 검증용. SHA와 분류만 남기고 모델 원문은 출력하지 않는다.
@@ -413,7 +425,7 @@ async function runStageA() {
           `+${detail?.additions}/-${detail?.deletions} files=${detail?.changedFiles} | ${detail?.title}`
       );
     }
-    return { details, candidates: output.candidates };
+    return { details, candidates: output.candidates, workUnits: stageAWorkUnits };
   } catch (error) {
     const elapsed = ms() - startedAt;
     console.log(`[stage-a] 실패 소요=${round(elapsed)}ms kind=${(error as Error & { kind?: string }).kind ?? "unknown"} ${(error as Error).message}
@@ -425,71 +437,108 @@ ${describeLlmFailure(error)}`);
 async function runStageAChunks() {
   const { included } = await loadCommits();
   const targets = included.slice(0, numericOption("limit", included.length));
-  const details = await fetchDetailsCached(targets);
-  let candidates: StageACandidate[] = [];
-  const unclassified = new Set<string>();
-  let calls = 0;
+  const chunkModel = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
+  const baseGenerate = createStageAGenerate(chunkModel);
   let totalTokens = 0;
+  let generateCalls = 0;
+  // selectStageACandidates가 전수 응답 위반으로 던지면 그 호출의 토큰이 반환값에 실리지
+  // 않는다. 복구 호출만 세면 실제 소비를 과소집계하므로 generate 자체를 감싸서 센다.
+  const chunkGenerate: GenerateStageA = async (payload, abortSignal) => {
+    const output = await baseGenerate(payload, abortSignal);
+    generateCalls += 1;
+    // GenerateStageA는 검증 전이라 unknown을 돌려준다. 토큰만 좁혀서 읽는다.
+    const observed = (output as { __rateLimit?: { usedTokens?: number } | null } | null)?.__rateLimit;
+    totalTokens += observed?.usedTokens ?? 0;
+    return output;
+  };
+  console.log(`[stage-a-chunks] 모델=${chunkModel ?? STAGE_A_MODEL}`);
+  const details = await fetchDetailsCached(targets);
+  const candidates: StageACandidate[] = [];
+  const unclassified = new Set<string>();
+  const answeredShas: string[] = [];
+  let calls = 0;
   let recoveryCalls = 0;
   const recoveredShaSet = new Set<string>();
-  let failedShas = 0;
   let rateLimitFailures = 0;
+  let providerFailures = 0;
+  let modelOutputFailures = 0;
+  let trimmedCandidates = 0;
+  const unjudgedShaSet = new Set<string>();
   const startedAt = ms();
-  const split = (items: readonly CommitDetail[]) => {
-    const result: CommitDetail[][] = [];
-    for (const commit of items) {
-      const current = result.at(-1) ?? [];
-      const proposed = [...current, commit];
-      const bytes = new TextEncoder().encode(JSON.stringify(buildStageAPayload({
-        commits: proposed,
-        contributionItems: [],
-      }))).length;
-      const files = proposed.reduce((sum, item) => sum + item.files.length, 0);
-      if (current.length > 0 && (proposed.length > STAGE_A_CHUNK_SIZE ||
-        bytes > STAGE_A_CHUNK_MAX_BYTES || files > STAGE_A_CHUNK_MAX_FILES)) {
-        result.push([commit]);
-      } else if (result.length === 0 || current.length === 0) {
-        result.push(proposed);
-      } else {
-        result[result.length - 1] = proposed;
-      }
-    }
-    return result;
-  };
 
-  const call = async (chunk: readonly CommitDetail[], mode: "initial" | "reduce", limit?: number) => {
+  const call = async (chunk: readonly StageAUnitInput[], limit: number) => {
     const callStartedAt = ms();
-    const input = {
-      mode,
-      commits: chunk,
-      contributionItems: [],
-      ...(limit === undefined ? {} : { candidateLimit: limit }),
-    } as const;
+    const input: StageAInput = { units: chunk, contributionItems: [], candidateLimit: limit };
+    // 라우트의 `selectWithRecovery`와 같은 동작을 재현합니다. 여기가 갈리면 측정이 프로덕션과
+    // 다른 것을 재게 됩니다.
+    const degrade = (
+      partial: { candidates: StageACandidate[]; unclassifiedShas: string[] },
+      unjudged: readonly string[]
+    ) => {
+      unjudged.forEach((sha) => unjudgedShaSet.add(sha));
+      return {
+        candidates: partial.candidates,
+        unclassifiedShas: partial.unclassifiedShas,
+        unjudgedShas: [...unjudged],
+        rateLimit: null,
+      };
+    };
     const recover = async (current: typeof input, attempts = 2): ReturnType<typeof selectStageACandidates> => {
       try {
-        return await selectStageACandidates(current);
+        return await selectStageACandidates(current, chunkGenerate);
       } catch (error) {
+        if (error instanceof ExperienceCandidateOutputError && error.kind === "schema_validation" &&
+          !error.partialOutput && attempts > 0) {
+          modelOutputFailures += 1;
+          console.log(`[stage-a-chunks] 모델 출력 실패, 같은 입력 재시도 남은시도=${attempts}`);
+          return await recover(current, attempts - 1);
+        }
         if (!(error instanceof ExperienceCandidateOutputError) || !error.missingShas?.length ||
           !error.partialOutput) throw error;
+        const partial = {
+          candidates: [...error.partialOutput.candidates],
+          unclassifiedShas: [...error.partialOutput.unclassifiedShas],
+        };
         if (attempts === 0) {
-          failedShas += error.missingShas.length;
-          console.log(`[stage-a-chunks] 복구 실패 호출=${calls + 1} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
-          throw error;
+          console.log(`[stage-a-chunks] 판단 불가 호출=${calls + 1} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
+          return degrade(partial, error.missingShas);
         }
         recoveryCalls += 1;
         console.log(`[stage-a-chunks] 누락 복구 호출=${calls + 1} 남은시도=${attempts} SHA=${error.missingShas.map((sha) => sha.slice(0, 7)).join(",")}`);
         const missing = new Set(error.missingShas);
-        const recovered = await recover({
-          ...current,
-          commits: current.commits.filter(({ sha }) => missing.has(sha)),
-          ...(current.candidateLimit === undefined ? {} : {
-            candidateLimit: Math.max(1, current.candidateLimit - error.partialOutput.candidates.length),
-          }),
-        }, attempts - 1);
+        let recovered: Awaited<ReturnType<typeof selectStageACandidates>>;
+        try {
+          recovered = await recover({
+            ...current,
+            units: current.units.filter(({ representativeSha }) => missing.has(representativeSha)),
+            candidateLimit: Math.max(1, current.candidateLimit - partial.candidates.length),
+          }, attempts - 1);
+        } catch (recoveryError) {
+          if (APICallError.isInstance(recoveryError)) throw recoveryError;
+          providerFailures += 1;
+          console.log(`[stage-a-chunks] 복구 호출 실패, 부분 응답 보존 호출=${calls + 1}`);
+          return degrade(partial, error.missingShas);
+        }
         error.missingShas.forEach((sha) => recoveredShaSet.add(sha));
+        const merged = [...partial.candidates, ...recovered.candidates];
+        const overflow = Math.max(0, merged.length - current.candidateLimit);
+        if (overflow > 0) trimmedCandidates += overflow;
+        const ranked = merged
+          .map((candidate, index) => ({ candidate, index }))
+          .sort((left, right) => {
+            const priority = (item: { candidate: StageACandidate }) =>
+              item.candidate.source === "contribution_match" ? 0 : 1;
+            return priority(left) - priority(right) || left.index - right.index;
+          });
         return {
-          candidates: [...error.partialOutput.candidates, ...recovered.candidates],
-          unclassifiedShas: [...error.partialOutput.unclassifiedShas, ...recovered.unclassifiedShas],
+          candidates: ranked.slice(0, current.candidateLimit)
+            .sort((l, r) => l.index - r.index).map(({ candidate }) => candidate),
+          unclassifiedShas: [
+            ...partial.unclassifiedShas,
+            ...recovered.unclassifiedShas,
+            ...ranked.slice(current.candidateLimit).map(({ candidate }) => candidate.sha),
+          ],
+          unjudgedShas: recovered.unjudgedShas,
           rateLimit: recovered.rateLimit,
         };
       }
@@ -516,9 +565,8 @@ async function runStageAChunks() {
       }
     }
     calls += 1;
-    totalTokens += output.rateLimit?.usedTokens ?? 0;
     console.log(
-      `[stage-a-chunks] 호출=${calls} mode=${mode} 입력=${chunk.length} 후보=${output.candidates.length} ` +
+      `[stage-a-chunks] 호출=${calls} LLM호출=${generateCalls} 입력묶음=${chunk.length} 쿼터=${limit} 후보=${output.candidates.length} ` +
       `소요=${round(ms() - callStartedAt)}ms 토큰=${output.rateLimit?.usedTokens ?? 0} ` +
       `잔여=${output.rateLimit?.remainingTokens ?? -1} reset=${output.rateLimit?.resetAfterMs ?? -1}ms`
     );
@@ -530,44 +578,47 @@ async function runStageAChunks() {
     }
   };
 
-  const initialChunks = split(details);
+  const { units, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(details);
+  const initialChunks = splitUnitsIntoChunks(units, []);
+  const quota = resolveChunkQuota(initialChunks.length);
+  console.log(
+    `[stage-a-chunks] 커밋=${details.length} 묶음=${units.length} 제외=${excludedCommits.length} ` +
+    `청크=${initialChunks.length} 쿼터=${quota} 최대후보=${initialChunks.length * quota}`
+  );
+  console.log(
+    `[stage-a-chunks] 선별 입력묶음=${units.length} 제외묶음=${excludedUnits.length} 경계점수=${thresholdScore} ` +
+    `프롬프트바이트=${Buffer.byteLength(units.map(({ summary }) => renderWorkUnitSummary(summary)).join("\n"), "utf8")}`
+  );
   for (let index = 0; index < initialChunks.length; index += 1) {
-    const output = await call(initialChunks[index], "initial");
+    const chunk = initialChunks[index];
+    const output = await call(chunk, Math.min(quota, chunk.length));
     candidates.push(...output.candidates);
     output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
-    if (index + 1 < initialChunks.length || candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT) {
-      await pause(output.rateLimit);
-    }
+    answeredShas.push(...output.candidates.map(({ sha }) => sha), ...output.unclassifiedShas);
+    if (index + 1 < initialChunks.length) await pause(output.rateLimit);
   }
 
-  for (let roundIndex = 0; candidates.length > INITIAL_STAGE_A_CANDIDATE_LIMIT && roundIndex < 6; roundIndex += 1) {
-    const next: StageACandidate[] = [];
-    const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
-    const chunks = split(details.filter(({ sha }) => candidateBySha.has(sha)));
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index];
-      const group = chunk.map(({ sha }) => candidateBySha.get(sha)!);
-      if (group.length === 1) { next.push(group[0]); continue; }
-      const output = await call(
-        chunk,
-        "reduce",
-        Math.max(1, Math.floor(group.length / 2))
-      );
-      next.push(...output.candidates);
-      output.unclassifiedShas.forEach((sha) => unclassified.add(sha));
-      if (index + 1 < chunks.length) await pause(output.rateLimit);
-    }
-    console.log(`[stage-a-chunks] 재판단 라운드=${roundIndex + 1} ${candidates.length}->${next.length}`);
-    candidates = next;
-  }
-
-  const finalShas = new Set([...candidates.map(({ sha }) => sha), ...unclassified]);
+  // 전수 응답 계약은 묶음 단위다. 커밋 수와 비교하면 묶기로 줄어든 차이가 누락으로 잡힌다.
+  // 중복은 집합 크기가 아니라 원본 배열 길이와의 차이로만 드러난다.
+  const finalShas = new Set(answeredShas);
   console.log(
-    `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} 총소요=${round(ms() - startedAt)}ms ` +
-    `총토큰=${totalTokens} 최종후보=${candidates.length} 누락=${details.length - finalShas.size} ` +
-    `중복=${finalShas.size - details.length} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
-    `판단실패=${failedShas} provider한도=${rateLimitFailures}`
+    `[stage-a-chunks] 완료 입력=${details.length} 호출=${calls} LLM호출=${generateCalls} 총소요=${round(ms() - startedAt)}ms ` +
+    `총토큰=${totalTokens} 최종후보=${candidates.length}/${initialChunks.length * quota} 묶음=${units.length} 누락=${units.length - finalShas.size} ` +
+    `중복=${answeredShas.length - finalShas.size} 복구호출=${recoveryCalls} 복구SHA=${recoveredShaSet.size} ` +
+    `판단불가=${unjudgedShaSet.size} 복구실패=${providerFailures} 출력실패=${modelOutputFailures} 트림=${trimmedCandidates} provider한도=${rateLimitFailures}`
   );
+
+  // 어떤 묶음이 뽑혔는지 남긴다. SHA만 찍으면 선정 결과가 설명할 만한 작업인지 사람이
+  // 판단할 수 없다. 후보 SHA는 묶음 대표 SHA이므로 입력 묶음에서 그대로 되찾을 수 있다.
+  const unitBySha = new Map(units.map((unit) => [unit.representativeSha, unit]));
+  for (const { sha, source, contributionItem } of candidates) {
+    const unit = unitBySha.get(sha);
+    const matched = contributionItem === null ? "" : ` 기여=${contributionItem}`;
+    console.log(
+      `[stage-a-chunks] 후보 PR#${unit?.pullRequestNumber ?? "?"} ${source}${matched} ` +
+      `${unit?.summary.pullRequestTitle ?? sha}`
+    );
+  }
 }
 
 /**
@@ -576,15 +627,17 @@ async function runStageAChunks() {
  */
 async function stageBInputWithoutStageA() {
   const { included } = await loadCommits();
-  const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_CANDIDATES));
+  const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_INPUT_COMMITS));
   const details = await fetchDetailsCached(targets);
-  const candidates: StageACandidate[] = details.map(({ sha }) => ({
-    sha,
+  // 커밋 하나하나를 후보로 두면 프로덕션과 다른 것을 잰다. 프로덕션 후보는 PR 묶음이다.
+  const { units, workUnits } = toStageAUnits(details);
+  const candidates: StageACandidate[] = units.map(({ representativeSha }) => ({
+    sha: representativeSha,
     source: "automatic_recommendation",
     contributionItem: null,
   }));
-  console.log(`[stage-b] Stage A 생략, 캐시 상세 ${details.length}건을 후보로 사용`);
-  return { details, candidates };
+  console.log(`[stage-b] Stage A 생략, 캐시 상세 ${details.length}건에서 묶음 ${candidates.length}개를 후보로 사용`);
+  return { details, candidates, workUnits };
 }
 
 /**
@@ -593,7 +646,7 @@ async function stageBInputWithoutStageA() {
  */
 function reportPatchBudgetShare(commits: readonly CommitDetail[], candidates: readonly StageACandidate[]) {
   const payload = buildStageBPayload(commits, candidates);
-  const shares = payload.commits.map((commit, index) => ({
+  const shares = payload.workUnits.flatMap((unit) => unit.commits).map((commit, index) => ({
     index,
     sha: commit.sha,
     chars: commit.files.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0),
@@ -608,19 +661,45 @@ function reportPatchBudgetShare(commits: readonly CommitDetail[], candidates: re
 }
 
 async function runStageB() {
-  const { details, candidates } = rest.includes("--skip-stage-a")
+  const { details, candidates, workUnits } = rest.includes("--skip-stage-a")
     ? await stageBInputWithoutStageA()
     : await runStageA();
-  const capped = candidates.slice(0, STAGE_B_MAX_CANDIDATES);
-  console.log(`[stage-b] Stage A 후보=${candidates.length} STAGE_B_MAX_CANDIDATES=${STAGE_B_MAX_CANDIDATES} 422 유발=${candidates.length > STAGE_B_MAX_CANDIDATES}`);
-  const commits = details.filter((detail) => capped.some(({ sha }) => sha === detail.sha));
-  const patchShare = reportPatchBudgetShare(commits, capped);
+  // 프로덕션은 후보 묶음을 대표 커밋 여럿으로 펼쳐서 Stage B에 넣는다(`candidate-client.ts`의
+  // `fetchStageBCandidatesFromApi`). 예전에는 여기서 묶음당 SHA 하나를 그대로 잘라 써서 조회
+  // 시간과 patch 몫을 운영 입력이 아닌 것에서 재고 있었다(Codex 리뷰 P2-3).
+  const expanded = expandCandidatesToCommits(candidates, workUnits, STAGE_B_MAX_INPUT_COMMITS);
+  const commits = details.filter((detail) => expanded.some(({ sha }) => sha === detail.sha));
+
+  // 같은 PR에서 커밋 여러 개가 실제로 펼쳐졌는지 확인한다. 하나도 없으면 이 측정은 커밋 단위
+  // 입력과 구별되지 않으므로 운영 경로를 검증하지 못한다.
+  const commitsByPullRequest = new Map<number, string[]>();
+  for (const detail of commits) {
+    for (const pullRequest of detail.pullRequests) {
+      const bucket = commitsByPullRequest.get(pullRequest.number) ?? [];
+      bucket.push(detail.sha);
+      commitsByPullRequest.set(pullRequest.number, bucket);
+    }
+  }
+  const multiCommitUnits = [...commitsByPullRequest.entries()].filter(([, shas]) => shas.length > 1);
+  const uniqueShas = new Set(expanded.map(({ sha }) => sha)).size;
+
+  console.log(
+    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${STAGE_B_MAX_INPUT_COMMITS} ` +
+      `SHA 중복=${expanded.length - uniqueShas} 상세=${commits.length}건`
+  );
+  console.log(
+    `[stage-b] PR 수=${commitsByPullRequest.size} 커밋 2개 이상 PR=${multiCommitUnits.length}` +
+      (multiCommitUnits.length === 0
+        ? "  경고: 펼쳐도 PR마다 커밋 1개뿐이다. 운영 입력을 검증하지 못한다"
+        : `  최대=${Math.max(...multiCommitUnits.map(([, shas]) => shas.length))}커밋`)
+  );
+  const patchShare = reportPatchBudgetShare(commits, expanded);
 
   const startedAt = ms();
   try {
     const stageBModel = rest.find((option) => option.startsWith("--stage-b-model="))?.slice("--stage-b-model=".length);
     console.log(`[stage-b] 모델=${stageBModel ?? STAGE_B_MODEL}`);
-    const output = await selectStageBCandidates(commits, capped, createStageBGenerate(stageBModel));
+    const output = await selectStageBCandidates(commits, expanded, createStageBGenerate(stageBModel));
     const elapsed = ms() - startedAt;
     console.log(`[stage-b] 성공 소요=${round(elapsed)}ms 최종 후보=${output.candidates.length}`);
     for (const candidate of output.candidates) {

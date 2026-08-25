@@ -49,7 +49,15 @@ export interface StageACandidate {
 
 export interface StageACandidateOutput {
   readonly candidates: readonly StageACandidate[];
+  /** 모델이 후보가 아니라고 판단한 묶음입니다. */
   readonly unclassifiedShas: readonly string[];
+  /**
+   * 모델이 끝내 판단하지 못한 묶음입니다.
+   *
+   * `unclassifiedShas`와 나눠 둡니다. 판단 결과 후보가 아닌 것과 판단 자체가 없는 것은 다르고,
+   * 둘을 합치면 화면이 "판단하지 못한 N건"을 표시할 수 없어 조용한 배제가 됩니다.
+   */
+  readonly unjudgedShas: readonly string[];
 }
 
 export interface StageARateLimit {
@@ -64,6 +72,15 @@ export interface StageAChunkOutput extends StageACandidateOutput {
 
 export interface StageACheckpoint extends StageACandidateOutput {
   readonly processedShas: readonly string[];
+  /**
+   * 선별을 통과해 판단 대상이 된 묶음 수입니다. `processedShas`가 묶음의 대표 커밋 SHA이므로
+   * 진행 상황을 말할 때 견줄 분모가 이 값입니다.
+   *
+   * 실패 문구 쪽에서 커밋 수로 다시 유도하지 않으려고 여기에 싣습니다. 유도하면 분모와 분자가
+   * 서로 다른 단위가 되고, 유도 시점의 입력이 판단 시점과 달라지면 둘이 어긋납니다.
+   * `StageACandidateOutput`이 아니라 체크포인트에만 더해 서버 응답 계약은 건드리지 않습니다.
+   */
+  readonly totalUnits: number;
 }
 
 export interface StageAProgress {

@@ -2,11 +2,13 @@ import {
   CandidateRequestError,
   fetchStageACandidatesFromApi,
   fetchStageBCandidatesFromApi,
+  toStageAUnits,
   type CandidateStage,
+  type StageACandidateResult,
+  type StageASelectionSummary,
 } from "@/features/experience-candidates/candidate-client";
 import type {
   StageACheckpoint,
-  StageACandidateOutput,
   StageBCandidateResult,
 } from "@/features/experience-candidates/types";
 import { buildCandidateData } from "@/lib/github/candidate-data";
@@ -66,17 +68,51 @@ export interface CandidateRetryPoint {
   readonly repository: RepositoryRef;
   readonly contributionItems: readonly string[];
   readonly data: CandidateDataOutput;
-  readonly stageA?: StageACandidateOutput;
+  readonly stageA?: StageACandidateResult;
   readonly stageACheckpoint?: StageACheckpoint;
+}
+
+/**
+ * 성공 상태가 화면에 실어 보내는 Stage A 선별 정보입니다. `unjudgedShas`는 `StageACandidateOutput`에
+ * 이미 있지만 성공 경로에서는 그동안 어디에도 실리지 않았습니다. 화면이 "판단 불가" 건수를
+ * 보여주려면(Task 9-2) 이 값이 성공 상태까지 와야 합니다.
+ */
+export interface StageASelectionState extends StageASelectionSummary {
+  readonly unjudgedShas: readonly string[];
+}
+
+/**
+ * Stage A 진행 단위는 커밋이 아니라 Pull Request 묶음입니다.
+ *
+ * `fetchStageACandidates`가 보내는 진행률과 체크포인트의 `processedShas`가 모두 묶음 기준입니다.
+ * 커밋 수와 섞으면 커밋 여러 개짜리 PR이 있는 저장소에서 진행 바 전체 수가 첫 응답 직후 줄어들고,
+ * 실패 문구가 실제보다 훨씬 많이 남은 것처럼 보고합니다.
+ *
+ * `toStageAUnits`는 네트워크를 쓰지 않는 순수 함수라 클라이언트가 쓰는 값을 여기서 다시 구할 수
+ * 있습니다. 기여 항목이 선별 예산을 먹으므로 함께 넘겨야 같은 수가 나옵니다.
+ */
+function stageAUnitTotal(
+  data: CandidateDataOutput,
+  contributionItems: readonly string[]
+): number {
+  return toStageAUnits(data.includedCommits, contributionItems).units.length;
 }
 
 export type AnalysisState =
   | { status: "idle" }
   | { status: "loading"; loading: LoadingPhase }
-  | { status: "empty"; kind: EmptyKind }
-  | { status: "empty"; kind: "no_final_candidates"; reason: string }
+  // stageASelection은 선택 필드입니다. Stage A를 부르기 전에 나는 no_commits·no_author_commits·
+  // no_analyzable_commits 세 갈래는 선별 정보가 존재하지 않아 값을 채우지 않습니다. no_stage_a_candidates는
+  // Stage A 직후 갈래라 항상 값을 싣습니다(이슈 #58 Codex 리뷰 P1-2).
+  | { status: "empty"; kind: EmptyKind; stageASelection?: StageASelectionState }
+  | { status: "empty"; kind: "no_final_candidates"; reason: string; stageASelection?: StageASelectionState }
   | { status: "error"; error: AnalysisError; retryPoint?: CandidateRetryPoint }
-  | { status: "success"; data: CandidateDataOutput; candidates: StageBCandidateResult };
+  | {
+      status: "success";
+      data: CandidateDataOutput;
+      candidates: StageBCandidateResult;
+      stageASelection: StageASelectionState;
+    };
 
 interface AnalysisDependencies {
   fetchCommits(repository: RepositoryRef): Promise<AuthoredCommitsResult>;
@@ -254,7 +290,7 @@ export async function generateCandidates(
     if (!stageA) {
       onStateChange({ status: "loading", loading: {
         step: "stage_a", completed: stageACheckpoint?.processedShas.length ?? 0,
-        total: data.includedCommits.length, waitingForRateLimit: false,
+        total: stageAUnitTotal(data, contributionItems), waitingForRateLimit: false,
       } });
       stageA = await dependencies.fetchStageACandidates(
         data.includedCommits,
@@ -263,8 +299,16 @@ export async function generateCandidates(
         stageACheckpoint
       );
     }
+    // 세 상태(빈 둘·성공)가 같은 선별 값을 싣도록 여기서 한 번만 만듭니다. 후보가 0개일 때가 제외
+    // 사유를 가장 알아야 할 순간이라 두 빈 갈래에도 성공 경로와 동일한 객체를 실어 보냅니다(이슈 #58 P1-2).
+    const stageASelection: StageASelectionState = {
+      excludedCommits: stageA.excludedCommits,
+      excludedUnits: stageA.excludedUnits,
+      thresholdScore: stageA.thresholdScore,
+      unjudgedShas: stageA.unjudgedShas,
+    };
     if (stageA.candidates.length === 0) {
-      onStateChange({ status: "empty", kind: "no_stage_a_candidates" });
+      onStateChange({ status: "empty", kind: "no_stage_a_candidates", stageASelection });
       return;
     }
     onStateChange({ status: "loading", loading: { step: "stage_b" } });
@@ -275,10 +319,16 @@ export async function generateCandidates(
         kind: "no_final_candidates",
         // 출력 계약이 후보 3개 미만이면 부족 사유를 보장하므로 0개에서 사유는 항상 존재합니다.
         reason: candidates.insufficientCandidatesReason!,
+        stageASelection,
       });
       return;
     }
-    onStateChange({ status: "success", data, candidates });
+    onStateChange({
+      status: "success",
+      data,
+      candidates,
+      stageASelection,
+    });
   } catch (error) {
     if (error instanceof CandidateRequestError && error.checkpoint) {
       stageACheckpoint = error.checkpoint;
@@ -288,12 +338,17 @@ export async function generateCandidates(
     const samePayloadAlwaysFails =
       error instanceof CandidateRequestError &&
       (error.kind === "invalid_request" || error.retryable === false);
+    // 체크포인트의 `processedShas`는 묶음의 대표 커밋 SHA이므로 묶음 수와 견줍니다. 분모는
+    // 체크포인트가 실어 온 `totalUnits`를 씁니다. 커밋 수로 다시 유도하면 단위가 섞이고, 유도
+    // 시점의 입력이 판단 시점과 달라지면 두 숫자가 어긋납니다.
+    const judgedUnits = stageACheckpoint?.processedShas.length ?? 0;
+    const totalUnits = stageACheckpoint?.totalUnits ?? 0;
     const visibleError =
       error instanceof CandidateRequestError && !stageA && stageACheckpoint
         ? new CandidateRequestError(
             error.stage,
             error.kind,
-            `${error.message} 전체 ${data.includedCommits.length}개 중 ${stageACheckpoint.processedShas.length}개를 판단했고 ${data.includedCommits.length - stageACheckpoint.processedShas.length}개는 아직 판단하지 못했습니다.`,
+            `${error.message} 전체 ${totalUnits}묶음 중 ${judgedUnits}묶음을 판단했고 ${totalUnits - judgedUnits}묶음은 아직 판단하지 못했습니다.`,
             { cause: error, checkpoint: stageACheckpoint }
           )
         : error;

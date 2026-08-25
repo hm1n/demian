@@ -2,13 +2,31 @@
 
 import { useMemo, useState } from "react";
 import type { EvidenceOrigin, ExperienceCandidateListItem, StageBCandidateResult } from "./types";
-import type { CandidateDataOutput } from "@/lib/github/types";
+import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 import type { RepositoryRef } from "@/lib/github/types";
 import { AI_SELECTION_LABEL, EVIDENCE_VERIFIABILITY_NOTICE, VERIFIABILITY_LABEL } from "./evidence-verifiability";
 import { ExperienceCandidateDetail } from "./experience-candidate-detail";
 import { ExperienceInterviewEntry } from "./experience-interview-entry";
 import { confirmExperienceSelection, type ExperienceSelectionState } from "./experience-selection";
+import { WORK_UNIT_EXCLUSION_COPY, type ExcludedCommit } from "./work-unit";
+import {
+  WORK_UNIT_SELECTION_EXCLUSION_COPY,
+  type ExcludedWorkUnit,
+} from "./work-unit-selection";
+import { WORK_UNIT_SIGNAL_COPY } from "./work-unit-score";
 import styles from "./experience-candidate-list.module.css";
+
+/**
+ * Stage A 선별에서 제외된 값입니다. `repository-analysis.ts`의 `StageASelectionState`와 구조가
+ * 같습니다. 그 타입을 직접 가져오지 않는 이유는 `repository-analysis`가 이 기능을 소비하는
+ * 상위 계층이기 때문입니다. 여기서 가져오면 역방향 의존이 생깁니다.
+ */
+export interface StageASelectionDisplay {
+  readonly excludedCommits: readonly ExcludedCommit[];
+  readonly excludedUnits: readonly ExcludedWorkUnit<ReadonlyCommitDetail>[];
+  readonly thresholdScore: number;
+  readonly unjudgedShas: readonly string[];
+}
 
 const EVIDENCE_ORIGIN_LABEL: Record<EvidenceOrigin, string> = {
   repository: "출처: Repository",
@@ -32,10 +50,18 @@ interface ExperienceCandidateListProps {
   repository: RepositoryRef;
   data: CandidateDataOutput;
   candidates: StageBCandidateResult;
+  /** 생략하면 제외 요약을 표시하지 않습니다. 실제 화면은 항상 값을 넘깁니다. */
+  stageASelection?: StageASelectionDisplay;
   onSelectRepository: () => void;
 }
 
-export function ExperienceCandidateList({ repository, data, candidates, onSelectRepository }: ExperienceCandidateListProps) {
+export function ExperienceCandidateList({
+  repository,
+  data,
+  candidates,
+  stageASelection,
+  onSelectRepository,
+}: ExperienceCandidateListProps) {
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   // 확정 상태는 `AnalysisState`가 아니라 후보 기능 안에 둡니다. 이유는 `experience-selection.ts`에 있습니다.
   const [selection, setSelection] = useState<ExperienceSelectionState>({ status: "idle" });
@@ -114,7 +140,135 @@ export function ExperienceCandidateList({ repository, data, candidates, onSelect
         <div><strong>{data.allCommits.length}</strong><span>전체 커밋</span></div>
         <div><strong>{data.includedCommits.length}</strong><span>상세 조회 커밋</span></div>
       </div>
+      {stageASelection ? <StageAExclusions {...stageASelection} /> : null}
       <button className={styles.secondaryButton} type="button" onClick={onSelectRepository}>다른 Repository 선택</button>
+    </section>
+  );
+}
+
+/**
+ * 이슈 #58이 못박은 원칙("어떤 커밋도 사용자 모르게 배제하지 않는다")을 지키려고 세 지점의
+ * 배제를 보여줍니다. 후보 목록이 주인공이므로 이 구획은 목록과 요약 아래, 화면 맨 끝에 둡니다.
+ *
+ * 점수 컷에서 밀린 묶음(`below_score_threshold`)과 분량 상한에서 밀린 묶음(`over_byte_budget`)은
+ * 같은 "제외"라도 사용자에게 다른 의미라 구획을 나눕니다. 점수는 우리 휴리스틱이지 Repository
+ * 사실이 아니므로 `확인 가능` 태그를 씌우지 않고 별도로 표시합니다. PR 번호·제목은 GitHub 응답
+ * 값이라 `확인 가능`을 씌웁니다.
+ *
+ * 후보 0개인 빈 상태(`repository-analysis-view.tsx`의 `EmptyState`)도 같은 원칙이 적용되는
+ * 지점이라 이 컴포넌트를 그대로 재사용합니다. 같은 정보를 두 곳에서 다르게 그리면 어긋납니다
+ * (이슈 #58 Codex 리뷰 P1-2).
+ */
+export function StageAExclusions({
+  excludedCommits,
+  excludedUnits,
+  thresholdScore,
+  unjudgedShas,
+}: StageASelectionDisplay) {
+  const belowThreshold = excludedUnits
+    .filter((item) => item.reason === "below_score_threshold")
+    .sort((a, b) => b.score - a.score);
+  const overBudget = excludedUnits
+    .filter((item) => item.reason === "over_byte_budget")
+    .sort((a, b) => b.score - a.score);
+
+  if (
+    excludedCommits.length === 0 &&
+    belowThreshold.length === 0 &&
+    overBudget.length === 0 &&
+    unjudgedShas.length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <section className={styles.exclusions} aria-labelledby="stage-a-exclusions-heading">
+      <h3 id="stage-a-exclusions-heading">1차 선별에서 제외된 항목</h3>
+
+      {excludedCommits.length > 0 ? (
+        <details className={styles.exclusionDetails}>
+          <summary>
+            <span>{`Pull Request에 속하지 않아 제외한 커밋 ${excludedCommits.length}건`}</span>
+            <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
+          </summary>
+          <p className={styles.exclusionReason}>{WORK_UNIT_EXCLUSION_COPY.no_pull_request}</p>
+          <ul className={styles.exclusionList}>
+            {excludedCommits.map((commit) => (
+              <li key={commit.sha}>
+                <code>{commit.sha.slice(0, 7)}</code>
+                <span>{commit.title}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {belowThreshold.length > 0 ? (
+        <details className={styles.exclusionDetails}>
+          <summary>
+            <span>{`점수 ${thresholdScore}점 미만 ${belowThreshold.length}묶음을 판단 대상에서 제외했습니다`}</span>
+          </summary>
+          <p className={styles.exclusionReason}>
+            {WORK_UNIT_SELECTION_EXCLUSION_COPY.below_score_threshold}
+            <span className={styles.heuristicNotice}> 점수는 자동 계산한 휴리스틱이고 Repository 사실이 아닙니다.</span>
+          </p>
+          <ul className={`${styles.exclusionList} ${styles.scrollableList}`}>
+            {belowThreshold.map(({ unit, score, signals }) => (
+              <li key={unit.pullRequestNumber}>
+                <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
+                <span>{`PR #${unit.pullRequestNumber}`}</span>
+                <span>{unit.pullRequest.title}</span>
+                <span className={styles.heuristicScore}>{`${score}점 · 휴리스틱`}</span>
+                {signals.length > 0 ? (
+                  <span className={styles.signalList}>
+                    {signals.map((signal) => <span key={signal}>{WORK_UNIT_SIGNAL_COPY[signal]}</span>)}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {overBudget.length > 0 ? (
+        <details className={styles.exclusionDetails}>
+          <summary>
+            <span>{`한 번에 보낼 수 있는 분량을 넘어 ${overBudget.length}묶음을 제외했습니다`}</span>
+          </summary>
+          <p className={styles.exclusionReason}>{WORK_UNIT_SELECTION_EXCLUSION_COPY.over_byte_budget}</p>
+          <ul className={`${styles.exclusionList} ${styles.scrollableList}`}>
+            {overBudget.map(({ unit, score, signals }) => (
+              <li key={unit.pullRequestNumber}>
+                <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
+                <span>{`PR #${unit.pullRequestNumber}`}</span>
+                <span>{unit.pullRequest.title}</span>
+                <span className={styles.heuristicScore}>{`${score}점 · 휴리스틱`}</span>
+                {signals.length > 0 ? (
+                  <span className={styles.signalList}>
+                    {signals.map((signal) => <span key={signal}>{WORK_UNIT_SIGNAL_COPY[signal]}</span>)}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {unjudgedShas.length > 0 ? (
+        <details className={styles.exclusionDetails}>
+          <summary>
+            <span>{`모델이 판단하지 못한 묶음 ${unjudgedShas.length}건`}</span>
+          </summary>
+          <p className={styles.exclusionReason}>
+            모델이 이 묶음들에 대해 판단을 내놓지 못했습니다. 제외한 것이 아니라 판단이 없는 상태입니다.
+          </p>
+          <ul className={styles.exclusionList}>
+            {unjudgedShas.map((sha) => (
+              <li key={sha}><code>{sha.slice(0, 7)}</code></li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </section>
   );
 }
