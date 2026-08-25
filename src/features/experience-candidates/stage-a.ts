@@ -275,8 +275,22 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
     const { object, response, usage } = await generateObject({
       model: createGroq()(model),
       schema: structuredOutputSchema,
+      /**
+       * 전수 응답 지시와 후보 상한을 문단으로 갈라 둡니다.
+       *
+       * 한 문단에 같이 두면 모델이 "최대 N개"를 "N개만 반환"으로 읽습니다. `gpt-oss-20b`에 묶음
+       * 15개와 상한 5를 준 A/B 실측에서 기존 문구는 3회 모두 정확히 5개만 돌려줘 10개를
+       * 빠뜨렸고, 문단을 가른 문구는 4회 중 3회가 15개를 전부 돌려줬습니다. 상한이 반환
+       * 개수가 아니라 추천 개수에만 걸린다는 것을 명시해야 합니다.
+       */
       system:
-        `Pull Request 단위 작업 묶음을 보고 개발 경험 후보를 선별하세요. 각 묶음은 'PR#번호 제목 [커밋수 기간 증감 파일수]'와 커밋 제목 목록, 변경량 상위 파일 경로로 이뤄집니다. 입력에 있는 각 PR 번호를 정확히 한 번 반환하세요. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 쓰세요. 기여 항목이 있더라도 어느 항목에도 맞지 않지만 설명할 가치가 있는 묶음은 contributionItem을 null로 두고 recommended를 true로 하세요. 어느 후보에도 들지 않으면 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 하세요. 이 목록에서 recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개입니다. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.`,
+        `Pull Request 단위 작업 묶음을 보고 개발 경험 후보를 선별하세요. 각 묶음은 'PR#번호 제목 [커밋수 기간 증감 파일수]'와 커밋 제목 목록, 변경량 상위 파일 경로로 이뤄집니다.
+
+가장 중요한 규칙입니다. decisions 배열은 입력에 있는 PR 번호 전부를 하나도 빠뜨리지 않고 각각 정확히 한 번 담아야 합니다. 입력 묶음이 N개면 decisions도 반드시 N개입니다. 추천하지 않는 묶음도 반드시 담습니다.
+
+각 묶음의 판정은 이렇게 씁니다. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 씁니다. 어느 항목에도 맞지 않지만 설명할 가치가 있으면 contributionItem을 null로 두고 recommended를 true로 합니다. 그 밖에는 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 합니다.
+
+recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개까지만 고르세요. 이 상한은 고르는 개수에만 걸립니다. decisions 배열의 길이를 줄이는 데 쓰면 안 됩니다. 나머지 묶음은 전부 '${UNCLASSIFIED_LABEL}'로 담으세요. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.`,
       prompt: [
         payload.units.map(({ summary }) => summary).join("\n"),
         payload.contributionItems.length > 0
