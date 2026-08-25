@@ -51,7 +51,7 @@ import {
   buildStageBPayload,
   createStageBGenerate,
   selectStageBCandidates,
-  STAGE_B_MAX_CANDIDATES,
+  STAGE_B_MAX_INPUT_COMMITS,
   STAGE_B_MODEL,
   STAGE_B_MAX_PATCH_CHARS,
   STAGE_B_MAX_TOTAL_PATCH_CHARS,
@@ -253,7 +253,7 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
     `[payload] Stage A 입력 커밋=${details.length} 직렬화=${stageABytes}B (${(stageABytes / 1024).toFixed(1)}KB, 4.5MB의 ${((stageABytes / (4.5 * 1024 * 1024)) * 100).toFixed(2)}%)`
   );
 
-  const capped = details.slice(0, STAGE_B_MAX_CANDIDATES);
+  const capped = details.slice(0, STAGE_B_MAX_INPUT_COMMITS);
   const candidates: StageACandidate[] = capped.map(({ sha }) => ({
     sha,
     source: "automatic_recommendation",
@@ -300,7 +300,7 @@ async function runDetails() {
   distribution("[details] 커밋별 조회 소요(ms)", durations);
   console.log(`[details] core rate limit 소비=${consumed(before, after)} 잔량=${after.remaining}/${after.limit}`);
   console.log(
-    `[details] 커밋 ${STAGE_B_MAX_CANDIDATES}개 순차 환산=${round((elapsed / (details.length || 1)) * STAGE_B_MAX_CANDIDATES)}ms`
+    `[details] 커밋 ${STAGE_B_MAX_INPUT_COMMITS}개 순차 환산=${round((elapsed / (details.length || 1)) * STAGE_B_MAX_INPUT_COMMITS)}ms`
   );
   reportDetailShape(details);
   reportPayloadSizes(details);
@@ -309,7 +309,7 @@ async function runDetails() {
 /** 병렬도를 바꿔가며 같은 커밋 집합을 조회하고 secondary rate limit 발생 여부를 본다. */
 async function runParallel() {
   const { included } = await loadCommits();
-  const limit = numericOption("limit", Math.min(STAGE_B_MAX_CANDIDATES, included.length));
+  const limit = numericOption("limit", Math.min(STAGE_B_MAX_INPUT_COMMITS, included.length));
   const targets = included.slice(0, limit);
   const listed = rest.find((option) => option.startsWith("--concurrency="));
   const concurrencies =
@@ -529,7 +529,7 @@ async function runStageAChunks() {
  */
 async function stageBInputWithoutStageA() {
   const { included } = await loadCommits();
-  const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_CANDIDATES));
+  const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_INPUT_COMMITS));
   const details = await fetchDetailsCached(targets);
   const candidates: StageACandidate[] = details.map(({ sha }) => ({
     sha,
@@ -564,8 +564,8 @@ async function runStageB() {
   const { details, candidates } = rest.includes("--skip-stage-a")
     ? await stageBInputWithoutStageA()
     : await runStageA();
-  const capped = candidates.slice(0, STAGE_B_MAX_CANDIDATES);
-  console.log(`[stage-b] Stage A 후보=${candidates.length} STAGE_B_MAX_CANDIDATES=${STAGE_B_MAX_CANDIDATES} 422 유발=${candidates.length > STAGE_B_MAX_CANDIDATES}`);
+  const capped = candidates.slice(0, STAGE_B_MAX_INPUT_COMMITS);
+  console.log(`[stage-b] Stage A 후보=${candidates.length} STAGE_B_MAX_INPUT_COMMITS=${STAGE_B_MAX_INPUT_COMMITS} 422 유발=${candidates.length > STAGE_B_MAX_INPUT_COMMITS}`);
   const commits = details.filter((detail) => capped.some(({ sha }) => sha === detail.sha));
   const patchShare = reportPatchBudgetShare(commits, capped);
 

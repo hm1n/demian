@@ -6,6 +6,7 @@ import {
   toStageARequest,
   toStageAUnits,
   splitUnitsIntoChunks,
+  expandCandidatesToCommits,
 } from "./candidate-client";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
@@ -95,6 +96,81 @@ describe("toStageAUnits", () => {
   });
 });
 
+describe("expandCandidatesToCommits", () => {
+  /** 묶음 하나에 커밋 여러 개를 붙입니다. */
+  function unitCommits(pullRequestNumber: number, count: number): ReadonlyCommitDetail[] {
+    return Array.from({ length: count }, (_, index) => ({
+      ...COMMIT,
+      sha: `pr${pullRequestNumber}-c${index}`,
+      files: [{ ...COMMIT.files[0], changes: 100 - index }],
+      pullRequests: [{ ...COMMIT.pullRequests[0], number: pullRequestNumber }],
+    }));
+  }
+
+  it("후보 묶음의 커밋을 대표 하나가 아니라 여러 개로 펼친다", () => {
+    const { workUnits, units } = toStageAUnits(unitCommits(1, 5));
+    const candidates = [
+      { sha: units[0].representativeSha, source: "automatic_recommendation" as const, contributionItem: null },
+    ];
+
+    const expanded = expandCandidatesToCommits(candidates, workUnits, 30);
+
+    expect(expanded).toHaveLength(5);
+    expect(expanded[0].sha).toBe(units[0].representativeSha);
+  });
+
+  it("펼친 커밋이 묶음의 출처와 기여 항목을 물려받는다", () => {
+    const { workUnits, units } = toStageAUnits(unitCommits(1, 3));
+    const candidates = [
+      { sha: units[0].representativeSha, source: "contribution_match" as const, contributionItem: "푸시 알림 구현" },
+    ];
+
+    const expanded = expandCandidatesToCommits(candidates, workUnits, 30);
+
+    expect(expanded.every((c) => c.source === "contribution_match")).toBe(true);
+    expect(expanded.every((c) => c.contributionItem === "푸시 알림 구현")).toBe(true);
+  });
+
+  it("상한을 넘기지 않고 묶음마다 최소 한 개는 남긴다", () => {
+    const commits = [...unitCommits(1, 21), ...unitCommits(2, 18), ...unitCommits(3, 2)];
+    const { workUnits, units } = toStageAUnits(commits);
+    const candidates = units.map(({ representativeSha }) => ({
+      sha: representativeSha, source: "automatic_recommendation" as const, contributionItem: null,
+    }));
+
+    const expanded = expandCandidatesToCommits(candidates, workUnits, 10);
+
+    expect(expanded).toHaveLength(10);
+    for (const { representativeSha } of units) {
+      expect(expanded.some(({ sha }) => sha === representativeSha)).toBe(true);
+    }
+  });
+
+  it("후보가 아닌 묶음의 커밋은 넣지 않는다", () => {
+    const commits = [...unitCommits(1, 3), ...unitCommits(2, 3)];
+    const { workUnits, units } = toStageAUnits(commits);
+    const candidates = [
+      { sha: units[0].representativeSha, source: "automatic_recommendation" as const, contributionItem: null },
+    ];
+
+    const expanded = expandCandidatesToCommits(candidates, workUnits, 30);
+
+    expect(expanded.every(({ sha }) => sha.startsWith("pr1-"))).toBe(true);
+  });
+
+  it("SHA가 어느 묶음에도 없으면 조용히 버리지 않고 건너뛴다", () => {
+    const { workUnits } = toStageAUnits(unitCommits(1, 3));
+
+    const expanded = expandCandidatesToCommits(
+      [{ sha: "없는sha", source: "automatic_recommendation", contributionItem: null }],
+      workUnits,
+      30
+    );
+
+    expect(expanded).toEqual([]);
+  });
+});
+
 describe("fetchStageACandidatesFromApi", () => {
   it("검증한 Stage A 응답을 반환한다", async () => {
     const output = { candidates: [STAGE_A_CANDIDATE], unclassifiedShas: ["sha-2"], rateLimit: null };
@@ -108,6 +184,32 @@ describe("fetchStageACandidatesFromApi", () => {
       method: "POST",
       body: JSON.stringify(toStageARequest(toStageAUnits([COMMIT]).units, ["푸시 알림 구현"], 1)),
     }));
+  });
+
+  it("후보 묶음을 Stage B 입력 커밋으로 펼쳐서 반환한다", async () => {
+    // 커밋 4개가 한 PR에 묶입니다. Stage A는 묶음 하나를 후보로 돌려주지만 결과에는 커밋 4개가
+    // 모두 실려야 합니다. 펼치기를 빠뜨리면 대표 커밋 1개만 남습니다.
+    const commits = Array.from({ length: 4 }, (_, index) => ({
+      ...COMMIT,
+      sha: `sha-${index}`,
+      files: [{ ...COMMIT.files[0], changes: 100 - index }],
+    }));
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const request = parseRequest(init);
+      return jsonResponse({
+        candidates: request.units.map(({ representativeSha }) => ({
+          sha: representativeSha, source: "automatic_recommendation", contributionItem: null,
+        })),
+        unclassifiedShas: [],
+        rateLimit: null,
+      });
+    });
+
+    const output = await fetchStageACandidatesFromApi(commits, []);
+
+    expect(output.candidates.map(({ sha }) => sha).sort()).toEqual(
+      commits.map(({ sha }) => sha).sort()
+    );
   });
 
   it("오류 응답의 kind와 message를 단계 정보와 함께 보존한다", async () => {

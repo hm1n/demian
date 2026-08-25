@@ -171,6 +171,48 @@ export function selectRepresentativeCommits<TCommit extends SummarizableCommit>(
     .slice(0, Math.max(0, count));
 }
 
+/**
+ * 묶음별로 몇 개의 커밋을 근거로 실을지 정합니다.
+ *
+ * 묶음마다 대표 커밋 하나는 반드시 보장합니다. 그래야 후보로 뽑힌 묶음이 근거 없이 넘어가지
+ * 않습니다. 남은 몫은 묶음 크기에 비례해 나눕니다. 커밋 21개짜리 묶음과 4개짜리 묶음에 같은
+ * 수를 주면 큰 묶음의 이야기가 잘립니다.
+ *
+ * 비례 배분의 나머지는 몫이 큰 순으로 하나씩 줍니다. 같으면 입력 순서로 끊습니다. 반올림으로
+ * 배분하면 합이 상한을 넘거나 모자랍니다.
+ */
+export function allocateCommitQuota(sizes: readonly number[], maxCommits: number): number[] {
+  if (sizes.length === 0) return [];
+  // 묶음 수가 상한보다 많으면 앞에서부터 하나씩만 줍니다. 뒤 묶음은 근거를 받지 못합니다.
+  if (sizes.length >= maxCommits) {
+    return sizes.map((_, index) => (index < maxCommits ? 1 : 0));
+  }
+  const quota = sizes.map(() => 1);
+  let remaining = maxCommits - sizes.length;
+  const extra = sizes.map((size) => size - 1);
+  const totalExtra = extra.reduce((sum, value) => sum + value, 0);
+  if (totalExtra === 0) return quota;
+
+  const shares = extra.map((value) => (value * Math.min(remaining, totalExtra)) / totalExtra);
+  const floors = shares.map((share) => Math.floor(share));
+  floors.forEach((value, index) => {
+    quota[index] += value;
+    remaining -= value;
+  });
+  const order = shares
+    .map((share, index) => ({ index, fraction: share - Math.floor(share) }))
+    .sort((left, right) =>
+      right.fraction === left.fraction ? left.index - right.index : right.fraction - left.fraction
+    );
+  for (const { index } of order) {
+    if (remaining <= 0) break;
+    if (quota[index] >= sizes[index]) continue;
+    quota[index] += 1;
+    remaining -= 1;
+  }
+  return quota.map((value, index) => Math.min(value, sizes[index]));
+}
+
 /** 묶음 여러 개를 Stage A 한 청크의 입력 본문으로 만듭니다. 묶음 순서를 그대로 유지합니다. */
 export function renderWorkUnitSummaries(
   units: readonly WorkUnit<SummarizableCommit>[]

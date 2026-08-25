@@ -3,7 +3,7 @@ import { ExperienceCandidateOutputError } from "@/features/experience-candidates
 import {
   buildStageBPayload,
   selectStageBCandidates,
-  STAGE_B_MAX_CANDIDATES,
+  STAGE_B_MAX_INPUT_COMMITS,
   STAGE_B_MIN_LLM_BUDGET_MS,
   STAGE_B_TOTAL_BUDGET_MS,
   type GenerateStageB,
@@ -81,7 +81,7 @@ export async function handleStageB(
     if (
       !Array.isArray(candidates) ||
       !candidates.every(isCandidate) ||
-      candidates.length > STAGE_B_MAX_CANDIDATES ||
+      candidates.length > STAGE_B_MAX_INPUT_COMMITS ||
       new Set(candidates.map(({ sha }) => sha)).size !== candidates.length
     ) {
       return Response.json(

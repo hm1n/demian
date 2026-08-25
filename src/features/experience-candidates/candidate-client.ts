@@ -9,12 +9,14 @@ import type {
   StageBCandidateResult,
 } from "./types";
 import { validateExperienceCandidateOutput } from "./schema";
-import { groupCommitsIntoWorkUnits, type ExcludedCommit } from "./work-unit";
+import { groupCommitsIntoWorkUnits, type ExcludedCommit, type WorkUnit } from "./work-unit";
 import {
+  allocateCommitQuota,
   renderWorkUnitSummary,
   selectRepresentativeCommits,
   summarizeWorkUnit,
 } from "./work-unit-summary";
+import { STAGE_B_MAX_INPUT_COMMITS } from "./stage-b";
 import type { ReadonlyCommitDetail, RepositoryRef } from "@/lib/github/types";
 import {
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
@@ -113,7 +115,6 @@ async function postCandidateApi(stage: CandidateStage, url: string, body: unknow
   throw new CandidateRequestError(stage, kind, message, { retryable: error?.retryable !== false });
 }
 
-/** Stage A 계약이 허용하는 경량 필드만 남깁니다. patch는 입력 계약 위반(422)이라 전송하지 않습니다. */
 const SOURCES: readonly ExperienceCandidateSource[] = [
   "contribution_match",
   "automatic_recommendation",
@@ -135,9 +136,12 @@ function isStageACandidate(value: unknown): value is StageACandidate {
  * patch는 보내지 않습니다. 입력 계약 위반(422)입니다. 커밋 메시지 본문과 파일별 숫자도 더는
  * 보내지 않습니다. 묶음 요약이 그 자리를 대신합니다.
  */
-export function toStageAUnits(
-  commits: readonly ReadonlyCommitDetail[]
-): { units: StageAUnitInput[]; excludedCommits: readonly ExcludedCommit[] } {
+export function toStageAUnits(commits: readonly ReadonlyCommitDetail[]): {
+  units: StageAUnitInput[];
+  /** Stage B 근거를 펼칠 때 필요합니다. Stage A 요청에는 실리지 않습니다. */
+  workUnits: readonly WorkUnit<ReadonlyCommitDetail>[];
+  excludedCommits: readonly ExcludedCommit[];
+} {
   const { units, excludedCommits } = groupCommitsIntoWorkUnits(commits);
   return {
     units: units.map((unit) => ({
@@ -145,8 +149,46 @@ export function toStageAUnits(
       representativeSha: selectRepresentativeCommits(unit, 1)[0].sha,
       summary: summarizeWorkUnit(unit),
     })),
+    workUnits: units,
     excludedCommits,
   };
+}
+
+/**
+ * 후보로 뽑힌 묶음을 Stage B 입력 커밋으로 펼칩니다.
+ *
+ * Stage A는 묶음 하나를 후보 하나로 돌려주지만 Stage B는 커밋 단위로 patch를 받습니다. 대표
+ * 커밋만 넘기면 커밋 18개짜리 Pull Request가 뽑혀도 근거가 한 개뿐입니다.
+ *
+ * 전부 넘기지도 않습니다. `andbread` 후보 14묶음은 커밋 148개가 되어 상세 재조회에 128초가
+ * 걸리고 patch가 커밋당 405자로 쪼그라듭니다. `STAGE_B_MAX_INPUT_COMMITS`가 그 상한입니다.
+ *
+ * 펼친 커밋은 묶음의 `source`와 `contributionItem`을 그대로 물려받습니다. 같은 묶음의 커밋이
+ * 서로 다른 출처를 가질 수 없기 때문입니다.
+ */
+export function expandCandidatesToCommits(
+  candidates: readonly StageACandidate[],
+  workUnits: readonly WorkUnit<ReadonlyCommitDetail>[],
+  maxCommits = STAGE_B_MAX_INPUT_COMMITS
+): StageACandidate[] {
+  const unitByRepresentativeSha = new Map(
+    workUnits.map((unit) => [selectRepresentativeCommits(unit, 1)[0].sha, unit])
+  );
+  const selected = candidates.flatMap((candidate) => {
+    const unit = unitByRepresentativeSha.get(candidate.sha);
+    return unit === undefined ? [] : [{ candidate, unit }];
+  });
+  const quota = allocateCommitQuota(
+    selected.map(({ unit }) => unit.commits.length),
+    maxCommits
+  );
+  return selected.flatMap(({ candidate, unit }, index) =>
+    selectRepresentativeCommits(unit, quota[index]).map((commit) => ({
+      sha: commit.sha,
+      source: candidate.source,
+      contributionItem: candidate.contributionItem,
+    }))
+  );
 }
 
 /** 한 청크의 요청 본문입니다. `candidateLimit`은 청크마다 고정된 쿼터입니다. */
@@ -203,7 +245,7 @@ export async function fetchStageACandidatesFromApi(
   const processed = new Set(checkpoint?.processedShas ?? []);
   const candidates = [...(checkpoint?.candidates ?? [])];
   const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
-  const { units } = toStageAUnits(commits);
+  const { units, workUnits } = toStageAUnits(commits);
   const pending = units.filter(({ representativeSha }) => !processed.has(representativeSha));
   const chunks = splitUnitsIntoChunks(pending, contributionItems);
   // 쿼터를 여기서 한 번 정합니다. 청크마다 전역 상한을 보내던 이전 방식은 실효 상한을
@@ -260,8 +302,11 @@ export async function fetchStageACandidatesFromApi(
       { checkpoint: { candidates, unclassifiedShas, processedShas: [...processed] } }
     );
   }
-  return { candidates, unclassifiedShas };
+  // 후보 수 검증까지는 묶음 단위로 하고, 커밋으로 펼치는 것은 마지막에 합니다. 체크포인트에
+  // 묶음 단위 후보가 남아야 재개했을 때 같은 묶음을 두 번 펼치지 않습니다.
+  return { candidates: expandCandidatesToCommits(candidates, workUnits), unclassifiedShas };
 }
+
 function isStageAChunkOutput(payload: unknown): payload is StageAChunkOutput {
   const output = payload as Partial<StageAChunkOutput>;
   if (

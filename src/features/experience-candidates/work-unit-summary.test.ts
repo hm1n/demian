@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   WORK_UNIT_SUMMARY_TOP_FILE_PATHS,
+  allocateCommitQuota,
+  selectRepresentativeCommits,
   renderWorkUnitSummaries,
   renderWorkUnitSummary,
   summarizeWorkUnit,
@@ -308,5 +310,101 @@ describe("renderWorkUnitSummaries", () => {
 
   it("묶음이 없으면 빈 문자열을 만든다", () => {
     expect(renderWorkUnitSummaries([])).toBe("");
+  });
+});
+
+describe("allocateCommitQuota", () => {
+  it("빈 입력에 빈 배분을 반환한다", () => {
+    expect(allocateCommitQuota([], 30)).toEqual([]);
+  });
+
+  it("합이 상한 이하면 전부 준다", () => {
+    expect(allocateCommitQuota([9, 5, 5, 5], 30)).toEqual([9, 5, 5, 5]);
+  });
+
+  it("묶음마다 대표 커밋 하나는 보장한다", () => {
+    const quota = allocateCommitQuota([21, 18, 18, 10, 9, 8, 7, 7, 6, 6, 4, 4], 30);
+
+    expect(quota.every((value) => value >= 1)).toBe(true);
+  });
+
+  it("상한을 넘지 않는다", () => {
+    const sizes = [21, 18, 18, 10, 9, 8, 7, 7, 6, 6, 4, 4];
+
+    const quota = allocateCommitQuota(sizes, 30);
+
+    expect(quota.reduce((sum, value) => sum + value, 0)).toBe(30);
+  });
+
+  it("묶음 크기에 비례해 남은 몫을 나눈다", () => {
+    const quota = allocateCommitQuota([20, 2], 12);
+
+    expect(quota[0]).toBeGreaterThan(quota[1]);
+    expect(quota.reduce((sum, value) => sum + value, 0)).toBe(12);
+  });
+
+  it("어떤 묶음에도 커밋 수보다 많이 주지 않는다", () => {
+    const sizes = [1, 1, 20];
+
+    const quota = allocateCommitQuota(sizes, 30);
+
+    expect(quota).toEqual([1, 1, 20]);
+  });
+
+  it("묶음 수가 상한 이상이면 앞에서부터 하나씩만 준다", () => {
+    const quota = allocateCommitQuota(Array.from({ length: 5 }, () => 10), 3);
+
+    expect(quota).toEqual([1, 1, 1, 0, 0]);
+  });
+
+  it("같은 입력에 같은 배분을 반환한다", () => {
+    const sizes = [7, 7, 7, 7];
+
+    expect(allocateCommitQuota(sizes, 10)).toEqual(allocateCommitQuota(sizes, 10));
+  });
+});
+
+describe("selectRepresentativeCommits", () => {
+  function scored(sha: string, changes: number): SummarizableCommit {
+    return {
+      sha,
+      title: sha,
+      pullRequests: [],
+      date: "2026-08-20T00:00:00Z",
+      additions: 0,
+      deletions: 0,
+      files: [{ path: `${sha}.ts`, changes }],
+    };
+  }
+
+  it("변경량이 큰 순으로 고른다", () => {
+    const target = unit([scored("a", 10), scored("b", 100), scored("c", 50)]);
+
+    expect(selectRepresentativeCommits(target, 2).map(({ sha }) => sha)).toEqual(["b", "c"]);
+  });
+
+  it("변경량이 같으면 SHA 오름차순으로 끊는다", () => {
+    const target = unit([scored("c", 10), scored("a", 10), scored("b", 10)]);
+
+    expect(selectRepresentativeCommits(target, 3).map(({ sha }) => sha)).toEqual(["a", "b", "c"]);
+  });
+
+  it("요청 수가 커밋 수보다 많으면 있는 만큼만 준다", () => {
+    const target = unit([scored("a", 10)]);
+
+    expect(selectRepresentativeCommits(target, 5)).toHaveLength(1);
+  });
+
+  it("0을 요청하면 빈 배열을 준다", () => {
+    expect(selectRepresentativeCommits(unit([scored("a", 10)]), 0)).toEqual([]);
+  });
+
+  it("입력 배열을 바꾸지 않는다", () => {
+    const commits = [scored("a", 10), scored("b", 100)];
+    const target = unit(commits);
+
+    selectRepresentativeCommits(target, 2);
+
+    expect(commits.map(({ sha }) => sha)).toEqual(["a", "b"]);
   });
 });

@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { encryptGitHubToken, GITHUB_SESSION_COOKIE, GITHUB_SESSION_KEY_ENV } from "@/lib/github/auth-session";
 import { ExperienceCandidateOutputError } from "@/features/experience-candidates/errors";
-import { STAGE_B_MAX_CANDIDATES, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "@/features/experience-candidates/stage-b";
+import { STAGE_B_MAX_INPUT_COMMITS, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "@/features/experience-candidates/stage-b";
 import { GitHubFetchError } from "@/lib/github/errors";
 import { handleStageB } from "./route";
 
@@ -60,7 +60,7 @@ describe("POST /api/candidates/stage-b", () => {
   });
 
   it("후보 상한, 잘못된 JSON, 본문 크기 상한을 요청 오류로 구분한다", async () => {
-    const tooMany = Array.from({ length: STAGE_B_MAX_CANDIDATES + 1 }, (_, index) => ({ ...candidate, sha: `${index}`.padStart(40, "0") }));
+    const tooMany = Array.from({ length: STAGE_B_MAX_INPUT_COMMITS + 1 }, (_, index) => ({ ...candidate, sha: `${index}`.padStart(40, "0") }));
     expect((await handleStageB(request({ owner: "o", repo: "r", candidates: tooMany }))).status).toBe(422);
     const malformed = request({});
     Object.defineProperty(malformed, "json", { value: async () => { throw new SyntaxError(); } });
