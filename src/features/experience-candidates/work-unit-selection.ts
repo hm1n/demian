@@ -67,8 +67,10 @@ export const WORK_UNIT_SELECTION_EXCLUSION_COPY: Record<
  * 20개로 자르면 그중 10개만 남고 5개가 입력 순서로 잘립니다. 그러면 "상위 20개를 골랐습니다"가
  * 설명이 되지 않습니다. 같은 점수는 전부 넣거나 전부 뺍니다.
  *
- * 점수가 같은 무리 하나가 예산보다 큰 경우에만 그 무리를 쪼갭니다. 입력이 비면 Stage A를 아예
- * 부를 수 없으므로 최소 한 묶음은 남깁니다.
+ * 점수가 같은 무리 하나가 예산보다 큰 경우에만 그 무리를 쪼갭니다. 무리를 쪼개도 낱개 묶음
+ * 하나가 예산을 혼자 넘으면 그 묶음은 선택하지 않습니다. 모든 묶음이 개별적으로 예산을 넘으면
+ * `selected`는 빈 배열이 됩니다 — 억지로 하나를 남기지 않습니다. 그 경우 Stage A를 아예 부르지
+ * 않는 것이 호출부의 책임입니다.
  *
  * 제외된 묶음은 사유와 점수를 달아 그대로 돌려줍니다. 조용히 버리면 사용자가 자기 작업이 왜
  * 안 보이는지 알 수 없습니다.
@@ -110,7 +112,8 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
       continue;
     }
     budgetExhausted = true;
-    // 첫 무리가 통째로 예산을 넘을 때만 무리를 쪼갭니다. 입력이 비면 Stage A를 부를 수 없습니다.
+    // 아직 아무것도 선택되지 않았을 때만 무리를 쪼개 개별 묶음이 예산에 드는지 봅니다. 이미
+    // 무언가 선택됐다면 남은 예산을 채우려 하지 않고 점수 순위 그대로 자릅니다.
     const allowSplit = selected.length === 0;
     for (const { unit, score: itemScore, bytes, signals } of group) {
       if (allowSplit && selectedBytes + bytes + selected.length <= maxBytes) {
@@ -127,13 +130,12 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
     }
   }
 
-  if (selected.length === 0 && ordered.length > 0) {
-    const [first] = ordered;
-    selected.push({ unit: first.unit, score: first.score });
-    selectedBytes = first.bytes;
-    const dropped = excluded.findIndex(({ unit }) => unit === first.unit);
-    if (dropped >= 0) excluded.splice(dropped, 1);
-  }
+  // 이전에는 selected가 비면 최고 점수 묶음을 무조건 되살렸습니다. 그 묶음이 예산을 넘어
+  // over_byte_budget으로 제외됐을 때도 되살려서 excluded에서 지웠고, 결과로 나간 요청이 예산을
+  // 넘어 서버가 422로 거부했습니다(Codex 리뷰 P2-2). 위 루프는 예산 안에 드는 묶음이 하나라도
+  // 있으면 점수 순으로 이미 그 묶음을 selected에 담았으므로, 이 시점에 selected가 비어 있다는
+  // 것은 모든 묶음이 개별적으로 예산을 넘는다는 뜻입니다. 그런 경우는 되살리지 않고 selected를
+  // 빈 배열로 둡니다. 입력이 비면 호출부가 Stage A를 부르지 않고 빈 상태를 보여줍니다.
 
   return {
     selected,

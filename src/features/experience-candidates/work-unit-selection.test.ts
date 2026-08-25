@@ -9,6 +9,7 @@ import {
   WORK_UNIT_SELECTION_EXCLUSION_COPY,
   selectWorkUnitsForStageA,
 } from "./work-unit-selection";
+import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
 
 function commit(overrides: Partial<ScorableCommit> = {}): ScorableCommit {
@@ -46,6 +47,11 @@ function scoredUnit(number: number, score: 0 | 1 | 2): WorkUnit<ScorableCommit> 
     commit({ sha: `sha-${number}-${index}`, files })));
 }
 
+/** 묶음 하나를 선별기와 같은 방식으로 렌더링해 정확한 바이트 크기를 구합니다. */
+function unitBytes(target: WorkUnit<ScorableCommit>): number {
+  return Buffer.byteLength(renderWorkUnitSummary(summarizeWorkUnit(target)), "utf8");
+}
+
 describe("selectWorkUnitsForStageA", () => {
   it("점수가 높은 묶음부터 고르고 나머지는 사유와 함께 남긴다", () => {
     const units = [scoredUnit(1, 0), scoredUnit(2, 2), scoredUnit(3, 1)];
@@ -81,20 +87,38 @@ describe("selectWorkUnitsForStageA", () => {
 
   it("가장 높은 점수 무리 하나가 예산을 넘으면 그 무리만 쪼갠다", () => {
     const units = [scoredUnit(1, 2), scoredUnit(2, 2), scoredUnit(3, 2)];
-    const one = selectWorkUnitsForStageA(units, 1);
-    const selection = selectWorkUnitsForStageA(units, one.bytes * 2 + 1);
+    const singleBytes = unitBytes(units[0]);
+    const selection = selectWorkUnitsForStageA(units, singleBytes * 2 + 1);
 
     expect(selection.selected).toHaveLength(2);
     expect(selection.excluded).toHaveLength(1);
     expect(selection.excluded[0].reason).toBe("over_byte_budget");
   });
 
-  it("예산이 아무리 작아도 최소 한 묶음은 남긴다", () => {
-    const selection = selectWorkUnitsForStageA([scoredUnit(1, 2), scoredUnit(2, 0)], 1);
+  it("모든 묶음이 개별적으로 예산을 넘으면 억지로 남기지 않고 전부 제외한다", () => {
+    // Codex 리뷰 P2-2 회귀 테스트입니다. 이전에는 selected가 비면 최고 점수 묶음을 무조건
+    // 되살려 excluded에서 지웠고, 예산을 넘은 요청이 서버에 가서 422로 거부됐습니다.
+    const units = [scoredUnit(1, 2), scoredUnit(2, 0)];
+    const selection = selectWorkUnitsForStageA(units, 1);
 
-    expect(selection.selected).toHaveLength(1);
-    expect(selection.selected[0].unit.pullRequestNumber).toBe(1);
-    expect(selection.excluded).toHaveLength(1);
+    expect(selection.selected).toEqual([]);
+    expect(selection.excluded).toHaveLength(2);
+    expect(selection.excluded.every(({ reason }) => reason === "over_byte_budget")).toBe(true);
+    // 되살리며 excluded에서 지우던 회귀가 있었으므로 둘 다 그대로 남아 있는지 확인합니다.
+    expect(selection.excluded.map(({ unit: item }) => item.pullRequestNumber).sort()).toEqual([1, 2]);
+    expect(selection.thresholdScore).toBe(0);
+    expect(selection.bytes).toBe(0);
+  });
+
+  it("최고 점수 묶음이 예산을 넘고 다음 묶음은 넘지 않으면 다음 묶음을 선택한다", () => {
+    const [highScore, lowScore] = [scoredUnit(1, 2), scoredUnit(2, 0)];
+    // 낮은 점수 묶음 혼자는 들어가지만 높은 점수 묶음은 혼자서도 못 들어가는 예산을 고릅니다.
+    const budget = unitBytes(lowScore);
+    const selection = selectWorkUnitsForStageA([highScore, lowScore], budget);
+
+    expect(selection.selected.map(({ unit: item }) => item.pullRequestNumber)).toEqual([2]);
+    expect(selection.excluded.map(({ unit: item }) => item.pullRequestNumber)).toEqual([1]);
+    expect(selection.excluded[0].reason).toBe("over_byte_budget");
   });
 
   it("빈 입력에서 빈 결과를 낸다", () => {
