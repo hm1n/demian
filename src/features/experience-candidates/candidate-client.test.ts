@@ -8,7 +8,7 @@ import {
   splitUnitsIntoChunks,
   expandCandidatesToCommits,
 } from "./candidate-client";
-import { STAGE_A_CHUNK_MAX_BYTES } from "./stage-a";
+import { buildStageAPayload, renderStageAPrompt, STAGE_A_CHUNK_MAX_BYTES } from "./stage-a";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
 
@@ -67,6 +67,27 @@ function manyUnits(count: number): ReadonlyCommitDetail[] {
   }));
 }
 
+/** 서버가 실제로 재는 프롬프트 바이트입니다. 라우트와 같은 함수를 씁니다. */
+function promptBytesOf(
+  commits: readonly ReadonlyCommitDetail[],
+  contributionItems: readonly string[]
+): number {
+  const units = toStageAUnits(commits, contributionItems).units;
+  return new TextEncoder().encode(
+    renderStageAPrompt(buildStageAPayload(toStageARequest(units, contributionItems, 1)))
+  ).byteLength;
+}
+
+/**
+ * 프롬프트 상한에서 `room` 바이트만 남기는 한국어 기여 항목을 만듭니다.
+ *
+ * 한글 한 글자가 UTF-8 3바이트입니다. 기여 항목 머리글과 문단 구분 몫으로 넉넉히 32바이트를
+ * 뺍니다. 정확한 경계가 아니라 "예산을 거의 다 먹는다"는 조건만 필요합니다.
+ */
+function itemFillingBudgetExcept(room: number): string {
+  return "가".repeat(Math.max(1, Math.floor((STAGE_A_CHUNK_MAX_BYTES - room - 32) / 3)));
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn());
 });
@@ -85,6 +106,28 @@ describe("toStageAUnits", () => {
     expect(units[0].representativeSha).toBe("sha-1");
     expect(JSON.stringify(units)).not.toContain("patch");
     expect(JSON.stringify(units)).not.toContain("\\n");
+  });
+
+  it("기여 항목 몫을 선별 예산에서 미리 뺀다", () => {
+    // 빼지 않으면 선별이 요약만으로 상한을 꽉 채우고, 그 뒤 기여 항목이 얹혀 라우트가 422로
+    // 거부합니다. 묶음을 덜 보내고 한 번에 끝내는 쪽이 청크를 늘리는 쪽보다 낫습니다.
+    // 분당 토큰 한도는 청크를 나눠도 합계에 걸립니다.
+    const commits = manyUnits(20);
+    // 기여 항목 길이를 픽스처 실측에서 유도합니다. 고정 숫자를 쓰면 픽스처가 바뀔 때 조용히
+    // 무의미한 테스트가 됩니다. 전체 요약의 절반만 들어갈 예산을 남깁니다.
+    const longItem = itemFillingBudgetExcept(Math.floor(promptBytesOf(commits, []) / 2));
+
+    const withoutItems = toStageAUnits(commits, []);
+    const withItems = toStageAUnits(commits, [longItem]);
+
+    expect(withItems.units.length).toBeLessThan(withoutItems.units.length);
+    // 빠진 묶음은 조용히 사라지지 않고 분량 초과 사유로 남습니다.
+    expect(withItems.excludedUnits.some(({ reason }) => reason === "over_byte_budget")).toBe(true);
+    // 선별 결과가 서버 프롬프트 상한 안에 들어갑니다.
+    const bytes = new TextEncoder().encode(
+      renderStageAPrompt(buildStageAPayload(toStageARequest(withItems.units, [longItem], 1)))
+    ).byteLength;
+    expect(bytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
   });
 
   it("PR에 속하지 않은 커밋을 사유와 함께 제외한다", () => {
@@ -374,6 +417,82 @@ describe("splitUnitsIntoChunks", () => {
 
   it("묶음이 없으면 청크도 없다", () => {
     expect(splitUnitsIntoChunks([], [])).toEqual([]);
+  });
+
+  it("묶음 하나가 혼자서 상한을 넘으면 청크에 조용히 담지 않고 실패시킨다", () => {
+    // Codex 리뷰 P2-2 회귀 테스트입니다. selectWorkUnitsForStageA가 예산 안의 묶음만 골라야
+    // 하므로 정상 경로에서는 여기 도달하지 않지만, 그 불변조건이 깨지면 조용히 청크에 담아
+    // 서버가 422로 거부하게 두는 대신 바로 실패시켜야 합니다.
+    const oversized = {
+      pullRequestNumber: 1,
+      representativeSha: "sha-1",
+      summary: {
+        pullRequestNumber: 1,
+        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
+        commitCount: 1,
+        spanDays: 1,
+        additions: 1,
+        deletions: 0,
+        commitTitles: ["feat: 기능 추가"],
+        changedFilePathCount: 1,
+        topFilePaths: ["src/a.ts"],
+      },
+    };
+
+    expect(() => splitUnitsIntoChunks([oversized], [])).toThrow();
+  });
+
+  it("실패는 재시도해도 같은 결과라 재시도 불가로 표시한다", () => {
+    // 평범한 Error로 던지면 generateCandidates가 재시도 지점을 남겨(samePayloadAlwaysFails가
+    // CandidateRequestError만 봅니다) 같은 입력으로 반드시 같은 실패를 반복하는 버튼을 줍니다.
+    const oversized = {
+      pullRequestNumber: 1,
+      representativeSha: "sha-1",
+      summary: {
+        pullRequestNumber: 1,
+        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
+        commitCount: 1,
+        spanDays: 1,
+        additions: 1,
+        deletions: 0,
+        commitTitles: ["feat: 기능 추가"],
+        changedFilePathCount: 1,
+        topFilePaths: ["src/a.ts"],
+      },
+    };
+
+    try {
+      splitUnitsIntoChunks([oversized], []);
+      throw new Error("실패해야 합니다");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CandidateRequestError);
+      expect((error as CandidateRequestError).kind).toBe("invalid_request");
+      expect((error as CandidateRequestError).retryable).toBe(false);
+    }
+  });
+
+  it("기여 항목을 프롬프트 바이트에 포함해 나눈다", () => {
+    // 서버가 재는 프롬프트는 요약과 기여 항목을 합친 것입니다. 여기서 요약만 재면 서버가 거부할
+    // 청크를 만들어 보냅니다. 실측에서 demian 요약 9,913바이트에 기여 항목 200자만 더해도
+    // 10,530바이트가 되어 상한 10,500을 넘고 모든 청크가 422로 거부됐습니다.
+    const commits = manyUnits(20);
+    const units = toStageAUnits(commits).units;
+    // 청크가 반드시 두 개 이상 되도록 전체 요약의 절반만 들어갈 예산을 남깁니다.
+    const longItem = itemFillingBudgetExcept(Math.floor(promptBytesOf(commits, []) / 2));
+
+    const withoutItems = splitUnitsIntoChunks(units, []);
+    const withItems = splitUnitsIntoChunks(units, [longItem]);
+
+    expect(withItems.length).toBeGreaterThan(withoutItems.length);
+    for (const chunk of withItems) {
+      const bytes = new TextEncoder().encode(
+        renderStageAPrompt(buildStageAPayload(toStageARequest(chunk, [longItem], 1)))
+      ).byteLength;
+      expect(bytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
+    }
+    // 묶음을 하나도 잃지 않습니다.
+    expect(withItems.flat().map(({ pullRequestNumber }) => pullRequestNumber))
+      .toEqual(units.map(({ pullRequestNumber }) => pullRequestNumber));
   });
 });
 

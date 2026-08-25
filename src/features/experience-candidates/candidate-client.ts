@@ -11,12 +11,12 @@ import type {
 import { validateExperienceCandidateOutput } from "./schema";
 import {
   selectWorkUnitsForStageA,
+  STAGE_A_MAX_SELECTION_BYTES,
   type ExcludedWorkUnit,
 } from "./work-unit-selection";
 import { groupCommitsIntoWorkUnits, type ExcludedCommit, type WorkUnit } from "./work-unit";
 import {
   allocateCommitQuota,
-  renderWorkUnitSummary,
   selectRepresentativeCommits,
   summarizeWorkUnit,
 } from "./work-unit-summary";
@@ -27,6 +27,8 @@ import {
   STAGE_A_CHUNK_MAX_BYTES,
   STAGE_A_CHUNK_MAX_REQUEST_BYTES,
   STAGE_A_CHUNK_MAX_UNITS,
+  buildStageAPayload,
+  renderStageAPrompt,
   resolveChunkQuota,
   type StageAUnitInput,
   STAGE_A_RESET_SAFETY_MS,
@@ -150,7 +152,33 @@ function isStageACandidate(value: unknown): value is StageACandidate {
  * `workUnits`는 선별에서 빠진 묶음까지 전부 담습니다. 후보를 커밋으로 펼칠 때 쓰는 값이라
  * 선별 결과와 무관하게 원본을 유지해야 합니다.
  */
-export function toStageAUnits(commits: readonly ReadonlyCommitDetail[]): {
+/**
+ * 기여 항목이 프롬프트에서 차지하는 바이트입니다.
+ *
+ * 선별 예산에서 이 몫을 미리 뺍니다. 빼지 않으면 선별이 요약만으로 상한을 꽉 채우고, 그 뒤에
+ * 기여 항목이 얹혀 라우트의 프롬프트 검증을 넘습니다. 실측에서 `demian` 요약 9,913바이트에
+ * 기여 항목 200자만 더해도 10,530바이트가 되어 상한 10,500을 넘고 422로 거부됐습니다.
+ *
+ * 청크를 더 나누는 방법도 되지만 그 편이 나쁩니다. 분당 토큰 한도 8,000은 청크를 나눠도
+ * 합계에 걸립니다. 묶음을 덜 보내고 한 번에 끝내는 쪽이 낫습니다. 빠진 묶음은
+ * `over_byte_budget` 사유로 화면에 표시되므로 조용히 사라지지 않습니다.
+ *
+ * `renderStageAPrompt`가 만드는 문자열에서 요약을 뺀 나머지를 그대로 잽니다. 문단 구분
+ * 두 글자와 `기여 항목:` 머리글이 여기 포함됩니다.
+ */
+function contributionItemPromptBytes(contributionItems: readonly string[]): number {
+  if (contributionItems.length === 0) return 0;
+  const withoutUnits = renderStageAPrompt(
+    buildStageAPayload({ units: [], contributionItems: [...contributionItems], candidateLimit: 1 })
+  );
+  // 요약이 없으면 문단 구분이 붙지 않으므로 두 글자를 더해 실제 프롬프트와 맞춥니다.
+  return new TextEncoder().encode(withoutUnits).byteLength + 2;
+}
+
+export function toStageAUnits(
+  commits: readonly ReadonlyCommitDetail[],
+  contributionItems: readonly string[] = []
+): {
   units: StageAUnitInput[];
   /** Stage B 근거를 펼칠 때 필요합니다. Stage A 요청에는 실리지 않습니다. */
   workUnits: readonly WorkUnit<ReadonlyCommitDetail>[];
@@ -161,7 +189,10 @@ export function toStageAUnits(commits: readonly ReadonlyCommitDetail[]): {
   thresholdScore: number;
 } {
   const { units, excludedCommits } = groupCommitsIntoWorkUnits(commits);
-  const selection = selectWorkUnitsForStageA(units);
+  const selection = selectWorkUnitsForStageA(
+    units,
+    STAGE_A_MAX_SELECTION_BYTES - contributionItemPromptBytes(contributionItems)
+  );
   return {
     units: selection.selected.map(({ unit }) => ({
       pullRequestNumber: unit.pullRequestNumber,
@@ -226,6 +257,12 @@ export function toStageARequest(
  *
  * 프롬프트 바이트와 요청 본문 바이트를 둘 다 봅니다. 서버가 두 값을 각각 검증하므로 어느 한쪽만
  * 보고 나누면 422가 납니다.
+ *
+ * 프롬프트 바이트는 서버와 같은 `renderStageAPrompt`로 잽니다. 예전에는 여기서 요약만 이어붙여
+ * 재고 기여 항목을 빼먹었습니다. 서버가 기여 항목까지 재도록 고쳐지자(Codex 리뷰 P2-1) 양쪽
+ * 계산이 어긋나 클라이언트가 통과할 수 없는 청크를 만들어 보냈습니다. 실측에서 `demian` 요약
+ * 9,913바이트에 기여 항목 200자를 더하면 10,530바이트로 상한 10,500을 넘어 모든 청크가 422로
+ * 거부됐습니다. 크기를 재는 곳이 둘로 갈리면 반드시 다시 어긋나므로 서버와 같은 함수를 씁니다.
  */
 export function splitUnitsIntoChunks(
   units: readonly StageAUnitInput[],
@@ -236,12 +273,28 @@ export function splitUnitsIntoChunks(
   for (const unit of units) {
     const current = result.at(-1);
     const proposed = current === undefined ? [unit] : [...current, unit];
+    const request = toStageARequest(proposed, contributionItems, 1);
     const promptBytes = encoder.encode(
-      proposed.map((item) => renderWorkUnitSummary(item.summary)).join("\n")
+      renderStageAPrompt(buildStageAPayload(request))
     ).length;
-    const requestBytes = encoder.encode(
-      JSON.stringify(toStageARequest(proposed, contributionItems, 1))
-    ).length;
+    const requestBytes = encoder.encode(JSON.stringify(request)).length;
+    // 묶음 하나가 혼자서도 상한을 넘는 경우입니다. `toStageAUnits`가 기여 항목 몫을 뺀 예산으로
+    // 선별하므로 정상 경로에서는 도달하지 않습니다. 남는 경로는 기여 항목이 예산을 거의 다
+    // 먹어치운 경우입니다.
+    //
+    // 조용히 청크에 담아 보내면 서버가 422로 거부하고, 조용히 버리면 사용자가 제외 사유를 알 수
+    // 없습니다. 그래서 여기서 실패시키되 `CandidateRequestError`로 던집니다. 평범한 `Error`로
+    // 던지면 `generateCandidates`가 재시도 지점을 남겨(`repository-analysis.ts`의
+    // `samePayloadAlwaysFails`가 `CandidateRequestError`만 봅니다) 같은 입력으로 반드시 같은
+    // 실패를 반복하는 재시도 버튼을 사용자에게 줍니다.
+    if (current === undefined && (promptBytes > STAGE_A_CHUNK_MAX_BYTES || requestBytes > STAGE_A_CHUNK_MAX_REQUEST_BYTES)) {
+      throw new CandidateRequestError(
+        "stage_a",
+        "invalid_request",
+        "기여 항목이 너무 길어 작업 묶음 하나도 Stage A 입력 상한에 들어가지 않습니다. 기여 항목을 줄여주세요.",
+        { retryable: false }
+      );
+    }
     if (
       current === undefined ||
       proposed.length > STAGE_A_CHUNK_MAX_UNITS ||
@@ -283,7 +336,10 @@ export async function fetchStageACandidatesFromApi(
   const candidates = [...(checkpoint?.candidates ?? [])];
   const unclassifiedShas = [...(checkpoint?.unclassifiedShas ?? [])];
   const unjudgedShas = [...(checkpoint?.unjudgedShas ?? [])];
-  const { units, workUnits, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(commits);
+  const { units, workUnits, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(
+    commits,
+    contributionItems
+  );
   const pending = units.filter(({ representativeSha }) => !processed.has(representativeSha));
   const chunks = splitUnitsIntoChunks(pending, contributionItems);
   // 쿼터를 여기서 한 번 정합니다. 청크마다 전역 상한을 보내던 이전 방식은 실효 상한을
