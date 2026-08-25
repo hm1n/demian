@@ -212,6 +212,24 @@ export async function startInterviewQuestionStream(
     signal?.removeEventListener("abort", forwardAbort);
   };
 
+  /**
+   * 이미 중단된 요청은 provider를 부르지 않고 끝냅니다.
+   *
+   * `addEventListener`는 이미 발생한 abort에 대해 불리지 않습니다. route가 본문을 읽고 프롬프트를
+   * 접는 동안 클라이언트가 끊으면 이 지점에서 이미 aborted이고, 리스너만 걸어 두면 받을 사람이 없는
+   * 응답을 위해 호출이 나갑니다. 무료 등급 일일 토큰 한도를 쓰는 구조에서 실제 비용입니다.
+   *
+   * 내부 `controller`로 옮기는 것만으로는 부족합니다. 중단 신호를 관측하지 않는 스트림은 그대로
+   * 조각을 내놓습니다. 호출 자체를 만들지 않아야 확실합니다.
+   */
+  if (signal?.aborted === true) {
+    cleanup();
+    throw mapInterviewLlmError(
+      signal.reason ?? new DOMException("aborted", "AbortError"),
+      "질문 생성"
+    );
+  }
+
   const prompt = buildInterviewQuestionPrompt(snapshot, variant);
   const iterator = generate(prompt, controller.signal)[Symbol.asyncIterator]();
 

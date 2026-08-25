@@ -86,6 +86,20 @@ describe("POST /api/interview/stream", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { kind: "unauthorized" } });
   });
 
+  it("세션 암호화 키가 없으면 500 server_error로 알린다", async () => {
+    // 쿠키가 없으면 `auth_revoked`이지만 쿠키가 있는데 서버 키가 없으면 `server_error`입니다. 두
+    // 경우 사용자가 할 수 있는 일이 다르므로 같은 401로 묶지 않습니다.
+    const authenticated = request({ snapshot });
+    delete process.env[GITHUB_SESSION_KEY_ENV];
+
+    const response = await handleInterviewQuestionStream(authenticated, {
+      generate: chunks("질문"),
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: { kind: "server_error" } });
+  });
+
   it("JSON이 아니면 400 invalid_json으로 거절한다", async () => {
     const response = await handleInterviewQuestionStream(request("{"), {
       generate: chunks("질문"),

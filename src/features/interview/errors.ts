@@ -23,7 +23,16 @@ export type InterviewStreamRequestErrorKind =
   | "unauthorized"
   | "invalid_json"
   | "invalid_request"
-  | "body_too_large";
+  | "body_too_large"
+  /**
+   * 서버 설정 때문에 요청을 처리하지 못한 경우입니다. `stage-a` route가 쓰는 값과 같습니다.
+   *
+   * 도달 경로가 있습니다. 세션 쿠키가 있는 요청에서 `GITHUB_SESSION_ENCRYPTION_KEY`가 없거나
+   * 32바이트가 아니면 `decryptGitHubToken`이 `auth_revoked`가 아니라 `server_error`를 그대로
+   * 올립니다. 이 값을 여기 두지 않으면 수신부가 아는 분류로 인식하지 못해 전송 실패로 떨어뜨리고,
+   * 서버 설정 문제에 "네트워크 상태를 확인해 주세요"라는 틀린 안내가 나갑니다.
+   */
+  | "server_error";
 
 /**
  * 생성은 성공으로 끝났는데 질문 본문이 한 조각도 없는 경우입니다.
@@ -60,6 +69,7 @@ const SERVER_ERROR_KINDS: Record<
   invalid_json: true,
   invalid_request: true,
   body_too_large: true,
+  server_error: true,
   generation_empty: true,
   json_parse: true,
   schema_validation: true,
@@ -109,6 +119,8 @@ const RETRY_CLEARS: Record<InterviewStreamErrorKind, boolean> = {
   invalid_json: false,
   invalid_request: false,
   body_too_large: false,
+  // 서버 설정 문제입니다. 사용자가 다시 눌러도 설정이 바뀌지 않습니다.
+  server_error: false,
   // 세션을 다시 만들어야 합니다. 같은 세션으로 다시 보내면 같은 결과입니다.
   unauthorized: false,
 };

@@ -109,6 +109,26 @@ describe("startInterviewQuestionStream", () => {
     ).rejects.toMatchObject({ kind: "llm_timeout" });
   });
 
+  it("이미 중단된 signal을 받으면 provider 호출을 시작하기 전에 끊는다", async () => {
+    // route가 본문을 읽고 프롬프트를 접는 동안 클라이언트가 끊으면 이 지점에서 signal이 이미
+    // aborted입니다. `addEventListener`는 이미 발생한 abort에 대해 불리지 않으므로, 상태를 먼저
+    // 보지 않으면 받을 사람이 없는 응답을 위해 provider 호출이 무료 등급 일일 토큰을 씁니다.
+    const controller = new AbortController();
+    controller.abort();
+    let called = false;
+    const generate: GenerateInterviewQuestion = () => {
+      called = true;
+      return (async function* () {
+        yield "호출되면 안 되는 조각";
+      })();
+    };
+
+    await expect(
+      startInterviewQuestionStream(snapshot, { generate, signal: controller.signal })
+    ).rejects.toMatchObject({ kind: "llm_timeout" });
+    expect(called).toBe(false);
+  });
+
   it("중단된 스트림이 조용히 끝나도 generation_empty로 뭉개지 않는다", async () => {
     // provider가 중단을 예외가 아니라 정상 종료로 알리는 경우입니다. 실측에서 `textStream`이 실제로
     // 이렇게 동작했습니다. 시간 초과가 "질문을 만들지 못했습니다"로 뭉개지면 안 됩니다.

@@ -31,23 +31,32 @@ const REQUEST_ERROR_GUIDANCE: Partial<Record<InterviewStreamRequestErrorKind, st
 };
 
 /**
- * 생성 쪽 실패의 안내입니다. 기다리면 풀리는 실패와 같은 근거로는 풀리지 않는 실패를 같은 문구로
- * 묶지 않습니다. 어느 쪽인지는 `clearsOnRetry`가 한 곳에서 정합니다.
+ * 생성 쪽 실패의 원인 문장입니다. 재시도가 무엇을 하는지는 `retryHint`가 붙입니다. 원인과 재시도
+ * 안내를 갈라 둔 이유는 재시도의 결과가 스트림의 재개 가능 여부에 따라 달라지기 때문입니다.
  */
-const GENERATION_ERROR_GUIDANCE: Partial<Record<InterviewStreamErrorKind, string>> = {
-  generation_empty:
-    "질문 내용이 한 조각도 오지 않았습니다. 아직 받은 내용은 없습니다. 다시 시도하면 같은 근거로 질문을 새로 만듭니다.",
-  llm_rate_limit:
-    "질문 생성 호출 한도에 걸렸습니다. 이미 받은 내용은 그대로 두었습니다. 잠시 뒤에 다시 시도해 주세요.",
-  llm_timeout: "질문 생성이 시간 안에 끝나지 않았습니다. 잠시 뒤에 다시 시도해 주세요.",
-  llm_network: "질문 생성 서비스에 연결하지 못했습니다. 잠시 뒤에 다시 시도해 주세요.",
-  llm_auth:
-    "질문 생성 서비스 인증에 실패했습니다. 서버 설정 문제이므로 다시 시도해도 같은 결과가 나옵니다.",
-  llm_configuration:
-    "질문 생성 서비스 설정에 문제가 있습니다. 다시 시도해도 같은 결과가 나옵니다.",
-  llm_request:
-    "질문 근거가 질문 생성 서비스가 받을 수 있는 크기를 넘었습니다. 다시 시도해도 같은 결과가 나옵니다.",
+const GENERATION_ERROR_CAUSE: Partial<Record<InterviewStreamErrorKind, string>> = {
+  llm_rate_limit: "질문 생성 호출 한도에 걸렸습니다.",
+  llm_timeout: "질문 생성이 시간 안에 끝나지 않았습니다.",
+  llm_network: "질문 생성 서비스에 연결하지 못했습니다.",
+  llm_auth: "질문 생성 서비스 인증에 실패했습니다. 서버 설정 문제입니다.",
+  llm_configuration: "질문 생성 서비스 설정에 문제가 있습니다.",
+  llm_request: "질문 근거가 질문 생성 서비스가 받을 수 있는 크기를 넘었습니다.",
+  server_error: "서버 설정에 문제가 있어 요청을 처리하지 못했습니다.",
 };
+
+/**
+ * 다시 시도가 무엇을 하는지 알립니다.
+ *
+ * 이어받을 수 없는 스트림에서는 다시 시도가 이어받는 것이 아니라 처음부터 새로 만드는 것이고, 이미
+ * 표시된 내용이 사라집니다. 그 경로에 "이미 받은 내용은 그대로 두었습니다"를 쓰면 안 됩니다.
+ * 사용자가 그 문구를 읽고 버튼을 누르면 읽던 질문이 사라집니다.
+ */
+function retryHint(kind: InterviewStreamErrorKind, resumable: boolean): string {
+  if (!clearsOnRetry(kind)) return "다시 시도해도 같은 결과가 나옵니다.";
+  return resumable
+    ? "이미 받은 내용은 그대로 두었습니다. 잠시 뒤에 다시 시도해 주세요."
+    : "잠시 뒤에 다시 시도해 주세요. 다시 시도하면 같은 근거로 질문을 처음부터 새로 만들고, 지금까지 받은 내용은 사라집니다.";
+}
 
 /**
  * 오류마다 사용자가 무엇을 할 수 있는지 달라지므로 안내를 따로 둡니다. `aria-label`로 버튼 이름만
@@ -65,13 +74,15 @@ function errorGuidance(kind: InterviewStreamErrorKind, resumable: boolean): stri
       ? "자동으로 두 번 다시 연결했지만 실패했습니다. 이미 받은 내용은 그대로 두었고, 다시 시도하면 받은 지점부터 이어받습니다."
       : "질문을 받는 도중 연결이 끊겼습니다. 이 스트림은 끊긴 지점부터 이어받을 수 없어, 다시 시도하면 같은 근거로 질문을 처음부터 새로 만듭니다. 지금까지 받은 내용은 사라집니다.";
   }
+  if (kind === "generation_empty") {
+    // 청크가 0개라 사라질 내용이 없습니다. 여기에 재시도 문구를 붙이면 잃을 내용이 있다고
+    // 오해하게 만듭니다.
+    return "질문 내용이 한 조각도 오지 않았습니다. 아직 받은 내용은 없습니다. 다시 시도하면 같은 근거로 질문을 새로 만듭니다.";
+  }
   const requestGuidance = REQUEST_ERROR_GUIDANCE[kind as InterviewStreamRequestErrorKind];
   if (requestGuidance) return requestGuidance;
-  const generationGuidance = GENERATION_ERROR_GUIDANCE[kind];
-  if (generationGuidance) return generationGuidance;
-  return clearsOnRetry(kind)
-    ? "질문을 만드는 중에 오류가 발생했습니다. 이미 받은 내용은 그대로 두었습니다. 다시 시도해 주세요."
-    : "질문을 만드는 중에 오류가 발생했습니다. 다시 시도해도 같은 결과가 나옵니다.";
+  const cause = GENERATION_ERROR_CAUSE[kind] ?? "질문을 만드는 중에 오류가 발생했습니다.";
+  return `${cause} ${retryHint(kind, resumable)}`;
 }
 
 export interface InterviewStreamViewProps extends Partial<UseInterviewStreamOptions> {

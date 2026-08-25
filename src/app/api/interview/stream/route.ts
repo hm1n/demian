@@ -130,7 +130,18 @@ export async function handleInterviewQuestionStream(
     if (error instanceof GitHubFetchError && error.kind === "auth_revoked") {
       return errorResponse("unauthorized", "GitHub 인증 세션이 필요합니다.", 401);
     }
-    return errorResponse("server_error", "질문 생성에 실패했습니다.", 500);
+    /**
+     * 두 갈래를 모두 남기는 이유는 아래 갈래도 도달하기 때문입니다.
+     *
+     * 쿠키가 없으면 `auth_revoked`입니다. 쿠키가 있는데 `GITHUB_SESSION_ENCRYPTION_KEY`가 없거나
+     * 32바이트가 아니면 `decryptGitHubToken`이 그 `server_error`를 그대로 올립니다. 두 경우는
+     * 사용자가 할 수 있는 일이 다릅니다. 앞은 다시 로그인이고 뒤는 사용자가 할 수 있는 일이
+     * 없습니다.
+     *
+     * `server_error`는 `interview/errors.ts`의 아는 분류에 등록해 두었습니다. 등록하지 않으면
+     * 수신부가 전송 실패로 떨어뜨려 서버 설정 문제에 네트워크 확인 안내가 나갑니다.
+     */
+    return errorResponse("server_error", "서버 설정 문제로 질문 생성을 시작하지 못했습니다.", 500);
   }
 
   /**

@@ -16,6 +16,8 @@
  *   --model=<id>           이 모델만 잽니다. 분당 토큰 한도 때문에 호출을 나눠 돌릴 때 씁니다.
  *   --variant=<merged|split>  이 프롬프트 변형만 잽니다.
  *   --max-input-tokens=<N> 근거 입력 상한을 바꿔 patch 몫이 질문 품질에 미치는 영향을 봅니다.
+ *   --reasoning-format=<parsed|raw|hidden>  Groq 추론 모델의 사고 과정 처리 방식입니다. 지정하지
+ *                          않으면 provider 기본값이고, 추론 모델은 사고 과정을 본문에 그대로 흘립니다.
  *   --first-chunk-timeout=<ms>  첫 청크 시한. 기본 20000
  *   --total-timeout=<ms>   생성 전체 시한. 기본 55000
  *   --check-errors         인증·모델 설정 실패의 오류 분류를 확인합니다. 정상 호출을 쓰지 않습니다.
@@ -77,6 +79,7 @@ const skipGroq = args.includes("--skip-groq");
 const maxInputTokens = Number(flag("max-input-tokens", "0")) || undefined;
 const variantFilter = flag("variant", "");
 const modelFilter = flag("model", "");
+const reasoningFormat = flag("reasoning-format", "");
 const firstChunkTimeoutMs = Number(flag("first-chunk-timeout", "20000"));
 const totalTimeoutMs = Number(flag("total-timeout", "55000"));
 const checkErrors = args.includes("--check-errors");
@@ -201,6 +204,10 @@ function createMeasuredGenerate(
       prompt: evidence,
       abortSignal,
       maxRetries: INTERVIEW_QUESTION_MAX_RETRIES,
+      // 추론 모델은 사고 과정을 본문에 그대로 흘립니다. Groq는 그 처리 방식을 요청 단위로 받습니다.
+      ...(provider === "groq" && reasoningFormat !== ""
+        ? { providerOptions: { groq: { reasoningFormat } } }
+        : {}),
     });
     return (async function* () {
       yield* toThrowingTextStream(result);
@@ -442,6 +449,15 @@ async function main(): Promise<void> {
       : [
           { provider: "groq" as const, model: "openai/gpt-oss-120b" },
           { provider: "groq" as const, model: "openai/gpt-oss-20b" },
+          // Stage A의 `openai/gpt-oss-120b`와 일일 토큰 한도를 공유하지 않는 후보입니다. Groq
+          // `/models` 응답(2026-08-25)에서 서빙 중인 범용 생성 모델 가운데 이 조건을 만족하는 것은
+          // 이 모델뿐입니다. `groq/compound` 계열은 내장 도구로 외부 정보를 끌어와 근거 밖 사실을
+          // 만들 통로가 생기므로 후보에서 뺐습니다. `openai/gpt-oss-safeguard-20b`는 분류 모델이고
+          // `allam-2-7b`는 컨텍스트가 4,096으로 이 프롬프트를 담지 못합니다.
+          { provider: "groq" as const, model: "qwen/qwen3.6-27b" },
+          // 내장 도구로 저장소 밖 정보를 끌어올 수 있어 근거 밖 사실이 들어올 통로가 있습니다.
+          // 그래도 후보에서 말로만 빼지 않고 한 번 재봅니다.
+          { provider: "groq" as const, model: "groq/compound-mini" },
         ]),
     ...(skipGemini ? [] : [{ provider: "google" as const, model: "gemini-3.6-flash" }]),
   ];

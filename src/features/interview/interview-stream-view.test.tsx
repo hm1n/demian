@@ -267,6 +267,50 @@ describe("InterviewStreamView 실제 생성 경로", () => {
     expect(screen.queryByText("질문이 모두 도착했습니다.")).not.toBeInTheDocument();
   });
 
+  it("청크를 받은 뒤 생성 오류가 나면 다시 시도가 내용을 지운다고 알린다", async () => {
+    // 이어받을 수 없는 경로에서 "이미 받은 내용은 그대로 두었습니다"를 읽고 다시 시도를 누르면
+    // 읽던 질문이 사라집니다. 안내와 실제 동작이 어긋납니다.
+    const source = controllableResponse();
+    const fetchImpl = vi.fn().mockResolvedValue(source.response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} snapshot={snapshot} {...renderOptions} />);
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    source.push(encodeSseEvent({ type: "chunk", seq: 1, text: "앞부분" }));
+    await screen.findByText("앞부분");
+    source.push(
+      encodeSseEvent({
+        type: "error",
+        kind: "llm_rate_limit",
+        message: "질문 생성 호출 한도에 걸렸습니다.",
+      })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("지금까지 받은 내용은 사라집니다");
+    expect(alert).not.toHaveTextContent("이미 받은 내용은 그대로 두었습니다");
+  });
+
+  it("서버 설정 실패를 전송 실패로 뭉개지 않는다", async () => {
+    // `server_error`가 아는 분류에 없으면 수신부가 전송 실패로 떨어뜨려 서버 설정 문제에
+    // 네트워크 확인 안내가 나갑니다.
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      body: null,
+      json: () =>
+        Promise.resolve({
+          error: { kind: "server_error", message: "서버 설정 문제로 질문 생성을 시작하지 못했습니다." },
+        }),
+    } as unknown as Response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} snapshot={snapshot} {...renderOptions} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("서버 설정에 문제가 있어 요청을 처리하지 못했습니다.");
+    expect(alert).toHaveTextContent("다시 시도해도 같은 결과가 나옵니다.");
+    expect(alert).not.toHaveTextContent("네트워크 상태를 확인");
+  });
+
   it("같은 근거로는 풀리지 않는 실패에는 재시도를 권하지 않는다", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,
