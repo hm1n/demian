@@ -1,4 +1,4 @@
-import { InterviewStreamError, transportError } from "./errors";
+import { InterviewStreamError, isServerErrorKind, transportError } from "./errors";
 import { createSseEventParser } from "./sse";
 
 export type InterviewStreamStatus =
@@ -45,6 +45,35 @@ function isAbort(error: unknown, signal?: AbortSignal): boolean {
 }
 
 /**
+ * 스트림이 시작되기 전에 실패한 응답을 오류로 바꿉니다.
+ *
+ * 본문의 `error.kind`를 읽는 이유는 이 시점의 실패가 전송 문제만이 아니기 때문입니다. 질문 생성
+ * route는 첫 토큰 전에 나는 실패를 `stage-a`·`stage-b`와 같은 방식으로 HTTP 상태와 JSON 본문에
+ * 실어 보냅니다(`llm_rate_limit` 503 등). 본문을 버리고 전송 실패로 뭉개면 한도 초과에
+ * "네트워크 상태를 확인해 주세요"라는 틀린 안내가 나가고, 기다리면 풀리는 오류가 재시도 없이
+ * 끝납니다.
+ *
+ * 본문이 없거나 아는 분류가 아니면 지금까지처럼 전송 실패로 둡니다.
+ */
+async function readResponseError(
+  response: Response,
+  lastSeq: number
+): Promise<InterviewStreamError> {
+  const fallback = () =>
+    transportError(lastSeq === 0 ? "stream_connect_failed" : "stream_interrupted");
+  if (typeof response.json !== "function") return fallback();
+  try {
+    const body: unknown = await response.json();
+    const error = (body as { error?: { kind?: unknown; message?: unknown } } | null)?.error;
+    if (!isServerErrorKind(error?.kind)) return fallback();
+    const message = typeof error?.message === "string" ? error.message : undefined;
+    return new InterviewStreamError(error.kind, message ?? fallback().message);
+  } catch {
+    return fallback();
+  }
+}
+
+/**
  * SSE 스트림을 읽고 도착 순서대로 handler에 넘깁니다.
  *
  * `EventSource`를 쓰지 않는 이유는 세 가지입니다. 요청 헤더를 붙일 수 없고, POST를 보낼 수 없고,
@@ -83,8 +112,11 @@ export async function runInterviewStream(
           ...(lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
         },
       });
-      if (!response.ok || !response.body) {
-        // 응답 본문이 시작되기 전의 실패입니다. 이미 받은 내용이 있으면 전송 중 단절로 봅니다.
+      if (!response.ok) {
+        throw await readResponseError(response, lastSeq);
+      }
+      if (!response.body) {
+        // 2xx인데 본문이 없습니다. 서버가 분류를 실어 보낼 자리가 없으므로 전송 실패로 둡니다.
         throw transportError(lastSeq === 0 ? "stream_connect_failed" : "stream_interrupted");
       }
 

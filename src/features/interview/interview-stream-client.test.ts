@@ -17,6 +17,16 @@ function sseResponse(body: string, init: { ok?: boolean; status?: number } = {})
   } as unknown as Response;
 }
 
+/** route handler가 스트림을 시작하기 전에 거절할 때의 응답입니다. stage-a route와 같은 모양입니다. */
+function errorResponse(status: number, error: { kind: string; message: string }): Response {
+  return {
+    ok: false,
+    status,
+    body: null,
+    json: () => Promise.resolve({ error }),
+  } as unknown as Response;
+}
+
 function collect() {
   const chunks: { seq: number; text: string }[] = [];
   const statuses: InterviewStreamStatus[] = [];
@@ -73,6 +83,74 @@ describe("runInterviewStream", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(sink.errors.map((error) => error.kind)).toEqual(["stream_connect_failed"]);
     expect(sink.statuses.at(-1)).toBe("error");
+  });
+
+  it("스트림 시작 전 오류는 서버가 보낸 분류와 문구를 그대로 전달한다", async () => {
+    // 질문 생성 route는 첫 토큰 전에 나는 실패를 stage-a·stage-b와 같이 HTTP 상태와 JSON 본문에
+    // 실어 보냅니다. 본문을 버리면 한도 초과에 네트워크 확인 안내가 나갑니다.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      errorResponse(503, { kind: "llm_rate_limit", message: "질문 생성 호출 한도에 걸렸습니다." })
+    );
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl }, sink.handlers);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sink.errors.map((error) => error.kind)).toEqual(["llm_rate_limit"]);
+    expect(sink.errors[0].message).toBe("질문 생성 호출 한도에 걸렸습니다.");
+  });
+
+  it("route가 요청을 거절하면 그 분류를 전송 실패로 뭉개지 않는다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      errorResponse(422, { kind: "invalid_request", message: "Last-Event-ID 값이 올바르지 않습니다." })
+    );
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl }, sink.handlers);
+
+    expect(sink.errors.map((error) => error.kind)).toEqual(["invalid_request"]);
+  });
+
+  it("모르는 분류이거나 본문을 읽지 못하면 전송 실패로 둔다", async () => {
+    const unknownKind = errorResponse(500, { kind: "made_up_kind", message: "…" });
+    const brokenBody = {
+      ok: false,
+      status: 500,
+      body: null,
+      json: () => Promise.reject(new Error("본문 없음")),
+    } as unknown as Response;
+    const sink = collect();
+
+    await runInterviewStream(
+      { ...options, fetchImpl: vi.fn().mockResolvedValue(unknownKind) },
+      sink.handlers
+    );
+    await runInterviewStream(
+      { ...options, fetchImpl: vi.fn().mockResolvedValue(brokenBody) },
+      sink.handlers
+    );
+
+    expect(sink.errors.map((error) => error.kind)).toEqual([
+      "stream_connect_failed",
+      "stream_connect_failed",
+    ]);
+  });
+
+  it("이미 받은 뒤 재연결에서 생성 오류가 오면 재시도하지 않고 그 분류를 알린다", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(sseResponse(encodeSseEvent({ type: "chunk", seq: 1, text: "질" })))
+      .mockResolvedValue(
+        errorResponse(503, { kind: "llm_rate_limit", message: "질문 생성 호출 한도에 걸렸습니다." })
+      );
+    const sink = collect();
+
+    await runInterviewStream({ ...options, fetchImpl }, sink.handlers);
+
+    // 첫 연결 + 재연결 한 번까지만 부릅니다. 기다려도 풀리지 않는 분류라 남은 재시도를 쓰지 않습니다.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sink.text).toBe("질");
+    expect(sink.errors.map((error) => error.kind)).toEqual(["llm_rate_limit"]);
   });
 
   it("전송 도중 끊기면 Last-Event-ID로 이어받아 재연결한다", async () => {

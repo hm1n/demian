@@ -10,10 +10,12 @@
 .codeBlock pre, .plainCode { overflow-x: auto; border-radius: 10px; background: #f7f7fb; font-size: 13px; line-height: 1.6; padding: 12px 14px; }
 .codeBlock code, .plainCode code { background: none; font-size: 13px; padding: 0; }
 .status { color: #777580; font-size: 13px; }
-.unread { display: grid; gap: 4px; }
 .unreadButton { width: fit-content; min-height: 44px; border: 0; border-radius: 999px; background: #5b52d6; color: #fff; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
 .unreadButton:focus-visible { outline: 3px solid rgba(109, 99, 232, .35); outline-offset: 2px; }
 .unreadNotice { color: #777580; font-size: 12px; line-height: 1.5; }
+/* 내용이 없을 때도 노드는 남겨 둡니다. live region은 붙어 있는 동안의 변경만 알립니다. 절대 위치로
+   빼서 grid 항목에서 제외해야 빈 상태에서 gap이 생기지 않습니다. */
+.unreadNotice:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .error { display: grid; gap: 6px; border-radius: 10px; background: #fdecec; padding: 12px 14px; }
 .errorMessage { color: #8c2f2f; font-size: 14px; font-weight: 700; }
 .errorGuidance { color: #8c4a4a; font-size: 13px; line-height: 1.6; }

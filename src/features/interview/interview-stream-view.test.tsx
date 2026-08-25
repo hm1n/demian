@@ -161,4 +161,44 @@ describe("InterviewStreamView", () => {
     expect(alert).toHaveTextContent("질문 스트리밍 연결을 시작하지 못했습니다.");
     expect(alert).toHaveTextContent("아직 받은 내용은 없습니다.");
   });
+
+  it("서버가 보낸 분류에 맞는 안내를 보여 준다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      body: null,
+      json: () =>
+        Promise.resolve({
+          error: { kind: "llm_rate_limit", message: "질문 생성 호출 한도에 걸렸습니다." },
+        }),
+    } as unknown as Response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} {...renderOptions} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("질문 생성 호출 한도에 걸렸습니다.");
+    expect(alert).toHaveTextContent("잠시 뒤에 다시 시도해 주세요.");
+    // 한도 초과에 네트워크 확인 안내가 나가면 안 됩니다.
+    expect(alert).not.toHaveTextContent("네트워크 상태를 확인");
+  });
+
+  it("자라나는 메시지가 아니라 상태와 새 메시지 안내를 낭독 대상으로 둔다", async () => {
+    const { push, response } = controllableResponse();
+    const fetchImpl = vi.fn().mockResolvedValue(response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} {...renderOptions} />);
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    push(encodeSseEvent({ type: "chunk", seq: 1, text: "질문" }));
+    await screen.findByText("질문");
+
+    // 스트리밍 중에는 메시지 하나의 텍스트가 계속 자랍니다. 이 자리가 live region이면 스크린리더가
+    // 커지는 질문 전체를 프레임마다 다시 읽습니다.
+    expect(screen.getByRole("log")).toHaveAttribute("aria-live", "off");
+
+    const liveRegions = document.querySelectorAll('[aria-live="polite"]');
+    expect(liveRegions.length).toBe(2);
+    // 안내 문단은 내용이 비어 있어도 남아 있어야 합니다. live region은 붙어 있는 동안의 변경만
+    // 알리므로, 내용을 담은 채 새로 나타나면 낭독되지 않는 스크린리더가 있습니다.
+    expect(screen.queryByRole("button", { name: "새 메시지 보기" })).not.toBeInTheDocument();
+  });
 });
