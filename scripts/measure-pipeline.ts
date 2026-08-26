@@ -36,7 +36,6 @@ import {
   buildStageAPayload,
   createStageAGenerate,
   selectStageACandidates,
-  STAGE_A_MODEL,
   resolveChunkQuota,
   STAGE_A_TIMEOUT_MS,
   STAGE_A_RESET_SAFETY_MS,
@@ -55,15 +54,9 @@ import {
   createStageBGenerate,
   selectStageBCandidates,
   STAGE_B_MAX_INPUT_COMMITS,
-  STAGE_B_MODEL,
   STAGE_B_MAX_PATCH_CHARS,
-  STAGE_B_MAX_TOTAL_PATCH_CHARS,
 } from "../src/features/experience-candidates/stage-b";
-import {
-  resolveLocalLlm,
-  resolveStageBMaxInputCommits,
-  resolveStageBMaxTotalPatchChars,
-} from "../src/features/experience-candidates/llm-provider";
+import { resolveEffectiveSettings } from "./effective-settings";
 import type { CommitDetail, CommitSummary, GitHubAuth } from "../src/lib/github/types";
 import type { GenerateStageA } from "../src/features/experience-candidates/stage-a";
 import type { StageACandidate } from "../src/features/experience-candidates/types";
@@ -84,24 +77,20 @@ const numericOption = (name: string, fallback: number) => {
 };
 
 /**
- * 유효 설정을 여기서 한 번만 계산합니다.
- *
- * 이전에는 phase마다 모델과 상한을 손으로 다시 계산했고, 로컬 전환에서 그 계산이 실제 호출과
- * 어긋났습니다. `stage-a-chunks`는 `--model`을 로그에 찍으면서 환경변수 모델을 호출했고
- * (Codex 리뷰 P2), payload 보고는 프로덕션 상한 30과 60,000자로 크기와 상한 도달을 판정해
- * 실제로 보낸 커밋 4개·12,000자와 다른 수치를 남겼습니다. 측정 기록이 실제와 다르면 그 기록을
- * 근거로 쓴 결정이 전부 흔들립니다.
+ * 유효 설정을 여기서 한 번만 계산합니다. 규칙과 그 근거는 `effective-settings.ts`에 있고 그
+ * 파일에 테스트가 붙어 있습니다. phase가 모델이나 상한을 손으로 다시 계산하면 실행은 정상인데
+ * 기록이 실제와 달라집니다.
  */
-const localLlm = resolveLocalLlm();
 const modelOption = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
 const stageBModelOption = rest
   .find((option) => option.startsWith("--stage-b-model="))
   ?.slice("--stage-b-model=".length);
-/** 로컬 전환에서는 환경변수가 모델을 결정하므로 플래그가 무시됩니다. 로그도 같은 값을 봐야 합니다. */
-const effectiveStageAModel = localLlm?.stageAModel ?? modelOption ?? STAGE_A_MODEL;
-const effectiveStageBModel = localLlm?.stageBModel ?? stageBModelOption ?? STAGE_B_MODEL;
-const effectiveMaxInputCommits = resolveStageBMaxInputCommits(STAGE_B_MAX_INPUT_COMMITS);
-const effectiveMaxTotalPatchChars = resolveStageBMaxTotalPatchChars(STAGE_B_MAX_TOTAL_PATCH_CHARS);
+const {
+  stageAModel: effectiveStageAModel,
+  stageBModel: effectiveStageBModel,
+  maxInputCommits: effectiveMaxInputCommits,
+  maxTotalPatchChars: effectiveMaxTotalPatchChars,
+} = resolveEffectiveSettings({ stageAModel: modelOption, stageBModel: stageBModelOption });
 
 const ms = () => performance.now();
 const round = (value: number) => Math.round(value);
