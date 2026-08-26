@@ -16,7 +16,8 @@
  * 옵션:
  *   --limit=N              입력 커밋 수
  *   --cache=<경로>          상세 조회 결과를 저장소 밖 임시 경로에 캐시해 반복 측정에서 재사용
- *   --model=<id>           Stage A 모델 오버라이드
+ *   --model=<id>           Stage A 모델 오버라이드. LLM_BASE_URL을 설정한 로컬 실행에서는
+ *                          STAGE_A_MODEL 환경변수가 모델을 결정하므로 이 플래그는 무시됩니다
  *   --stage-b-model=<id>   Stage B 모델 오버라이드
  *   --concurrency=1,2,4    parallel 단계의 병렬도 목록
  *   --skip-stage-a         Stage A를 건너뛰고 Stage B만 측정
@@ -57,6 +58,7 @@ import {
   STAGE_B_MAX_PATCH_CHARS,
   STAGE_B_MAX_TOTAL_PATCH_CHARS,
 } from "../src/features/experience-candidates/stage-b";
+import { resolveLocalLlm, resolveStageBMaxInputCommits } from "../src/features/experience-candidates/llm-provider";
 import type { CommitDetail, CommitSummary, GitHubAuth } from "../src/lib/github/types";
 import type { GenerateStageA } from "../src/features/experience-candidates/stage-a";
 import type { StageACandidate } from "../src/features/experience-candidates/types";
@@ -388,7 +390,9 @@ async function runStageA() {
     .map((option) => option.slice("--item=".length));
   const model = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
 
-  console.log(`[stage-a] 입력 커밋=${details.length} 기여 항목=${contributionItems.length} 모델=${model ?? STAGE_A_MODEL}`);
+  console.log(
+    `[stage-a] 입력 커밋=${details.length} 기여 항목=${contributionItems.length} 모델=${resolveLocalLlm()?.stageAModel ?? model ?? STAGE_A_MODEL}`
+  );
   reportPayloadSizes(details);
 
   const startedAt = ms();
@@ -667,7 +671,11 @@ async function runStageB() {
   // 프로덕션은 후보 묶음을 대표 커밋 여럿으로 펼쳐서 Stage B에 넣는다(`candidate-client.ts`의
   // `fetchStageBCandidatesFromApi`). 예전에는 여기서 묶음당 SHA 하나를 그대로 잘라 써서 조회
   // 시간과 patch 몫을 운영 입력이 아닌 것에서 재고 있었다(Codex 리뷰 P2-3).
-  const expanded = expandCandidatesToCommits(candidates, workUnits, STAGE_B_MAX_INPUT_COMMITS);
+  // 로컬 제공자로 측정할 때는 축소된 상한을 그대로 따라야 합니다. 상수를 직접 넘기면 컨텍스트를
+  // 넘는 입력을 보내고, Ollama가 프롬프트를 조용히 자른 뒤 모델이 보지 못한 파일을 인용해
+  // `unknown_file_path`로 끝납니다(2026-08-25 실측).
+  const maxInputCommits = resolveStageBMaxInputCommits(STAGE_B_MAX_INPUT_COMMITS);
+  const expanded = expandCandidatesToCommits(candidates, workUnits, maxInputCommits);
   const commits = details.filter((detail) => expanded.some(({ sha }) => sha === detail.sha));
 
   // 같은 PR에서 커밋 여러 개가 실제로 펼쳐졌는지 확인한다. 하나도 없으면 이 측정은 커밋 단위
@@ -684,7 +692,7 @@ async function runStageB() {
   const uniqueShas = new Set(expanded.map(({ sha }) => sha)).size;
 
   console.log(
-    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${STAGE_B_MAX_INPUT_COMMITS} ` +
+    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${maxInputCommits} ` +
       `SHA 중복=${expanded.length - uniqueShas} 상세=${commits.length}건`
   );
   console.log(
@@ -698,7 +706,7 @@ async function runStageB() {
   const startedAt = ms();
   try {
     const stageBModel = rest.find((option) => option.startsWith("--stage-b-model="))?.slice("--stage-b-model=".length);
-    console.log(`[stage-b] 모델=${stageBModel ?? STAGE_B_MODEL}`);
+    console.log(`[stage-b] 모델=${resolveLocalLlm()?.stageBModel ?? stageBModel ?? STAGE_B_MODEL}`);
     const output = await selectStageBCandidates(commits, expanded, createStageBGenerate(stageBModel));
     const elapsed = ms() - startedAt;
     console.log(`[stage-b] 성공 소요=${round(elapsed)}ms 최종 후보=${output.candidates.length}`);
