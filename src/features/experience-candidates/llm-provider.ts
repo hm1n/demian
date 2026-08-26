@@ -21,6 +21,11 @@ import { ExperienceCandidateOutputError } from "./errors";
  * 환경변수를 읽는 시점을 함수 호출 시점으로 미룹니다. `candidate-client.ts`가 `stage-b.ts`를
  * import하므로 이 모듈은 클라이언트 번들에도 실립니다. 모듈 최상단에서 읽으면 서버 전용 값을
  * 번들 시점에 고정하게 됩니다.
+ *
+ * 스위치가 `NEXT_PUBLIC_` 접두사를 쓰는 이유입니다. 로컬 전환 여부를 브라우저도 알아야 합니다.
+ * Stage B 입력 커밋 수 상한을 `candidate-client.ts`가 브라우저에서 적용하므로, 스위치가 서버
+ * 전용이면 그 상한을 로컬 여부로 가를 수 없습니다. 접속 주소는 비밀이 아니라 클라이언트 번들에
+ * 실려도 무해합니다. 인증 키는 서버 전용으로 남깁니다.
  */
 export interface LocalLlmConfig {
   readonly baseURL: string;
@@ -30,11 +35,11 @@ export interface LocalLlmConfig {
 }
 
 /**
- * `LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A Groq, Stage B Google)가 그대로
+ * `NEXT_PUBLIC_LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A Groq, Stage B Google)가 그대로
  * 동작합니다. 이 함수 하나가 로컬 전환의 유일한 스위치입니다.
  */
 export function resolveLocalLlm(): LocalLlmConfig | null {
-  const baseURL = process.env.LLM_BASE_URL?.trim();
+  const baseURL = process.env.NEXT_PUBLIC_LLM_BASE_URL?.trim();
   if (!baseURL) return null;
   return {
     baseURL,
@@ -56,14 +61,14 @@ function requireLocalModel(config: LocalLlmConfig, model: string | null, envName
     // 모델 설정 오류로 뭉개져 원인이 환경변수 누락이라는 사실이 드러나지 않습니다.
     throw new ExperienceCandidateOutputError(
       "llm_configuration",
-      `LLM_BASE_URL을 설정했으면 ${envName}도 설정해야 합니다.`
+      `NEXT_PUBLIC_LLM_BASE_URL을 설정했으면 ${envName}도 설정해야 합니다.`
     );
   }
   return createGroq({ baseURL: config.baseURL, apiKey: config.apiKey })(model);
 }
 
 /**
- * 모델 ID 환경변수는 `LLM_BASE_URL`이 설정된 경우에만 적용합니다. 프로덕션 기본 동작을 바꾸지
+ * 모델 ID 환경변수는 `NEXT_PUBLIC_LLM_BASE_URL`이 설정된 경우에만 적용합니다. 프로덕션 기본 동작을 바꾸지
  * 않아야 하므로 로컬 전환 없이 모델만 갈아타는 경로는 열지 않습니다.
  */
 export function createStageAModel(model: string) {
@@ -89,11 +94,17 @@ export function createStageBModel(model: string) {
  * 두 값 모두 `NEXT_PUBLIC_` 접두사를 씁니다. 입력 커밋 수 상한은 `candidate-client.ts`가
  * 브라우저에서 적용하므로 서버 전용 환경변수로는 읽을 수 없습니다.
  *
+ * 로컬 전환이 아니면 두 값을 무시합니다. 이 게이트가 없으면 축소값을 남겨 둔 채 스위치만 끈
+ * 상태에서 프로덕션 Stage B가 시연용 축소 입력을 그대로 받습니다. 커밋 30개가 4개로 줄어
+ * 근거의 대부분이 사라지는데 화면에는 정상으로 보입니다(Codex 리뷰 P2). 이슈 #66의 제약이
+ * "환경변수 미설정 시 기존 Groq·Gemini 동작이 바뀌지 않아야 합니다"이므로 제약 위반입니다.
+ *
  * 프로덕션 상수보다 크게는 만들지 못합니다. 이 값은 로컬 사정으로 입력을 줄이는 용도이고,
  * 프로덕션 예산은 이슈 #19 실측(상세 조회 커밋당 868밀리초, 파일별 patch 중앙 1,257자)에
  * 묶여 있습니다. 잘못 설정한 환경변수가 프로덕션 예산을 늘리는 경로를 열지 않습니다.
  */
 function resolveShrunkLimit(raw: string | undefined, fallback: number): number {
+  if (!isLocalLlm()) return fallback;
   const value = Number(raw?.trim());
   if (!Number.isInteger(value) || value < 1) return fallback;
   return Math.min(value, fallback);
@@ -108,7 +119,7 @@ export function resolveStageBMaxTotalPatchChars(fallback: number): number {
 }
 
 /**
- * 로컬 실행에서만 쓰는 시한입니다. `LLM_BASE_URL`이 없으면 프로덕션 시한을 그대로 돌려줍니다.
+ * 로컬 실행에서만 쓰는 시한입니다. 로컬 전환이 아니면 프로덕션 시한을 그대로 돌려줍니다.
  *
  * 프로덕션 시한은 이슈 #19 실측에 묶여 있습니다. Stage A 55초는 route maxDuration 60초보다 먼저
  * JSON 오류를 반환하기 위한 값이고, Stage B 55초도 같은 근거입니다. 로컬 모델이 느린 사정으로

@@ -324,7 +324,7 @@ describe("한도 메타데이터", () => {
   }
 
   it("헤더가 없으면 프로덕션 경로는 null을 돌려준다", async () => {
-    vi.stubEnv("LLM_BASE_URL", undefined);
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
     const payload = mockGenerateObject({});
 
     const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
@@ -337,7 +337,7 @@ describe("한도 메타데이터", () => {
    * `candidate-client.ts`가 `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
    */
   it("로컬 제공자는 헤더가 없어도 메타데이터를 합성한다", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
     vi.stubEnv("STAGE_A_MODEL", "qwen2.5:7b");
     const payload = mockGenerateObject({});
 
@@ -373,7 +373,7 @@ describe("로컬 전용 입력 범위 안내", () => {
   }
 
   it("프로덕션 경로에서는 프롬프트와 샘플링을 건드리지 않는다", async () => {
-    vi.stubEnv("LLM_BASE_URL", undefined);
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
 
     const call = await capturedCall();
 
@@ -386,7 +386,7 @@ describe("로컬 전용 입력 범위 안내", () => {
    * 실측에서 `qwen2.5:7b`가 그 번호들을 판단 대상으로 끌어와 입력 11묶음에 46개 판정을 냈습니다.
    */
   it("로컬 경로에서는 판단 대상 범위를 프롬프트로 못박는다", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
     vi.stubEnv("STAGE_A_MODEL", "qwen2.5:7b");
     vi.stubEnv("LLM_TEMPERATURE", "0");
 

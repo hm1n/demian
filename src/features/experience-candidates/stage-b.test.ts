@@ -349,7 +349,7 @@ describe("로컬 전용 출력 계약 안내", () => {
   }
 
   it("프로덕션 경로에서는 프롬프트를 늘리지 않는다", async () => {
-    vi.stubEnv("LLM_BASE_URL", undefined);
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
 
     expect(await capturedSystemPrompt()).not.toContain("insufficientCandidatesReason");
   });
@@ -360,7 +360,7 @@ describe("로컬 전용 출력 계약 안내", () => {
    * 모두 이 규칙을 어겼습니다.
    */
   it("로컬 경로에서는 출력 계약을 프롬프트로 알려준다", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
     vi.stubEnv("STAGE_B_MODEL", "qwen2.5:7b");
 
     const system = await capturedSystemPrompt();
