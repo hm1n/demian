@@ -89,4 +89,12 @@ describe("createTestStream", () => {
     expect(error).toMatchObject({ kind: "llm_rate_limit" });
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
+
+  it("empty는 청크 없이 done만 보낸다", async () => {
+    // 실제 생성 경로가 본문 없이 스트림을 끝내는 경우와 같은 모양입니다. 수신부가 이를 정상 완료가
+    // 아니라 Error로 다루는지 검증하는 데 씁니다. 실제 생성은 비결정적이라 기준이 될 수 없습니다.
+    const events = await readEvents({ scenario: "empty" });
+
+    expect(events).toEqual([{ type: "done", seq: 0 }]);
+  });
 });

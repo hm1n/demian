@@ -4,14 +4,14 @@ import type { InterviewStreamEvent } from "./sse";
 /**
  * 표시 기반을 검증하기 위한 테스트용 스트림입니다. **질문 생성 경로가 아닙니다.**
  *
- * 이슈 #60의 범위는 질문 텍스트를 전달하고 표시하는 기반까지이고 질문을 만드는 일은 이슈 #59가
- * 담당합니다. 실제 생성 경로가 붙을 때 이 모듈이 그 자리에 대체됩니다. 여기에 프롬프트나 모델
- * 선택을 덧붙이지 말아 주세요.
+ * 실제 생성 경로는 같은 route의 `POST`이고 `question-generation.ts`에 있습니다. 이 모듈은 대체되지
+ * 않고 남습니다. 실제 생성은 비결정적이라 전송 계약 회귀 테스트의 기준으로 쓸 수 없고, 화면 개발도
+ * 이 경로를 씁니다. 여기에 프롬프트나 모델 선택을 덧붙이지 말아 주세요.
  *
  * 내용은 결정적입니다. 같은 `seq`는 언제 요청해도 같은 텍스트를 돌려주므로 재연결 시 이어붙이기를
  * 검증할 수 있습니다.
  */
-export const TEST_STREAM_SCENARIOS = ["normal", "slow", "interrupt", "error"] as const;
+export const TEST_STREAM_SCENARIOS = ["normal", "slow", "interrupt", "error", "empty"] as const;
 
 export type TestStreamScenario = (typeof TEST_STREAM_SCENARIOS)[number];
 
@@ -85,6 +85,15 @@ export function createTestStream({
       try {
         // 첫 바이트를 바로 보내 프록시가 응답 헤더를 붙들고 있지 않도록 합니다.
         controller.enqueue(encoder.encode(SSE_KEEP_ALIVE));
+
+        // 청크 없이 `done`으로 끝나는 스트림입니다. 실제 생성 경로에서 provider가 본문 없이
+        // 스트림을 끝내는 경우와 같은 모양이고, 수신부가 이를 정상 완료가 아니라 Error로 다루는지
+        // 검증하는 데 씁니다. 실제 생성은 비결정적이라 이 경로의 회귀 테스트 기준이 될 수 없습니다.
+        if (scenario === "empty") {
+          send({ type: "done", seq: 0 });
+          controller.close();
+          return;
+        }
 
         for (let index = startSeq; index < TEST_STREAM_CHUNKS.length; index += 1) {
           if (signal?.aborted) return;
