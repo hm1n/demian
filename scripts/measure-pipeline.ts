@@ -16,7 +16,9 @@
  * 옵션:
  *   --limit=N              입력 커밋 수
  *   --cache=<경로>          상세 조회 결과를 저장소 밖 임시 경로에 캐시해 반복 측정에서 재사용
- *   --model=<id>           Stage A 모델 오버라이드
+ *   --model=<id>           Stage A 모델 오버라이드. NEXT_PUBLIC_LLM_BASE_URL을 설정한 로컬
+ *                          실행에서는 STAGE_A_MODEL 환경변수가 모델을 결정하므로 무시됩니다.
+ *                          --stage-b-model도 같습니다
  *   --stage-b-model=<id>   Stage B 모델 오버라이드
  *   --concurrency=1,2,4    parallel 단계의 병렬도 목록
  *   --skip-stage-a         Stage A를 건너뛰고 Stage B만 측정
@@ -34,7 +36,6 @@ import {
   buildStageAPayload,
   createStageAGenerate,
   selectStageACandidates,
-  STAGE_A_MODEL,
   resolveChunkQuota,
   STAGE_A_TIMEOUT_MS,
   STAGE_A_RESET_SAFETY_MS,
@@ -53,10 +54,9 @@ import {
   createStageBGenerate,
   selectStageBCandidates,
   STAGE_B_MAX_INPUT_COMMITS,
-  STAGE_B_MODEL,
   STAGE_B_MAX_PATCH_CHARS,
-  STAGE_B_MAX_TOTAL_PATCH_CHARS,
 } from "../src/features/experience-candidates/stage-b";
+import { resolveEffectiveSettings } from "./effective-settings";
 import type { CommitDetail, CommitSummary, GitHubAuth } from "../src/lib/github/types";
 import type { GenerateStageA } from "../src/features/experience-candidates/stage-a";
 import type { StageACandidate } from "../src/features/experience-candidates/types";
@@ -75,6 +75,22 @@ const numericOption = (name: string, fallback: number) => {
   const hit = rest.find((option) => option.startsWith(`--${name}=`));
   return hit === undefined ? fallback : Number(hit.slice(name.length + 3));
 };
+
+/**
+ * 유효 설정을 여기서 한 번만 계산합니다. 규칙과 그 근거는 `effective-settings.ts`에 있고 그
+ * 파일에 테스트가 붙어 있습니다. phase가 모델이나 상한을 손으로 다시 계산하면 실행은 정상인데
+ * 기록이 실제와 달라집니다.
+ */
+const modelOption = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
+const stageBModelOption = rest
+  .find((option) => option.startsWith("--stage-b-model="))
+  ?.slice("--stage-b-model=".length);
+const {
+  stageAModel: effectiveStageAModel,
+  stageBModel: effectiveStageBModel,
+  maxInputCommits: effectiveMaxInputCommits,
+  maxTotalPatchChars: effectiveMaxTotalPatchChars,
+} = resolveEffectiveSettings({ stageAModel: modelOption, stageBModel: stageBModelOption });
 
 const ms = () => performance.now();
 const round = (value: number) => Math.round(value);
@@ -254,7 +270,7 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
     `[payload] Stage A 입력 커밋=${details.length} 직렬화=${stageABytes}B (${(stageABytes / 1024).toFixed(1)}KB, 4.5MB의 ${((stageABytes / (4.5 * 1024 * 1024)) * 100).toFixed(2)}%)`
   );
 
-  const capped = details.slice(0, STAGE_B_MAX_INPUT_COMMITS);
+  const capped = details.slice(0, effectiveMaxInputCommits);
   const candidates: StageACandidate[] = capped.map(({ sha }) => ({
     sha,
     source: "automatic_recommendation",
@@ -278,10 +294,10 @@ function reportPayloadSizes(details: readonly CommitDetail[]) {
   );
   console.log(
     `[payload] Stage B 입력 커밋=${capped.length} 직렬화=${stageBBytes}B (${(stageBBytes / 1024).toFixed(1)}KB) ` +
-      `patch 사용=${usedPatch}/${STAGE_B_MAX_TOTAL_PATCH_CHARS}자`
+      `patch 사용=${usedPatch}/${effectiveMaxTotalPatchChars}자`
   );
   console.log(
-    `[payload] Stage B 절단 파일=${truncatedFiles} patch 생략 파일=${droppedFiles} 총량 상한 도달=${usedPatch >= STAGE_B_MAX_TOTAL_PATCH_CHARS}`
+    `[payload] Stage B 절단 파일=${truncatedFiles} patch 생략 파일=${droppedFiles} 총량 상한 도달=${usedPatch >= effectiveMaxTotalPatchChars}`
   );
 }
 
@@ -302,6 +318,7 @@ async function runDetails() {
   console.log(`[details] 순차 조회 커밋=${details.length} 총 소요=${round(elapsed)}ms 커밋당 평균=${round(elapsed / (details.length || 1))}ms`);
   distribution("[details] 커밋별 조회 소요(ms)", durations);
   console.log(`[details] core rate limit 소비=${consumed(before, after)} 잔량=${after.remaining}/${after.limit}`);
+  // 이 줄은 프로덕션 예산 환산이 목적이라 로컬 축소값이 아니라 상수를 씁니다.
   console.log(
     `[details] 커밋 ${STAGE_B_MAX_INPUT_COMMITS}개 순차 환산=${round((elapsed / (details.length || 1)) * STAGE_B_MAX_INPUT_COMMITS)}ms`
   );
@@ -312,7 +329,7 @@ async function runDetails() {
 /** 병렬도를 바꿔가며 같은 커밋 집합을 조회하고 secondary rate limit 발생 여부를 본다. */
 async function runParallel() {
   const { included } = await loadCommits();
-  const limit = numericOption("limit", Math.min(STAGE_B_MAX_INPUT_COMMITS, included.length));
+  const limit = numericOption("limit", Math.min(effectiveMaxInputCommits, included.length));
   const targets = included.slice(0, limit);
   const listed = rest.find((option) => option.startsWith("--concurrency="));
   const concurrencies =
@@ -386,9 +403,9 @@ async function runStageA() {
   const contributionItems = rest
     .filter((option) => option.startsWith("--item="))
     .map((option) => option.slice("--item=".length));
-  const model = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
-
-  console.log(`[stage-a] 입력 커밋=${details.length} 기여 항목=${contributionItems.length} 모델=${model ?? STAGE_A_MODEL}`);
+  console.log(
+    `[stage-a] 입력 커밋=${details.length} 기여 항목=${contributionItems.length} 모델=${effectiveStageAModel}`
+  );
   reportPayloadSizes(details);
 
   const startedAt = ms();
@@ -409,7 +426,7 @@ async function runStageA() {
         candidateLimit,
         contributionItems,
       },
-      instrumentedStageAGenerate(model)
+      instrumentedStageAGenerate(modelOption)
     );
     const elapsed = ms() - startedAt;
     console.log(`[stage-a] 성공 소요=${round(elapsed)}ms 예산=${STAGE_A_TIMEOUT_MS}ms 사용률=${((elapsed / STAGE_A_TIMEOUT_MS) * 100).toFixed(1)}%`);
@@ -437,8 +454,7 @@ ${describeLlmFailure(error)}`);
 async function runStageAChunks() {
   const { included } = await loadCommits();
   const targets = included.slice(0, numericOption("limit", included.length));
-  const chunkModel = rest.find((option) => option.startsWith("--model="))?.slice("--model=".length);
-  const baseGenerate = createStageAGenerate(chunkModel);
+  const baseGenerate = createStageAGenerate(modelOption);
   let totalTokens = 0;
   let generateCalls = 0;
   // selectStageACandidates가 전수 응답 위반으로 던지면 그 호출의 토큰이 반환값에 실리지
@@ -451,7 +467,7 @@ async function runStageAChunks() {
     totalTokens += observed?.usedTokens ?? 0;
     return output;
   };
-  console.log(`[stage-a-chunks] 모델=${chunkModel ?? STAGE_A_MODEL}`);
+  console.log(`[stage-a-chunks] 모델=${effectiveStageAModel}`);
   const details = await fetchDetailsCached(targets);
   const candidates: StageACandidate[] = [];
   const unclassified = new Set<string>();
@@ -627,7 +643,7 @@ async function runStageAChunks() {
  */
 async function stageBInputWithoutStageA() {
   const { included } = await loadCommits();
-  const targets = included.slice(0, numericOption("limit", STAGE_B_MAX_INPUT_COMMITS));
+  const targets = included.slice(0, numericOption("limit", effectiveMaxInputCommits));
   const details = await fetchDetailsCached(targets);
   // 커밋 하나하나를 후보로 두면 프로덕션과 다른 것을 잰다. 프로덕션 후보는 PR 묶음이다.
   const { units, workUnits } = toStageAUnits(details);
@@ -667,7 +683,10 @@ async function runStageB() {
   // 프로덕션은 후보 묶음을 대표 커밋 여럿으로 펼쳐서 Stage B에 넣는다(`candidate-client.ts`의
   // `fetchStageBCandidatesFromApi`). 예전에는 여기서 묶음당 SHA 하나를 그대로 잘라 써서 조회
   // 시간과 patch 몫을 운영 입력이 아닌 것에서 재고 있었다(Codex 리뷰 P2-3).
-  const expanded = expandCandidatesToCommits(candidates, workUnits, STAGE_B_MAX_INPUT_COMMITS);
+  // 로컬 제공자로 측정할 때는 축소된 상한을 그대로 따라야 합니다. 상수를 직접 넘기면 컨텍스트를
+  // 넘는 입력을 보내고, Ollama가 프롬프트를 조용히 자른 뒤 모델이 보지 못한 파일을 인용해
+  // `unknown_file_path`로 끝납니다(2026-08-25 실측).
+  const expanded = expandCandidatesToCommits(candidates, workUnits, effectiveMaxInputCommits);
   const commits = details.filter((detail) => expanded.some(({ sha }) => sha === detail.sha));
 
   // 같은 PR에서 커밋 여러 개가 실제로 펼쳐졌는지 확인한다. 하나도 없으면 이 측정은 커밋 단위
@@ -684,7 +703,7 @@ async function runStageB() {
   const uniqueShas = new Set(expanded.map(({ sha }) => sha)).size;
 
   console.log(
-    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${STAGE_B_MAX_INPUT_COMMITS} ` +
+    `[stage-b] 후보 묶음=${candidates.length} 펼친 커밋=${expanded.length}/${effectiveMaxInputCommits} ` +
       `SHA 중복=${expanded.length - uniqueShas} 상세=${commits.length}건`
   );
   console.log(
@@ -697,9 +716,12 @@ async function runStageB() {
 
   const startedAt = ms();
   try {
-    const stageBModel = rest.find((option) => option.startsWith("--stage-b-model="))?.slice("--stage-b-model=".length);
-    console.log(`[stage-b] 모델=${stageBModel ?? STAGE_B_MODEL}`);
-    const output = await selectStageBCandidates(commits, expanded, createStageBGenerate(stageBModel));
+    console.log(`[stage-b] 모델=${effectiveStageBModel}`);
+    const output = await selectStageBCandidates(
+      commits,
+      expanded,
+      createStageBGenerate(stageBModelOption)
+    );
     const elapsed = ms() - startedAt;
     console.log(`[stage-b] 성공 소요=${round(elapsed)}ms 최종 후보=${output.candidates.length}`);
     for (const candidate of output.candidates) {

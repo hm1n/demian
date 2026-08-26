@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { ExperienceCandidateOutputError } from "@/features/experience-candidates/errors";
+import { resolveLlmTimeoutMs } from "@/features/experience-candidates/llm-provider";
 import {
   buildStageBPayload,
   selectStageBCandidates,
@@ -59,7 +60,8 @@ export async function handleStageB(
   fetchDetail: FetchDetail = fetchCommitDetailBySha
 ): Promise<Response> {
   const startedAt = Date.now();
-  const totalBudgetMs = timeoutMs ?? STAGE_B_TOTAL_BUDGET_MS;
+  // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 예산을 대신합니다. 프로덕션은 상수 그대로입니다.
+  const totalBudgetMs = timeoutMs ?? resolveLlmTimeoutMs(STAGE_B_TOTAL_BUDGET_MS);
   try {
     getGitHubTokenFromRequest(request);
     const declaredLength = Number(request.headers.get("content-length"));

@@ -1,10 +1,16 @@
-import { createGoogle } from "@ai-sdk/google";
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import {
   ExperienceCandidateOutputError,
   isModelOutputFailureResponseBody,
   isRateLimitResponseBody,
 } from "./errors";
+import {
+  createStageBModel,
+  isLocalLlm,
+  localSamplingOptions,
+  resolveLlmTimeoutMs,
+  resolveStageBMaxTotalPatchChars,
+} from "./llm-provider";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
@@ -100,8 +106,9 @@ function resolveWorkUnitKey(commit: CommitDetail): string {
  * 배분 로직과는 무관해야 하기 때문입니다.
  */
 export function buildStageBPayload(commits: readonly CommitDetail[], candidates: readonly StageACandidate[]) {
-  const share =
-    commits.length === 0 ? 0 : Math.floor(STAGE_B_MAX_TOTAL_PATCH_CHARS / commits.length);
+  // 로컬 제공자로 시연할 때만 총량이 줄어듭니다. 환경변수를 설정하지 않으면 프로덕션 예산입니다.
+  const totalPatchChars = resolveStageBMaxTotalPatchChars(STAGE_B_MAX_TOTAL_PATCH_CHARS);
+  const share = commits.length === 0 ? 0 : Math.floor(totalPatchChars / commits.length);
   let carried = 0;
   const candidateBySha = new Map(candidates.map((candidate) => [candidate.sha, candidate]));
 
@@ -246,13 +253,35 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   return new ExperienceCandidateOutputError("llm_failure", "Stage B 분석에 실패했습니다.", { cause: error });
 }
 
+/**
+ * 로컬 모델에만 붙이는 출력 계약 안내입니다. 프로덕션 프롬프트는 그대로 둡니다.
+ *
+ * `validateExperienceCandidateOutput`은 후보가 3개 미만이면 `insufficientCandidatesReason`을
+ * 요구하지만 프로덕션 시스템 프롬프트는 그 규칙을 말하지 않습니다. Gemini는 스키마만 보고
+ * 지켰고, 로컬 모델은 2026-08-25 실측에서 `qwen2.5:7b`와 `llama3.1:8b` 모두 이 규칙을 어겨
+ * 같은 `schema_validation`으로 끝났습니다.
+ */
+const LOCAL_OUTPUT_CONTRACT_HINT_TEXT =
+  "후보를 3개 미만으로 고르면 insufficientCandidatesReason에 부족한 이유를 반드시 채우세요. " +
+  "후보가 정확히 3개면 insufficientCandidatesReason은 null이어야 합니다. " +
+  "sha와 relatedShas는 입력 workUnits 안의 commits[].sha 값을 그대로 복사하세요. relatedShas에는 " +
+  "대표 커밋과 같은 workUnits 항목에 있는 sha만 넣고, 넣을 것이 없으면 빈 배열로 두세요. " +
+  "citedFilePaths는 그 후보에 속한 커밋의 files[].path 값을 그대로 복사하세요. 입력에 없는 경로를 " +
+  "기억이나 추측으로 쓰지 마세요. ";
+
+function localOutputContractHint(): string {
+  // 모듈 최상단에서 한 번 계산하면 환경변수를 나중에 바꾼 실행과 테스트가 낡은 값을 봅니다.
+  return isLocalLlm() ? LOCAL_OUTPUT_CONTRACT_HINT_TEXT : "";
+}
+
 /** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
 export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateStageB {
   return async (payload, abortSignal) => {
     const { object } = await generateObject({
-      model: createGoogle()(model),
+      model: createStageBModel(model),
       schema: experienceCandidateOutputSchema,
       system:
+        localOutputContractHint() +
         "실제 diff와 PR 소속만 근거로 최대 3개의 개발 경험 후보를 고르세요. " +
         "입력 commits는 Pull Request 단위 묶음(workUnits)으로 그룹돼 있습니다. 최종 후보 3개는 " +
         "서로 다른 workUnits 항목에서 하나씩만 고르세요. 같은 workUnits 항목에서 대표 커밋을 " +
@@ -263,6 +292,7 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
         "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
       prompt: JSON.stringify(payload),
       abortSignal,
+      ...localSamplingOptions(),
     });
     return object;
   };
@@ -313,7 +343,8 @@ export async function selectStageBCandidates(
   commits: readonly CommitDetail[],
   candidates: readonly StageACandidate[],
   generate: GenerateStageB = generateWithGemini,
-  timeoutMs = STAGE_B_TOTAL_BUDGET_MS
+  // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
+  timeoutMs = resolveLlmTimeoutMs(STAGE_B_TOTAL_BUDGET_MS)
 ): Promise<ExperienceCandidateOutput> {
   const payload = buildStageBPayload(commits, candidates);
   const controller = new AbortController();

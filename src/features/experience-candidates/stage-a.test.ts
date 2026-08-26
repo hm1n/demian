@@ -54,6 +54,7 @@ const input: StageAInput = {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe("Stage A 후보 선별", () => {
@@ -302,5 +303,98 @@ describe("renderStageAPrompt", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     const actualPrompt = generateObjectMock.mock.calls[0]![0].prompt;
     expect(actualPrompt).toBe(renderStageAPrompt(payload));
+  });
+});
+
+describe("한도 메타데이터", () => {
+  function mockGenerateObject(headers: Record<string, string>) {
+    const payload = buildStageAPayload(input);
+    vi.mocked(generateObject).mockResolvedValue({
+      object: {
+        decisions: payload.units.map(({ pullRequestNumber }) => ({
+          pullRequestNumber,
+          contributionItem: null,
+          recommended: false,
+        })),
+      },
+      response: { headers },
+      usage: { totalTokens: 1_234 },
+    } as unknown as Awaited<ReturnType<typeof generateObject>>);
+    return payload;
+  }
+
+  it("헤더가 없으면 프로덕션 경로는 null을 돌려준다", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
+    const payload = mockGenerateObject({});
+
+    const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
+
+    expect((output as { __rateLimit: unknown }).__rateLimit).toBeNull();
+  });
+
+  /**
+   * 로컬 제공자는 `x-ratelimit-*`를 보내지 않습니다. 합성하지 않으면 청크가 둘 이상일 때
+   * `candidate-client.ts`가 `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
+   */
+  it("로컬 제공자는 헤더가 없어도 메타데이터를 합성한다", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("STAGE_A_MODEL", "qwen2.5:7b");
+    const payload = mockGenerateObject({});
+
+    const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
+
+    expect((output as { __rateLimit: unknown }).__rateLimit).toEqual({
+      remainingTokens: Number.MAX_SAFE_INTEGER,
+      resetAfterMs: 0,
+      usedTokens: 1_234,
+    });
+  });
+});
+
+describe("로컬 전용 입력 범위 안내", () => {
+  async function capturedCall() {
+    const payload = buildStageAPayload(input);
+    const generateObjectMock = vi.mocked(generateObject);
+    generateObjectMock.mockResolvedValue({
+      object: {
+        decisions: payload.units.map(({ pullRequestNumber }) => ({
+          pullRequestNumber,
+          contributionItem: null,
+          recommended: false,
+        })),
+      },
+      response: { headers: {} },
+      usage: { totalTokens: 0 },
+    } as unknown as Awaited<ReturnType<typeof generateObject>>);
+
+    await createStageAGenerate("test-model")(payload, new AbortController().signal);
+
+    return generateObjectMock.mock.calls.at(-1)![0];
+  }
+
+  it("프로덕션 경로에서는 프롬프트와 샘플링을 건드리지 않는다", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
+
+    const call = await capturedCall();
+
+    expect(call.system).not.toContain("커밋 제목 안에 적힌 다른 PR 번호");
+    expect(call.temperature).toBeUndefined();
+  });
+
+  /**
+   * 묶음 요약의 커밋 제목에는 `Merge pull request #35` 같은 문구가 섞여 있습니다. 2026-08-25
+   * 실측에서 `qwen2.5:7b`가 그 번호들을 판단 대상으로 끌어와 입력 11묶음에 46개 판정을 냈습니다.
+   */
+  it("로컬 경로에서는 판단 대상 범위를 프롬프트로 못박는다", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("STAGE_A_MODEL", "qwen2.5:7b");
+    vi.stubEnv("LLM_TEMPERATURE", "0");
+
+    const call = await capturedCall();
+
+    expect(call.system).toContain("커밋 제목 안에 적힌 다른 PR 번호");
+    expect(call.temperature).toBe(0);
+    // 프로덕션 지시는 그대로 남아 있어야 합니다.
+    expect(call.system).toContain("decisions 배열은 입력에 있는 PR 번호 전부를");
   });
 });

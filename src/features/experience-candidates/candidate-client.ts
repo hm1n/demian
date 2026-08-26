@@ -21,6 +21,7 @@ import {
   summarizeWorkUnit,
 } from "./work-unit-summary";
 import { STAGE_B_MAX_INPUT_COMMITS } from "./stage-b";
+import { resolveStageBMaxInputCommits } from "./llm-provider";
 import type { ReadonlyCommitDetail, RepositoryRef } from "@/lib/github/types";
 import {
   INITIAL_STAGE_A_CANDIDATE_LIMIT,
@@ -222,7 +223,7 @@ export function toStageAUnits(
 export function expandCandidatesToCommits(
   candidates: readonly StageACandidate[],
   workUnits: readonly WorkUnit<ReadonlyCommitDetail>[],
-  maxCommits = STAGE_B_MAX_INPUT_COMMITS
+  maxCommits = resolveStageBMaxInputCommits(STAGE_B_MAX_INPUT_COMMITS)
 ): StageACandidate[] {
   const unitByRepresentativeSha = new Map(
     workUnits.map((unit) => [selectRepresentativeCommits(unit, 1)[0].sha, unit])
