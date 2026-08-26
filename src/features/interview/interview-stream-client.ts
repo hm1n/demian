@@ -1,4 +1,9 @@
-import { InterviewStreamError, isServerErrorKind, transportError } from "./errors";
+import {
+  InterviewStreamError,
+  generationEmptyError,
+  isServerErrorKind,
+  transportError,
+} from "./errors";
 import { createSseEventParser } from "./sse";
 
 export type InterviewStreamStatus =
@@ -15,8 +20,27 @@ export interface InterviewStreamHandlers {
   onError?: (error: InterviewStreamError) => void;
 }
 
+/**
+ * 전송이 끊겼을 때 무엇을 하는지 정합니다.
+ *
+ * - `last-event-id`: `Last-Event-ID`로 마지막 `seq`를 보내 그 다음 청크부터 이어받습니다. 내용이
+ *   결정적인 테스트용 스트림만 이 방식을 쓸 수 있습니다.
+ * - `restart`: 이어받지 않습니다. 실제 LLM 스트림은 서버가 이미 보낸 청크를 보관하지 않아 `seq N`
+ *   부터 이어 보낼 수 없고, 처음부터 다시 생성하면 같은 질문이 아니라 다른 질문이 나옵니다. 이미
+ *   표시된 앞부분에 그 결과를 붙이면 한 메시지 안에서 서로 다른 질문이 이어집니다. 그래서 자동
+ *   재연결을 하지 않고 사용자에게 결정을 넘깁니다. 근거는
+ *   `wiki/2026-08-25-첫-질문-생성-provider-실측과-재개-방침.md`에 있습니다.
+ */
+export type InterviewStreamResumeMode = "last-event-id" | "restart";
+
 export interface RunInterviewStreamOptions {
   url: string;
+  /**
+   * 보낼 요청 본문입니다. 있으면 `POST`로 보냅니다. 실제 생성 경로가 근거 스냅샷을 본문으로
+   * 보내야 해서 필요합니다.
+   */
+  body?: string;
+  resumeMode?: InterviewStreamResumeMode;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
   /**
@@ -83,6 +107,8 @@ async function readResponseError(
 export async function runInterviewStream(
   {
     url,
+    body,
+    resumeMode = "last-event-id",
     fetchImpl = fetch,
     signal,
     retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
@@ -91,7 +117,8 @@ export async function runInterviewStream(
   }: RunInterviewStreamOptions,
   handlers: InterviewStreamHandlers = {}
 ): Promise<void> {
-  let lastSeq = startSeq;
+  const resumes = resumeMode === "last-event-id";
+  let lastSeq = resumes ? startSeq : 0;
   let retriesUsed = 0;
 
   const setStatus = (status: InterviewStreamStatus) => handlers.onStatus?.(status);
@@ -107,9 +134,11 @@ export async function runInterviewStream(
     try {
       const response = await fetchImpl(url, {
         signal,
+        ...(body === undefined ? {} : { method: "POST", body }),
         headers: {
           Accept: "text/event-stream",
-          ...(lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(resumes && lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
         },
       });
       if (!response.ok) {
@@ -148,6 +177,12 @@ export async function runInterviewStream(
             if (event.seq !== lastSeq) {
               throw transportError("stream_interrupted");
             }
+            // 청크 없이 `done`으로 끝난 스트림은 정상 완료가 아닙니다. 그대로 두면 빈 로그와
+            // `질문이 모두 도착했습니다.` 안내가 함께 남고 다시 시도 버튼도 나타나지 않습니다.
+            // Empty가 아니라 Error로 다루는 2026-08-25 결정입니다.
+            if (lastSeq === 0) {
+              throw generationEmptyError();
+            }
             handlers.onDone?.();
             setStatus("done");
             return;
@@ -175,7 +210,10 @@ export async function runInterviewStream(
 
       // 시작 자체가 실패한 경우에는 자동으로 재시도하지 않습니다. 인증 실패나 잘못된 요청처럼
       // 같은 요청을 반복해도 풀리지 않는 원인이 섞여 있습니다.
-      if (streamError.kind !== "stream_interrupted" || retriesUsed >= retryDelaysMs.length) {
+      //
+      // 이어받을 수 없는 스트림도 자동 재연결하지 않습니다. 재연결은 처음부터 다시 생성하는 것이고
+      // 그 결과는 이미 표시된 내용과 다른 질문입니다.
+      if (!resumes || streamError.kind !== "stream_interrupted" || retriesUsed >= retryDelaysMs.length) {
         fail(streamError);
         return;
       }
