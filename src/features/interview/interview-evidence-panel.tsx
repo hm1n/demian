@@ -36,11 +36,17 @@ const PATCH_OMITTED_COPY: Record<EvidencePatchOmittedReason, string> = {
 };
 
 /**
- * 상위 단계에서 이미 자르거나 뺀 patch가 있는지 봅니다. 스냅샷 상한 절단(`truncatedByBudget`)과
- * 별개의 경로이고 둘 다 알려야 합니다. 하나만 보면 남은 diff만으로 전체 변경을 확인한 것처럼
- * 보입니다. 이슈 #46이 만든 표시를 회귀시키지 않기 위한 검사입니다.
+ * 온전하지 않은 patch가 있는지 봅니다. 파일 단위 `patchTruncated`·`patchOmittedReason`을 보고,
+ * 스냅샷 전체의 `truncatedByBudget`과는 다른 자리를 봅니다. 하나만 보면 남은 diff만으로 전체
+ * 변경을 확인한 것처럼 보입니다. 이슈 #46이 만든 표시를 회귀시키지 않기 위한 검사입니다.
+ *
+ * **어느 단계에서 잘렸는지는 알 수 없습니다.** `evidence-snapshot.ts`가 파일의 `patchTruncated`를
+ * `source?.patchTruncated === true || cutByBudget`로 합쳐서 실어 오므로 Stage B 절단과 스냅샷
+ * 예산 절단이 한 boolean에 들어옵니다. 그래서 이 검사로 만드는 안내에 단계를 지목하지 않습니다.
+ * 출처를 가르려면 스냅샷 계약에 필드를 더해야 하고 그 범위는
+ * `wiki/2026-08-25-스트리밍-후속-backlog.md`로 분리했습니다.
  */
-export function hasUpstreamIncompletePatch(commits: readonly EvidenceSnapshotCommit[]): boolean {
+export function hasIncompletePatch(commits: readonly EvidenceSnapshotCommit[]): boolean {
   return commits.some((commit) =>
     commit.files.some((file) => file.patchTruncated || file.patchOmittedReason !== null)
   );
@@ -77,7 +83,7 @@ export function InterviewEvidencePanel({ snapshot }: InterviewEvidencePanelProps
     unverifiableItems,
   } = snapshot;
   const commits = [representativeCommit, ...relatedCommits];
-  const upstreamIncomplete = hasUpstreamIncompletePatch(commits);
+  const incompletePatch = hasIncompletePatch(commits);
 
   return (
     <section className={styles.panel} aria-labelledby="interview-evidence-heading">
@@ -113,8 +119,14 @@ export function InterviewEvidencePanel({ snapshot }: InterviewEvidencePanelProps
       </p>
 
       {/*
-        두 절단은 원인이 달라 하나가 있어도 나머지를 감추지 않습니다. 앞은 이 화면이 만든 스냅샷의
-        상한이고 뒤는 Stage B가 이미 자르거나 뺀 것입니다.
+        두 안내는 보는 자리가 달라 하나가 있어도 나머지를 감추지 않습니다. 앞은 스냅샷 전체의
+        `truncatedByBudget`이고 뒤는 파일 단위 `patchTruncated`·`patchOmittedReason`입니다.
+
+        뒤 안내에 단계를 지목하지 않습니다. 파일의 `patchTruncated`는 `evidence-snapshot.ts`가
+        Stage B 절단과 스냅샷 예산 절단을 OR로 합쳐 실어 오므로 화면이 출처를 가를 수 없습니다.
+        지목하면 예산으로만 잘린 경우에 "앞 단계에서 잘렸다"는 거짓을 말하게 됩니다. PR #65
+        재검증 P2가 이 지점이었고, 출처 필드 추가는
+        `wiki/2026-08-25-스트리밍-후속-backlog.md`로 분리했습니다.
       */}
       {patchBudget.truncatedByBudget ? (
         <p className={styles.warning}>
@@ -123,10 +135,10 @@ export function InterviewEvidencePanel({ snapshot }: InterviewEvidencePanelProps
           {patchBudget.patchBytes.toLocaleString("ko-KR")}바이트입니다.
         </p>
       ) : null}
-      {upstreamIncomplete ? (
+      {incompletePatch ? (
         <p className={styles.warning}>
-          앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함되었습니다. 남은 diff만으로 전체 변경을
-          확인한 것으로 단정할 수 없습니다.
+          일부 코드 변경 내역이 절단되거나 미포함되었습니다. 남은 diff만으로 전체 변경을 확인한
+          것으로 단정할 수 없습니다.
         </p>
       ) : null}
 

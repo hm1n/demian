@@ -114,7 +114,7 @@ describe("InterviewEvidencePanel", () => {
     expect(screen.getByText(/코드\s*변경 내역 일부를 잘랐습니다/)).toBeInTheDocument();
   });
 
-  it("상위 단계 절단도 알린다", () => {
+  it("파일 단위 절단 표시도 알린다", () => {
     render(
       <InterviewEvidencePanel
         snapshot={snapshot({
@@ -123,10 +123,10 @@ describe("InterviewEvidencePanel", () => {
       />
     );
 
-    expect(screen.getByText(/앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
+    expect(screen.getByText(/일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
   });
 
-  it("상한 절단과 상위 단계 절단이 함께 있으면 둘 다 알린다", () => {
+  it("상한 절단과 파일 단위 절단이 함께 있으면 둘 다 알린다", () => {
     const base = snapshot({
       representativeCommit: snapshotCommit({
         files: [
@@ -137,7 +137,7 @@ describe("InterviewEvidencePanel", () => {
     render(<InterviewEvidencePanel snapshot={{ ...base, patchBudget: truncatedBudget(base.patchBudget) }} />);
 
     expect(screen.getByText(/코드\s*변경 내역 일부를 잘랐습니다/)).toBeInTheDocument();
-    expect(screen.getByText(/앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
+    expect(screen.getByText(/일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
   });
 
   it("patch 본문이 없는 이유를 예산 소진과 GitHub 미제공으로 구분한다", () => {

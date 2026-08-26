@@ -220,7 +220,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     expect(screen.getByText(/코드\s*변경 내역 일부를 잘랐습니다/)).toBeInTheDocument();
   });
 
-  it("앞 단계에서 절단된 patch도 확정 화면이 알린다", () => {
+  it("파일 단위로 절단 표시된 patch도 인터뷰 화면이 알린다", () => {
     renderList(
       [candidate("aaa")],
       [commit("aaa", "상위 절단 표시")],
@@ -244,7 +244,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     fireEvent.click(screen.getByRole("button", { name: /상위 절단 표시/ }));
     fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
 
-    expect(screen.getByText(/앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
+    expect(screen.getByText(/일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
   });
 
   it("근거가 입력 상한을 넘으면 무엇이 부족한지 알린다", () => {
