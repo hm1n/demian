@@ -1,4 +1,3 @@
-import { createGroq } from "@ai-sdk/groq";
 import {
   APICallError,
   generateObject,
@@ -12,6 +11,12 @@ import {
   isModelOutputFailureResponseBody,
   isRateLimitResponseBody,
 } from "./errors";
+import {
+  createStageAModel,
+  isLocalLlm,
+  localSamplingOptions,
+  resolveLlmTimeoutMs,
+} from "./llm-provider";
 import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
 import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
 
@@ -303,11 +308,30 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
   });
 }
 
+/**
+ * 로컬 모델에만 붙이는 입력 범위 안내입니다. 프로덕션 프롬프트는 그대로 둡니다.
+ *
+ * 2026-08-25 실측입니다. 묶음 요약의 커밋 제목에는 `Merge pull request #35` 같은 문구가 섞여
+ * 있습니다. `qwen2.5:7b`는 그 번호들을 판단 대상으로 끌어와 입력 11묶음에 대해 46개 판정을
+ * 돌려줬고 `unknown_sha`로 끝났습니다. 같은 입력에서 `openai/gpt-oss-120b`는 이 혼동을 보이지
+ * 않았으므로 프로덕션 프롬프트를 바꾸지 않고 로컬에서만 범위를 명시합니다.
+ */
+function localInputScopeHint(): string {
+  if (!isLocalLlm()) return "";
+  return [
+    "",
+    "",
+    "판단 대상은 각 묶음 첫 줄의 'PR#번호'뿐입니다. 커밋 제목 안에 적힌 다른 PR 번호는 " +
+      "판단 대상이 아니므로 decisions에 넣지 마세요. decisions의 길이는 입력 묶음 수와 정확히 " +
+      "같아야 합니다.",
+  ].join("\n");
+}
+
 /** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
 export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
   return async (payload, abortSignal) => {
     const { object, response, usage } = await generateObject({
-      model: createGroq()(model),
+      model: createStageAModel(model),
       schema: structuredOutputSchema,
       /**
        * 전수 응답 지시와 후보 상한을 문단으로 갈라 둡니다.
@@ -324,10 +348,33 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
 
 각 묶음의 판정은 이렇게 씁니다. 기여 항목과 명확히 맞으면 contributionItem을 목록의 원문 그대로 씁니다. 어느 항목에도 맞지 않지만 설명할 가치가 있으면 contributionItem을 null로 두고 recommended를 true로 합니다. 그 밖에는 contributionItem을 '${UNCLASSIFIED_LABEL}'로 두고 recommended를 false로 합니다.
 
-recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개까지만 고르세요. 이 상한은 고르는 개수에만 걸립니다. decisions 배열의 길이를 줄이는 데 쓰면 안 됩니다. 나머지 묶음은 전부 '${UNCLASSIFIED_LABEL}'로 담으세요. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.`,
+recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 ${payload.candidateLimit}개까지만 고르세요. 이 상한은 고르는 개수에만 걸립니다. decisions 배열의 길이를 줄이는 데 쓰면 안 됩니다. 나머지 묶음은 전부 '${UNCLASSIFIED_LABEL}'로 담으세요. 규모가 크다는 이유만으로 고르지 말고 설명할 거리가 있는 묶음을 고르세요.` +
+        localInputScopeHint(),
       prompt: renderStageAPrompt(payload),
       abortSignal,
+      ...localSamplingOptions(),
     });
+    /**
+     * 로컬 제공자는 한도 헤더를 보내지 않으므로 여기서 합성합니다.
+     *
+     * 합성하지 않으면 `__rateLimit`이 null이 되고, 청크가 둘 이상일 때 첫 청크가 정상 완주하면
+     * (`unjudgedShas`가 빈 배열) `candidate-client.ts`가 이 응답을 저하가 아닌 형식 오류로 보고
+     * `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다. 클라이언트는 서버
+     * 환경변수를 읽을 수 없으므로 로컬 분기를 여기 서버 쪽에 둡니다.
+     *
+     * 프로덕션 경로의 null은 그대로 둡니다. 라우트 `degrade`가 부분 결과를 표시할 때 쓰는 표식이라
+     * 의미가 다릅니다.
+     */
+    if (isLocalLlm()) {
+      return {
+        ...object,
+        __rateLimit: {
+          remainingTokens: Number.MAX_SAFE_INTEGER,
+          resetAfterMs: 0,
+          usedTokens: usage.totalTokens ?? 0,
+        },
+      };
+    }
     const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);
     const reset = response.headers?.["x-ratelimit-reset-tokens"];
     const match = reset?.match(/^(\d+(?:\.\d+)?)(ms|s|m)$/);
@@ -349,7 +396,8 @@ const generateWithGroq: GenerateStageA = createStageAGenerate();
 export async function selectStageACandidates(
   input: StageAInput,
   generate: GenerateStageA = generateWithGroq,
-  timeoutMs = STAGE_A_TIMEOUT_MS
+  // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
+  timeoutMs = resolveLlmTimeoutMs(STAGE_A_TIMEOUT_MS)
 ): Promise<StageAChunkOutput> {
   const payload = buildStageAPayload(input);
   const abortController = new AbortController();

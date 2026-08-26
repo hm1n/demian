@@ -1,6 +1,23 @@
-import { APICallError, RetryError } from "ai";
-import { describe, expect, it, vi } from "vitest";
-import { buildStageBPayload, selectStageBCandidates, STAGE_B_MAX_PATCH_CHARS, STAGE_B_MAX_TOTAL_PATCH_CHARS } from "./stage-b";
+import { APICallError, generateObject, RetryError } from "ai";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  buildStageBPayload,
+  createStageBGenerate,
+  selectStageBCandidates,
+  STAGE_B_MAX_PATCH_CHARS,
+  STAGE_B_MAX_TOTAL_PATCH_CHARS,
+} from "./stage-b";
+
+// `createStageBGenerate`가 실제로 보내는 시스템 프롬프트를 가로채기 위한 부분 모킹입니다.
+// `generateObject`만 대체하고 나머지(`APICallError`, `RetryError`)는 실제 구현을 씁니다.
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: vi.fn() };
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 import type { CommitDetail } from "@/lib/github/types";
 
 const candidates = [
@@ -316,5 +333,41 @@ describe("Stage B 최종 후보의 PR 중복 정리", () => {
     }));
     expect(output.candidates).toHaveLength(2);
     expect(output.insufficientCandidatesReason).toBe("독립적인 경험이 둘뿐입니다.");
+  });
+});
+
+describe("로컬 전용 출력 계약 안내", () => {
+  async function capturedSystemPrompt() {
+    const generateObjectMock = vi.mocked(generateObject);
+    generateObjectMock.mockResolvedValue({ object: { candidates: [], insufficientCandidatesReason: "없음" } } as unknown as Awaited<
+      ReturnType<typeof generateObject>
+    >);
+
+    await createStageBGenerate("test-model")({}, new AbortController().signal);
+
+    return generateObjectMock.mock.calls.at(-1)![0].system ?? "";
+  }
+
+  it("프로덕션 경로에서는 프롬프트를 늘리지 않는다", async () => {
+    vi.stubEnv("LLM_BASE_URL", undefined);
+
+    expect(await capturedSystemPrompt()).not.toContain("insufficientCandidatesReason");
+  });
+
+  /**
+   * `validateExperienceCandidateOutput`은 후보가 3개 미만이면 부족 사유를 요구하지만 프로덕션
+   * 프롬프트는 그 규칙을 말하지 않습니다. 2026-08-25 실측에서 `qwen2.5:7b`와 `llama3.1:8b`가
+   * 모두 이 규칙을 어겼습니다.
+   */
+  it("로컬 경로에서는 출력 계약을 프롬프트로 알려준다", async () => {
+    vi.stubEnv("LLM_BASE_URL", "http://localhost:11434/v1");
+    vi.stubEnv("STAGE_B_MODEL", "qwen2.5:7b");
+
+    const system = await capturedSystemPrompt();
+
+    expect(system).toContain("insufficientCandidatesReason");
+    expect(system).toContain("citedFilePaths");
+    // 프로덕션 지시는 그대로 남아 있어야 합니다.
+    expect(system).toContain("실제 diff와 PR 소속만 근거로");
   });
 });
