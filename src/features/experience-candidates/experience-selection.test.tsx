@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 import type { CandidateDiff, ExperienceCandidate, StageBCandidateResult } from "./types";
 import { ExperienceCandidateList } from "./experience-candidate-list";
@@ -68,7 +68,16 @@ function renderList(
   );
 }
 
-afterEach(cleanup);
+// 확정하면 인터뷰 화면이 질문 스트림에 바로 연결합니다. 이 테스트의 관심은 확정 상태 전이이므로
+// 응답이 오지 않는 `fetch`로 스트림을 준비 상태에 묶어 둡니다.
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>(() => {})));
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("경험 선택 확정과 인터뷰 진입점", () => {
   it("상세 화면의 선택 액션으로 인터뷰 대상을 확정한다", () => {
@@ -77,9 +86,9 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     fireEvent.click(screen.getByRole("button", { name: /재시도 큐 도입/ }));
     fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
 
-    expect(screen.getByText("인터뷰 대상 확정")).toBeInTheDocument();
+    expect(screen.getByText("AI 인터뷰")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "재시도 큐 도입" })).toBeInTheDocument();
-    expect(screen.getByText("질문은 아직 생성되지 않습니다")).toBeInTheDocument();
+    expect(screen.getByText("질문을 준비하고 있습니다.")).toBeInTheDocument();
     expect(screen.getByText(/대표 커밋 변경 파일 1개/)).toBeInTheDocument();
   });
 
@@ -116,7 +125,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveAttribute("data-selection-error", "representative_commit_not_indexed");
     expect(alert).toHaveTextContent("대표 커밋을 커밋 색인에서 찾지 못해");
-    expect(screen.queryByText("인터뷰 대상 확정")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI 인터뷰")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: BACK_LABEL }));
     expect(screen.getByText(/경험 후보 1개를 선정했습니다/)).toBeInTheDocument();
@@ -167,16 +176,16 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     fireEvent.click(screen.getByRole("button", { name: /근거 표시 경계/ }));
     fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
 
-    const relatedItem = screen.getByText(/관련 커밋 1개/);
+    const relatedItem = screen.getByText(/관련 커밋 1개/, { selector: "li" });
     expect(relatedItem).toHaveTextContent("AI 선택");
     expect(relatedItem).not.toHaveTextContent("확인 가능");
 
-    const citedItem = screen.getByText(/인용 파일 1개/);
+    const citedItem = screen.getByText(/인용 파일 1개/, { selector: "li" });
     expect(citedItem).toHaveTextContent("AI 선택");
     expect(citedItem).not.toHaveTextContent("확인 가능");
 
     // 관련 커밋 파일까지 합친 개수를 확인 가능으로 표시하면 AI 선택이 Repository 사실로 보입니다.
-    const changedFilesItem = screen.getByText(/대표 커밋 변경 파일 1개/);
+    const changedFilesItem = screen.getByText(/대표 커밋 변경 파일 1개/, { selector: "li" });
     expect(changedFilesItem).toHaveTextContent("확인 가능");
     expect(changedFilesItem).not.toHaveTextContent("AI 선택");
     expect(screen.queryByText(/^변경 파일 2개$/)).not.toBeInTheDocument();
@@ -211,7 +220,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     expect(screen.getByText(/코드\s*변경 내역 일부를 잘랐습니다/)).toBeInTheDocument();
   });
 
-  it("앞 단계에서 절단된 patch도 확정 화면이 알린다", () => {
+  it("파일 단위로 절단 표시된 patch도 인터뷰 화면이 알린다", () => {
     renderList(
       [candidate("aaa")],
       [commit("aaa", "상위 절단 표시")],
@@ -235,7 +244,7 @@ describe("경험 선택 확정과 인터뷰 진입점", () => {
     fireEvent.click(screen.getByRole("button", { name: /상위 절단 표시/ }));
     fireEvent.click(screen.getByRole("button", { name: CONFIRM_LABEL }));
 
-    expect(screen.getByText(/앞 단계에서 일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
+    expect(screen.getByText(/일부 코드 변경 내역이 절단되거나 미포함/)).toBeInTheDocument();
   });
 
   it("근거가 입력 상한을 넘으면 무엇이 부족한지 알린다", () => {
