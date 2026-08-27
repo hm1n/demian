@@ -4,6 +4,17 @@ import { GitHubFetchError } from "./errors";
 
 export const GITHUB_SESSION_COOKIE = "github_session";
 export const GITHUB_SESSION_KEY_ENV = "GITHUB_SESSION_ENCRYPTION_KEY";
+export const GITHUB_SESSION_MAX_AGE_SECONDS = 28800;
+
+const COOKIE_OPTIONS = "Path=/; HttpOnly; Secure; SameSite=Lax";
+
+export function createGitHubSessionCookie(value: string): string {
+  return `${GITHUB_SESSION_COOKIE}=${value}; ${COOKIE_OPTIONS}; Max-Age=${GITHUB_SESSION_MAX_AGE_SECONDS}`;
+}
+
+export function deleteGitHubSessionCookie(): string {
+  return `${GITHUB_SESSION_COOKIE}=; ${COOKIE_OPTIONS}; Max-Age=0`;
+}
 
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
