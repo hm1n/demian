@@ -14,6 +14,14 @@ import {
 import styles from "./repository-analysis.module.css";
 
 const INITIAL_STATE: AnalysisState = { status: "idle" };
+const LOGIN_PATH = "/api/auth/github/login";
+
+const AUTH_ERROR_COPY: Record<string, string> = {
+  access_denied: "GitHub에서 권한 허용을 취소했습니다. 다시 로그인할 수 있습니다.",
+  state_mismatch: "로그인 요청을 확인하지 못했습니다. 처음부터 다시 로그인해야 합니다.",
+  exchange_failed: "GitHub 인증을 마치지 못했습니다. 잠시 후 다시 시도해 주세요.",
+  config_missing: "서버에 GitHub 로그인 설정이 없습니다. 서버 관리자가 설정을 완료해야 합니다.",
+};
 
 // ponytail: 줄바꿈을 항목 경계로 고정합니다. 항목 안에 여러 줄 설명이 필요해질 때 구조화 입력으로 승격합니다.
 export function parseContributionItems(value: string) {
@@ -65,16 +73,14 @@ function loadingCopy(loading: LoadingPhase) {
   };
 }
 
-export function RepositoryAnalysisView() {
+export function RepositoryAnalysisView({ hasSession: initialHasSession, authError }: { hasSession: boolean; authError?: string }) {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [contributionItems, setContributionItems] = useState("");
-  const [token, setToken] = useState("");
-  const [hasSession, setHasSession] = useState(false);
+  const [hasSession, setHasSession] = useState(initialHasSession);
   const [analyzedRepository, setAnalyzedRepository] = useState<RepositoryRef | null>(null);
   const [state, setState] = useState<AnalysisState>(INITIAL_STATE);
   const ownerInput = useRef<HTMLInputElement>(null);
-  const tokenInput = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
   function analyze(repository: RepositoryRef) {
@@ -82,47 +88,8 @@ export function RepositoryAnalysisView() {
     return analyzeRepository(repository, parseContributionItems(contributionItems), setState);
   }
 
-  async function startAnalysis(repository: RepositoryRef, newToken: string) {
-    setState({ status: "loading", loading: { step: "commits" } });
-    let response: Response;
-    try {
-      response = await fetch("/api/auth/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: newToken }),
-      });
-    } catch {
-      setState({
-        status: "error",
-        error: {
-          kind: "network",
-          title: "GitHub 인증 세션에 연결하지 못했습니다",
-          message: "네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
-          recovery: "retry",
-        },
-      });
-      return;
-    }
-    if (!response.ok) {
-      setState({
-        status: "error",
-        error: {
-          kind: "server_error",
-          title: "GitHub 인증 세션을 만들지 못했습니다",
-          message: "잠시 후 다시 시도해 주세요.",
-          recovery: "retry",
-        },
-      });
-      return;
-    }
-    setHasSession(true);
-    setToken("");
-    await analyze(repository);
-  }
-
   function runAnalysis() {
     const repository = { owner: owner.trim(), repo: repo.trim() };
-    if (token) return startAnalysis(repository, token);
     if (hasSession) return analyze(repository);
   }
 
@@ -142,10 +109,8 @@ export function RepositoryAnalysisView() {
   async function reauthenticate() {
     await fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
     setHasSession(false);
-    setToken("");
     setAnalyzedRepository(null);
     setState(INITIAL_STATE);
-    requestAnimationFrame(() => tokenInput.current?.focus());
   }
 
   function selectRepository() {
@@ -166,7 +131,22 @@ export function RepositoryAnalysisView() {
       </header>
 
       <main className={styles.card}>
-        <form className={styles.form} onSubmit={handleSubmit}>
+        {authError && Object.hasOwn(AUTH_ERROR_COPY, authError) ? (
+          <section className={styles.state} role="alert" data-auth-error={authError}>
+            <h2>GitHub 로그인에 실패했습니다</h2>
+            <p>{AUTH_ERROR_COPY[authError]}</p>
+          </section>
+        ) : null}
+
+        {!hasSession ? (
+          <section className={styles.state} aria-live="polite" data-auth-state="login_required">
+            <h2>GitHub 로그인이 필요합니다</h2>
+            <p>Repository를 분석하려면 GitHub에 로그인해 주세요.</p>
+            <div className={styles.actions}>
+              <a className={styles.button} href={LOGIN_PATH}>GitHub으로 로그인</a>
+            </div>
+          </section>
+        ) : <form className={styles.form} onSubmit={handleSubmit}>
           <div className={styles.repositoryFields}>
             <label className={styles.field}>
               Owner
@@ -182,15 +162,10 @@ export function RepositoryAnalysisView() {
             <textarea name="contributionItems" value={contributionItems} onChange={(event) => setContributionItems(event.target.value)} placeholder={"푸시 알림 구현\n게시판 기능 구현"} autoComplete="off" disabled={loading} rows={4} />
             <span className={styles.hint}>기억나는 기여를 한 줄에 하나씩 입력해 주세요. 비워두면 Repository 근거만으로 경험 후보를 찾습니다.</span>
           </label>
-          <label className={styles.field}>
-            GitHub token
-            <input ref={tokenInput} name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" disabled={loading} required={!hasSession} />
-            <span className={styles.hint}>토큰은 암호화된 보안 쿠키에 저장하며 화면에 표시하지 않습니다.</span>
-          </label>
           <button className={styles.button} type="submit" disabled={loading}>
             {loading ? "Repository 분석 중" : "Repository 분석 시작"}
           </button>
-        </form>
+        </form>}
 
         {state.status === "loading" ? <LoadingState loading={state.loading} /> : null}
         {state.status === "empty" ? (
@@ -305,7 +280,7 @@ interface ErrorStateProps {
 
 function ErrorState({ error, retryLabel, onRetry, onReauthenticate, onSelectRepository }: ErrorStateProps) {
   const action = error.recovery === "reauthenticate"
-    ? { label: "GitHub 인증 다시 하기", run: onReauthenticate }
+    ? { label: "GitHub으로 다시 로그인", run: onReauthenticate }
     : error.recovery === "select_repository"
       ? { label: "Repository 다시 선택", run: onSelectRepository }
       : { label: retryLabel, run: onRetry };

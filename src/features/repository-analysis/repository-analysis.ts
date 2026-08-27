@@ -162,8 +162,8 @@ function errorCopy(kind: Exclude<GitHubFetchErrorKind, "partial_failure">) {
       };
     case "auth_revoked":
       return {
-        title: "GitHub 인증을 다시 확인해 주세요",
-        message: "인증이 만료되었거나 접근 권한이 취소되었습니다. 인증을 다시 진행한 뒤 조회를 재개할 수 있습니다.",
+        title: "GitHub에 다시 로그인해 주세요",
+        message: "로그인이 만료되었거나 접근 권한이 취소되었습니다. 다시 로그인한 뒤 조회를 재개할 수 있습니다.",
         recovery: "reauthenticate" as const,
       };
     case "repo_not_found":
@@ -368,7 +368,7 @@ export async function generateCandidates(
 
 const DIFF_REFETCH_GUIDANCE: Record<Exclude<GitHubFetchErrorKind, "partial_failure">, string> = {
   rate_limit: "GitHub API 호출 한도가 회복된 뒤 후보 생성을 다시 시도해 주세요.",
-  auth_revoked: "인증이 만료되었거나 접근 권한이 취소되었습니다. 인증을 다시 진행해 주세요.",
+  auth_revoked: "로그인이 만료되었거나 접근 권한이 취소되었습니다. GitHub에 다시 로그인해 주세요.",
   repo_not_found: "Repository가 삭제되었거나 이름이 변경되었는지 확인하고 다시 선택해 주세요.",
   network: "네트워크 연결을 확인한 뒤 후보 생성을 다시 시도해 주세요.",
   server_error: "GitHub 서버 문제일 수 있습니다. 잠시 후 후보 생성을 다시 시도해 주세요.",

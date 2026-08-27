@@ -1,1 +1,1 @@
-C:/Users/user/Documents/1st-project/AGENTS.md
+@AGENTS.md

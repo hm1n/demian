@@ -13,7 +13,7 @@
 .field input:disabled, .field textarea:disabled { background: #f4f3f7; color: #777580; }
 .hint { color: #74727d; font-size: 12px; font-weight: 450; line-height: 1.5; }
 .button, .secondaryButton { min-height: 44px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 14px; font-weight: 700; padding: 0 18px; }
-.button { border: 1px solid #5b52d6; background: #5b52d6; color: #fff; }
+.button { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #5b52d6; background: #5b52d6; color: #fff; text-decoration: none; }
 .button:hover:not(:disabled) { background: #4d44c5; }
 .button:disabled { cursor: wait; opacity: .65; }
 .secondaryButton { border: 1px solid #d7d5df; background: #fff; color: #34333d; }
