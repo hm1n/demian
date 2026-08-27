@@ -13,8 +13,14 @@ export function deleteOAuthStateCookie(): string {
   return `${GITHUB_OAUTH_STATE_COOKIE}=; ${STATE_COOKIE_OPTIONS}; Max-Age=0`;
 }
 
-/** OAuth 설정 누락은 사용자가 조치할 수 없는 서버 문제이므로 교환 실패와 구분합니다. */
+/**
+ * 사용자가 조치할 수 없는 서버 문제를 교환 실패와 구분합니다. 앞은 다시 시도해도 같은 결과이고
+ * 뒤는 다시 시도할 값이 있습니다.
+ */
 export class GitHubOAuthConfigError extends Error {}
+
+/** GitHub이 HTTP 200 본문으로 돌려주는 오류 중 서버 설정이 원인인 것입니다. */
+const CONFIG_ERROR_CODES = new Set(["incorrect_client_credentials", "redirect_uri_mismatch"]);
 
 const AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
@@ -54,7 +60,11 @@ export async function exchangeGitHubCode(config: GitHubOAuthConfig, code: string
   let body: unknown;
   try { body = await response.json(); } catch { throw new Error("GitHub token exchange returned invalid JSON"); }
   if (typeof body !== "object" || body === null) throw new Error("GitHub token exchange returned an invalid body");
-  if ("error" in body) throw new Error(`GitHub token exchange returned an error: ${String(body.error)}`);
+  if ("error" in body) {
+    const errorCode = String(body.error);
+    const message = `GitHub token exchange returned an error: ${errorCode}`;
+    throw CONFIG_ERROR_CODES.has(errorCode) ? new GitHubOAuthConfigError(message) : new Error(message);
+  }
   const token = "access_token" in body ? body.access_token : undefined;
   if (typeof token !== "string" || !token) throw new Error("GitHub token exchange returned no access token");
   return token;

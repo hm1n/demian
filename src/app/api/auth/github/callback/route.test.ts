@@ -83,6 +83,12 @@ describe("GitHub OAuth callback", () => {
     expect(body).toContain("code=the-code");
   });
 
+  it("maps a client credential error to config_missing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "incorrect_client_credentials" })));
+    const response = await GET(request("code=code&state=state"));
+    expect(response.headers.get("location")).toBe("https://app.test/?auth_error=config_missing");
+  });
+
   it("maps exchange failures to exchange_failed", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 500 })));
     const response = await GET(request("code=code&state=state"));

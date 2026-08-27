@@ -34,6 +34,17 @@ describe("exchangeGitHubCode", () => {
     await expect(exchangeGitHubCode(config, "code")).rejects.toThrow("status 502");
   });
 
+  // 설정이 틀린 경우는 다시 시도해도 같은 결과라 사용자에게 재시도를 권하면 안 됩니다.
+  it.each(["incorrect_client_credentials", "redirect_uri_mismatch"])("classifies %s as a configuration error", async (errorCode) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: errorCode })));
+    await expect(exchangeGitHubCode(config, "code")).rejects.toThrow(GitHubOAuthConfigError);
+  });
+
+  it("keeps other GitHub errors retryable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "bad_verification_code" })));
+    await expect(exchangeGitHubCode(config, "code")).rejects.not.toBeInstanceOf(GitHubOAuthConfigError);
+  });
+
   it("rejects invalid JSON", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not json", { status: 200 })));
     await expect(exchangeGitHubCode(config, "code")).rejects.toThrow("invalid JSON");
