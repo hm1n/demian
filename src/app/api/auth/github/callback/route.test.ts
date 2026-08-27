@@ -33,14 +33,22 @@ describe("GitHub OAuth callback", () => {
     expect(cookies[1]).toContain("Max-Age=0");
   });
 
-  it.each([
-    ["error=cancelled", "access_denied"],
-    ["code=code&state=wrong", "state_mismatch"],
-  ])("maps %s to %s", async (query, error) => {
-    const response = await GET(request(query));
-    expect(response.headers.get("location")).toBe(`https://app.test/?auth_error=${error}`);
+  it("maps a denied authorization to access_denied and deletes state", async () => {
+    const response = await GET(request("error=access_denied&state=state"));
+    expect(response.headers.get("location")).toBe("https://app.test/?auth_error=access_denied");
     expect(response.headers.getSetCookie()).toEqual([expect.stringContaining("github_oauth_state=; ")]);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  // state가 우리 것이 아니면 쿠키를 지우지 않습니다. 지우면 크로스사이트 호출로 남의 로그인을 끊을 수 있습니다.
+  it.each([
+    ["a mismatched state", "code=code&state=wrong"],
+    ["a missing state", "code=code"],
+    ["an error without a state", "error=access_denied"],
+  ])("keeps the state cookie on %s", async (_label, query) => {
+    const response = await GET(request(query));
+    expect(response.headers.get("location")).toBe("https://app.test/?auth_error=state_mismatch");
+    expect(response.headers.get("set-cookie")).toBeNull();
   });
 
   it("maps missing OAuth configuration to config_missing", async () => {
