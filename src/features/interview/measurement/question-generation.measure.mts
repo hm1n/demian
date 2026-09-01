@@ -530,6 +530,13 @@ async function measureSseRoute(
     `- done의 seq와 마지막 chunk의 seq 일치 ` +
       `${lastEvent?.type === "done" && lastEvent.seq === seqs.at(-1)}`
   );
+  // 질문 원문도 남깁니다. 이 경로가 실제 route를 통과하므로, 사용자가 화면에서 읽을 문장과 같습니다.
+  // 수치만 남기면 배선은 확인되지만 질문이 근거에 붙어 있는지는 사람이 볼 수 없습니다.
+  const question = chunkEvents
+    .map((event) => (event.type === "chunk" ? event.text : ""))
+    .join("");
+  console.log("  --- 질문 ---");
+  console.log(question);
 }
 
 // ---------------------------------------------------------------------------

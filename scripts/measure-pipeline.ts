@@ -420,11 +420,12 @@ async function runStageA() {
     // 토큰 8,000에서 나온 값이라 Gemini에서 재산정해야 하고, 그 재산정에 필요한 것이 묶음 수를
     // 늘렸을 때 전수 응답 계약이 유지되는지입니다.
     const selectionBytes = numericOption("selection-bytes", STAGE_A_MAX_SELECTION_BYTES);
-    const { units: stageAUnits, workUnits: stageAWorkUnits, excludedUnits } = toStageAUnits(
-      details,
-      contributionItems,
-      selectionBytes
-    );
+    const {
+      units: stageAUnits,
+      workUnits: stageAWorkUnits,
+      excludedUnits,
+      thresholdScore,
+    } = toStageAUnits(details, contributionItems, selectionBytes);
     const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
     if (stageAChunks.length > 1) {
       console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
@@ -437,9 +438,16 @@ async function runStageA() {
         buildStageAPayload({ units: stageAUnits, contributionItems, candidateLimit })
       )
     ).byteLength;
+    // 제외 사유를 갈라 봅니다. 갈라 두지 않으면 선별이 멈춘 원인이 바이트 예산인지 점수 경계인지
+    // 알 수 없습니다. 예산을 올려도 묶음 수가 그대로인 저장소가 있어 이 구분이 필요했습니다.
+    const belowScore = excludedUnits.filter(
+      ({ reason }) => reason === "below_score_threshold"
+    ).length;
+    const overBytes = excludedUnits.filter(({ reason }) => reason === "over_byte_budget").length;
     console.log(
-      `[stage-a] 선별 예산=${selectionBytes}B 선별 입력묶음=${stageAUnits.length} 제외묶음=${excludedUnits.length} ` +
-        `프롬프트=${stageAPromptBytes}B 후보상한=${candidateLimit}`
+      `[stage-a] 선별 예산=${selectionBytes}B 선별 입력묶음=${stageAUnits.length} ` +
+        `제외묶음=${excludedUnits.length}(점수미달 ${belowScore}, 분량초과 ${overBytes}) ` +
+        `경계점수=${thresholdScore} 프롬프트=${stageAPromptBytes}B 후보상한=${candidateLimit}`
     );
     const output = await selectStageACandidates(
       {
