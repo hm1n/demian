@@ -40,7 +40,20 @@ const GENERATION_ERROR_CAUSE: Partial<Record<InterviewStreamErrorKind, string>> 
   llm_network: "질문 생성 서비스에 연결하지 못했습니다.",
   llm_auth: "질문 생성 서비스 인증에 실패했습니다. 서버 설정 문제입니다.",
   llm_configuration: "질문 생성 서비스 설정에 문제가 있습니다.",
-  llm_request: "질문 근거가 질문 생성 서비스가 받을 수 있는 크기를 넘었습니다.",
+  /**
+   * 크기를 지목하지 않습니다. 2026-09-01 실측에서 Gemini는 잘못된 파라미터도 400으로 돌려주므로 이
+   * 분류에 크기와 무관한 실패가 들어옵니다. 근거 크기가 문제인 경우는 provider에 닿기 전에 세 가드가
+   * 각자 자기 문구로 먼저 거절합니다. 스냅샷 단계의 `evidence_input_too_large`, 본문 크기의
+   * `body_too_large`, route의 프롬프트 바이트 가드입니다. 따라서 이 분류가 실제로 뜻하는 것은 크기가
+   * 아니라 provider의 요청 거부입니다.
+   */
+  llm_request: "질문 생성 서비스가 요청을 받아들이지 않았습니다.",
+  /**
+   * Gemini의 500 `INTERNAL`과 503 `UNAVAILABLE`(모델 과부하)이 이 분류로 옵니다. flash 계열에서 가장
+   * 흔한 일시 실패인데 항목이 없어 "질문을 만드는 중에 오류가 발생했습니다"라는 기본 문구가
+   * 나갔습니다. `clearsOnRetry`가 참이므로 `retryHint`가 잠시 뒤 재시도를 덧붙입니다.
+   */
+  llm_failure: "질문 생성 서비스가 응답하지 못했습니다.",
   server_error: "서버 설정에 문제가 있어 요청을 처리하지 못했습니다.",
 };
 

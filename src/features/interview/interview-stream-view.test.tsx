@@ -183,6 +183,55 @@ describe("InterviewStreamView", () => {
     expect(alert).not.toHaveTextContent("네트워크 상태를 확인");
   });
 
+  // 2026-09-01 실측: Gemini는 잘못된 파라미터도 400으로 돌려주므로 이 분류에 크기와 무관한 실패가
+  // 들어옵니다. 근거 크기가 문제인 경우는 provider에 닿기 전 세 가드가 먼저 거절하므로, 이 안내가
+  // 크기를 지목하면 원인과 반대되는 문장을 보여 주게 됩니다.
+  it("provider가 요청을 거부한 실패에 크기 초과를 지목하지 않는다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      body: null,
+      json: () =>
+        Promise.resolve({
+          error: { kind: "llm_request", message: "LLM이 요청을 거부했습니다." },
+        }),
+    } as unknown as Response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} {...renderOptions} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("질문 생성 서비스가 요청을 받아들이지 않았습니다.");
+    expect(alert).toHaveTextContent("다시 시도해도 같은 결과가 나옵니다.");
+    expect(alert).not.toHaveTextContent("크기를 넘었");
+  });
+
+  /**
+   * Gemini의 500 `INTERNAL`과 503 `UNAVAILABLE`(모델 과부하)이 `llm_failure`로 옵니다. 이 분류에
+   * 문구가 없어서 "질문을 만드는 중에 오류가 발생했습니다"라는 기본 문구가 나갔습니다. 기다리면
+   * 풀리는 실패이므로 잠시 뒤 재시도를 권해야 합니다.
+   */
+  it("일시적인 provider 장애에 잠시 뒤 재시도를 권한다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      body: null,
+      json: () =>
+        Promise.resolve({
+          error: {
+            kind: "llm_failure",
+            message: "질문 생성 서비스가 일시적으로 응답하지 못했습니다.",
+          },
+        }),
+    } as unknown as Response);
+
+    render(<InterviewStreamView fetchImpl={fetchImpl} {...renderOptions} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("질문 생성 서비스가 응답하지 못했습니다.");
+    expect(alert).toHaveTextContent("잠시 뒤에 다시 시도해 주세요.");
+    expect(alert).not.toHaveTextContent("다시 시도해도 같은 결과가 나옵니다.");
+  });
+
   it("자라나는 메시지가 아니라 상태와 새 메시지 안내를 낭독 대상으로 둔다", async () => {
     const { push, response } = controllableResponse();
     const fetchImpl = vi.fn().mockResolvedValue(response);
