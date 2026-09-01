@@ -11,12 +11,15 @@ import {
   STAGE_A_CHUNK_MAX_BYTES,
   STAGE_A_CHUNK_MAX_REQUEST_BYTES,
   STAGE_A_CHUNK_MAX_UNITS,
+  STAGE_A_MIN_LLM_BUDGET_MS,
+  STAGE_A_TIMEOUT_MS,
   buildStageAPayload,
   renderStageAPrompt,
   selectStageACandidates,
   type GenerateStageA,
   type StageAInput,
 } from "@/features/experience-candidates/stage-a";
+import { resolveLlmTimeoutMs } from "@/features/experience-candidates/llm-provider";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -109,6 +112,17 @@ export async function handleStageA(
   generate?: GenerateStageA,
   timeoutMs?: number
 ): Promise<Response> {
+  /**
+   * 예산을 라우트 전체로 한 번만 잽니다.
+   *
+   * 복구 호출마다 새 시한을 주면 라우트가 `maxDuration` 60초를 넘길 수 있습니다. 넘기면 플랫폼이
+   * 함수를 끊어 우리 오류 계약이 나가지 못합니다. 남은 시간을 각 호출의 시한으로 넘겨 세 번을
+   * 합쳐도 한 번의 예산 안에서 끝나게 합니다. 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 예산을
+   * 대신합니다. Stage B 라우트가 같은 방식을 씁니다.
+   */
+  const startedAt = Date.now();
+  const totalBudgetMs = timeoutMs ?? resolveLlmTimeoutMs(STAGE_A_TIMEOUT_MS);
+  const remainingBudgetMs = () => totalBudgetMs - (Date.now() - startedAt);
   try {
     getGitHubTokenFromRequest(request);
     const declaredLength = Number(request.headers.get("content-length"));
@@ -213,7 +227,7 @@ export async function handleStageA(
       attemptsLeft = 2
     ): Promise<StageAChunkOutput> => {
       try {
-        return await selectStageACandidates(input, generate, timeoutMs);
+        return await selectStageACandidates(input, generate, Math.max(1, remainingBudgetMs()));
       } catch (error) {
         // 모델이 형식에 맞는 응답 자체를 만들지 못한 경우입니다. 살릴 부분 응답이 없으므로 같은
         // 입력을 그대로 다시 보냅니다. 실측에서 같은 입력이 시도마다 다른 출력을 냈습니다.
@@ -221,7 +235,8 @@ export async function handleStageA(
           error instanceof ExperienceCandidateOutputError &&
           error.kind === "schema_validation" &&
           !error.partialOutput &&
-          attemptsLeft > 0
+          attemptsLeft > 0 &&
+          remainingBudgetMs() >= STAGE_A_MIN_LLM_BUDGET_MS
         ) {
           return await selectWithRecovery(input, attemptsLeft - 1);
         }
@@ -233,7 +248,11 @@ export async function handleStageA(
         }
         const partial = error.partialOutput;
         const missingShas = error.missingShas;
-        if (attemptsLeft === 0) return degrade(partial, missingShas);
+        // 잔여 예산이 복구 한 번을 담지 못하면 시작하지 않고 부분 결과를 살립니다. 시작해 놓고
+        // 시한에 걸리면 그만큼 라우트 예산만 쓰고 결과는 같습니다.
+        if (attemptsLeft === 0 || remainingBudgetMs() < STAGE_A_MIN_LLM_BUDGET_MS) {
+          return degrade(partial, missingShas);
+        }
 
         const missing = new Set(missingShas);
         let recovered: StageAChunkOutput;

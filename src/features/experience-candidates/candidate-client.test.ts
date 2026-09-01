@@ -13,6 +13,7 @@ import {
   renderStageAPrompt,
   STAGE_A_CHUNK_MAX_BYTES,
   STAGE_A_CHUNK_MAX_REQUEST_BYTES,
+  STAGE_A_CHUNK_MAX_UNITS,
   STAGE_A_DEGRADED_WAIT_MS,
 } from "./stage-a";
 import type { StageACandidate } from "./types";
@@ -65,6 +66,15 @@ function parseRequest(init: RequestInit | undefined): StageARequestBody {
 }
 
 /** 커밋마다 서로 다른 PR을 붙여 묶음 하나에 커밋 하나가 되게 합니다. */
+/**
+ * 청크가 반드시 둘 이상이 되는 묶음 수입니다.
+ *
+ * 개수를 숫자로 박아 두면 상한이 바뀔 때 조용히 한 청크로 합쳐지고, 청크 사이 동작을 보는 테스트가
+ * 아무것도 검증하지 않게 됩니다. 2026-09-01에 개수 상한이 20에서 40으로 오르면서 실제로 그런 일이
+ * 생겨 25묶음 픽스처가 한 청크가 되었습니다.
+ */
+const MULTI_CHUNK_UNITS = STAGE_A_CHUNK_MAX_UNITS + 5;
+
 function manyUnits(count: number): ReadonlyCommitDetail[] {
   return Array.from({ length: count }, (_, index) => ({
     ...COMMIT,
@@ -306,7 +316,7 @@ describe("fetchStageACandidatesFromApi", () => {
   });
 
   it("모든 묶음을 한 번씩 판단하고 재판단 라운드 없이 끝낸다", async () => {
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     const sent: number[] = [];
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -327,7 +337,7 @@ describe("fetchStageACandidatesFromApi", () => {
     const output = await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
 
     expect(sent).toEqual(commits.map((_, index) => index + 1));
-    expect(new Set(sent).size).toBe(25);
+    expect(new Set(sent).size).toBe(MULTI_CHUNK_UNITS);
     expect(output.candidates.length).toBeLessThanOrEqual(20);
     // 청크 수만큼만 호출합니다. 재판단 라운드가 있으면 이 값을 넘습니다.
     const chunkCount = splitUnitsIntoChunks(toStageAUnits(commits).units, []).length;
@@ -338,7 +348,7 @@ describe("fetchStageACandidatesFromApi", () => {
     // 라우트가 복구를 소진하면 부분 결과를 rateLimit null로 돌려준다(route.ts의 degrade).
     // 예전에는 이 응답을 응답 형식 오류로 던져서 청크가 여러 개일 때 뒤 청크를 아예 시도하지
     // 않았다. 저하는 이미 처리한 판단을 살리려고 만든 경로인데 그 목적을 스스로 깼다.
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     const sentChunks: number[][] = [];
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -370,7 +380,7 @@ describe("fetchStageACandidatesFromApi", () => {
 
   it("한도 메타데이터가 없고 판단 불가도 없으면 응답 형식 오류로 던진다", async () => {
     // 저하가 아니라 정말 형식이 어긋난 응답이다. 이 경우의 기존 방어는 유지해야 한다.
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
       return jsonResponse({
@@ -388,7 +398,7 @@ describe("fetchStageACandidatesFromApi", () => {
 
   it("체크포인트가 판단 대상 묶음 수를 함께 싣는다", async () => {
     // 실패 문구가 커밋 수로 분모를 다시 유도하지 않도록 체크포인트가 분모를 들고 다닌다.
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     vi.mocked(fetch).mockResolvedValue(
       jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502)
     );
@@ -400,7 +410,7 @@ describe("fetchStageACandidatesFromApi", () => {
   });
 
   it("청크마다 쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
       return jsonResponse({
@@ -419,7 +429,7 @@ describe("fetchStageACandidatesFromApi", () => {
   });
 
   it("실패 전 완료 청크 체크포인트로 재개해 이미 판단한 묶음을 다시 보내지 않는다", async () => {
-    const commits = manyUnits(25);
+    const commits = manyUnits(MULTI_CHUNK_UNITS);
     const firstChunk = splitUnitsIntoChunks(toStageAUnits(commits).units, [])[0];
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse({
@@ -477,11 +487,11 @@ describe("fetchStageACandidatesFromApi", () => {
 
 describe("splitUnitsIntoChunks", () => {
   it("묶음 수 상한에서 나눈다", () => {
-    const units = toStageAUnits(manyUnits(45)).units;
+    const units = toStageAUnits(manyUnits(STAGE_A_CHUNK_MAX_UNITS * 2 + 5)).units;
 
     const chunks = splitUnitsIntoChunks(units, []);
 
-    expect(chunks.every((chunk) => chunk.length <= 20)).toBe(true);
+    expect(chunks.every((chunk) => chunk.length <= STAGE_A_CHUNK_MAX_UNITS)).toBe(true);
     expect(chunks.flat().map(({ pullRequestNumber }) => pullRequestNumber))
       .toEqual(units.map(({ pullRequestNumber }) => pullRequestNumber));
   });

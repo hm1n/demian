@@ -8,21 +8,25 @@ import {
 } from "ai";
 import {
   ExperienceCandidateOutputError,
+  isAuthFailureResponseBody,
   isModelOutputFailureResponseBody,
   isRateLimitResponseBody,
 } from "./errors";
 import {
   createStageAModel,
   isLocalLlm,
-  localSamplingOptions,
+  judgmentSamplingOptions,
+  LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
 } from "./llm-provider";
 import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
 import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
 
-// 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
-// 반환했습니다. 현재 서빙 중인 구조화 출력 가능 모델 중 입력 SHA 전수 응답 계약을 가장 잘
-// 지킨 모델입니다. 같은 조건에서 `openai/gpt-oss-20b`는 8개 입력에도 1/8만 응답했습니다.
+// 2026-09-01에 Groq `openai/gpt-oss-120b`에서 옮겼습니다. 확정 근거와 탈락 사유는
+// `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다. 이 단계의 기준은 입력 PR 번호
+// 전수 응답 계약이고, 실측에서 27묶음 전량에 대해 5회 모두 `27/27`을 지켰습니다. 첫 질문 생성이
+// 같은 모델을 씁니다. 한도가 프로젝트별이면서 모델별이라 한 통을 공유하지만, 유료 등급 한도가
+// RPM 4,000·분당 입력 4,000,000토큰이라 문제가 되지 않습니다.
 export const STAGE_A_MODEL = "gemini-3.1-flash-lite";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
@@ -30,28 +34,49 @@ export const UNCLASSIFIED_LABEL = "미분류";
 // route maxDuration 60초보다 먼저 JSON 오류를 반환하는 시한으로 55초를 유지합니다.
 export const STAGE_A_TIMEOUT_MS = 55_000;
 /**
+ * 복구 호출을 시작할 최소 잔여 예산입니다.
+ *
+ * 라우트는 계약 위반과 스키마 실패를 최대 3회까지 다시 시도합니다. 그 세 번이 각자 새 시한을 받고
+ * 있어서 라우트 전체가 `STAGE_A_TIMEOUT_MS`의 세 배까지 늘어날 수 있었습니다. `maxDuration`이 60초라
+ * 넘기면 플랫폼이 함수를 끊고, 그러면 우리가 정한 오류 계약 대신 생 504가 나갑니다. Stage B가
+ * `STAGE_B_MIN_LLM_BUDGET_MS`로 같은 문제를 이미 막고 있고 이 값은 그 짝입니다.
+ *
+ * 12초로 정한 근거는 관측된 최대 성공 시간입니다. Gemini에서 2,042~3,590밀리초이고 Groq 시절
+ * 이슈 #19 실측이 3.1~11.1초였습니다. 잔여가 이 값보다 적으면 복구를 시작해도 완주하지 못할
+ * 가능성이 높으므로, 시작하지 않고 부분 결과로 저하시킵니다.
+ */
+export const STAGE_A_MIN_LLM_BUDGET_MS = 12_000;
+/**
  * 한 청크가 모델에 보내는 프롬프트 바이트 상한입니다.
  *
  * 요청 본문이 아니라 접힌 묶음 문자열을 잽니다. 요청 본문은 구조화 요약이라 같은 내용이라도
  * 필드 이름과 따옴표 때문에 더 큽니다. 둘을 나눠서 잽니다.
  *
- * 이 값을 정하는 것은 모델 컨텍스트가 아니라 Groq 무료 등급의 분당 토큰 한도(TPM) 8,000입니다.
- * `gpt-oss` 계열 컨텍스트는 131,072토큰이라 저장소 전체를 한 번에 넣고도 남습니다. 하지만 TPM을
- * 넘는 요청은 기다려도 통과하지 않습니다. 근거는 `STAGE_A_MAX_SELECTION_BYTES`에 있습니다.
+ * **`STAGE_A_MAX_SELECTION_BYTES`와 같은 값이어야 합니다.** 선별이 고른 결과가 그대로 한 요청에
+ * 실려야 하므로 두 값이 어긋나면 선별 결과가 청크 둘로 갈립니다. 그러면 청크 사이 대기 경로가
+ * 살아나는데, 그 대기는 Groq의 분당 토큰 창에서 나온 값이라 Gemini에서는 근거가 없습니다
+ * (`STAGE_A_DEGRADED_WAIT_MS` 참고). 값과 재산정 근거는 `STAGE_A_MAX_SELECTION_BYTES`에 있습니다.
  *
- * 점수 선별이 입력을 이 상한 안으로 줄이므로 실측 두 저장소 모두 청크가 하나입니다. 청크 분할은
+ * 점수 선별이 입력을 이 상한 안으로 줄이므로 실측 저장소는 청크가 하나입니다. 청크 분할은
  * 선별이 예상보다 큰 입력을 넘길 때를 위한 안전장치로 남습니다.
  */
-export const STAGE_A_CHUNK_MAX_BYTES = 10_500;
+export const STAGE_A_CHUNK_MAX_BYTES = 20_000;
 /**
  * 요청 본문 상한입니다.
  *
  * 구조화 요약의 필드 이름과 구분자 때문에 프롬프트보다 큽니다. 실측 배율은 `demian` 1.52,
- * `andbread` 1.25입니다. 프롬프트 상한 10,500에 최대 배율을 적용하면 15,960이라 여유를 둡니다.
+ * `andbread` 1.25입니다. 프롬프트 상한 20,000에 최대 배율을 적용하면 30,400이라 여유를 둡니다.
  */
-export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 20_000;
-/** 한 청크에 담을 작업 묶음 수 상한입니다. 바이트 상한보다 먼저 걸리는 경우를 막는 안전장치입니다. */
-export const STAGE_A_CHUNK_MAX_UNITS = 20;
+export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 32_000;
+/**
+ * 한 청크에 담을 작업 묶음 수 상한입니다. 바이트 상한보다 먼저 걸리는 경우를 막는 안전장치입니다.
+ *
+ * 2026-09-01에 20에서 40으로 올렸습니다. 프롬프트 상한을 20,000바이트로 올리면서 20이 실질 상한이
+ * 되었고, 실측 저장소가 27묶음이라 20에서 7개가 개수 때문에 빠집니다. 개수 상한을 없애지 않는
+ * 이유는 전수 응답 계약이 묶음 수에 따라 깨지기 때문입니다. Groq 시절 66묶음에서 첫 시도 준수가
+ * 33퍼센트였습니다. 27묶음까지는 계약 준수 5회 중 5회를 실측했고 그 위는 재지 못했습니다.
+ */
+export const STAGE_A_CHUNK_MAX_UNITS = 40;
 /**
  * 청크 하나가 추천할 수 있는 묶음 수입니다.
  *
@@ -63,16 +88,28 @@ export const STAGE_A_CHUNK_MAX_UNITS = 20;
  * 후보가 2개로 끝납니다. 5면 Stage B 커밋 상한 30을 나눠 후보당 6커밋이 실려 근거가 두터워집니다.
  */
 export const STAGE_A_CHUNK_QUOTA = 5;
-export const STAGE_A_TOKEN_RESERVE = 6_000;
-export const STAGE_A_RESET_SAFETY_MS = 1_000;
 
 /**
- * 한도 메타데이터 없이 다음 청크로 넘어갈 때 기다리는 시간입니다.
+ * 아래 세 값은 청크 사이 대기에만 쓰이고, **현재 제공자에서는 어느 것도 도달하지 않습니다.**
  *
- * 라우트가 복구를 소진해 부분 결과로 저하시킬 때 `rateLimit`을 null로 돌려줍니다. 남은 토큰을 알
- * 수 없으므로 분당 토큰 한도의 창을 통째로 기다립니다. 헤더가 있을 때 쓰는 `resetAfterMs`가 이
- * 창 안의 남은 시간이므로 창 전체가 상한입니다.
+ * 셋 다 Groq 무료 등급의 분당 토큰 창에서 나왔습니다. 그 시절에는 청크 하나를 보낸 뒤 남은 토큰이
+ * 적으면 창이 리셋될 때까지 기다려야 다음 청크가 통과했습니다. Gemini에는 그 창이 없습니다. 유료
+ * 등급 분당 입력 한도가 4,000,000토큰이고 이 단계 한 회가 24,000토큰을 넘지 않습니다.
+ *
+ * 도달하지 않는 이유는 두 겹입니다. 첫째로 `createStageAGenerate`가 Gemini 응답에 한도 헤더가 없는
+ * 것을 보고 남은 토큰을 최댓값으로 합성하므로 `STAGE_A_TOKEN_RESERVE` 비교가 항상 거짓입니다.
+ * 둘째로 선별 예산과 청크 바이트 상한이 같은 값이라 선별 결과가 언제나 청크 하나에 담깁니다.
+ * 대기는 청크가 둘 이상일 때만 일어납니다.
+ *
+ * 그래서 값을 지금 재산정하지 않고 그대로 둡니다. **다만 두 상한을 어긋나게 바꾸면 청크가 갈리고
+ * 이 대기가 되살아납니다.** 그때 사용자는 근거 없이 61초를 기다립니다. 두 상한을 함께 움직여야
+ * 하는 이유가 이것이고 `STAGE_A_CHUNK_MAX_BYTES`에도 같은 경고를 적어 두었습니다.
+ *
+ * 걷어내는 편이 맞지만 이 대기는 `candidate-client.ts`의 청크 루프와 화면의
+ * `waitingForRateLimit` 상태까지 이어져 있어 별건으로 남깁니다.
  */
+export const STAGE_A_TOKEN_RESERVE = 6_000;
+export const STAGE_A_RESET_SAFETY_MS = 1_000;
 export const STAGE_A_DEGRADED_WAIT_MS = 60_000 + STAGE_A_RESET_SAFETY_MS;
 
 /**
@@ -245,7 +282,14 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
     });
   }
   if (APICallError.isInstance(error)) {
-    if (error.statusCode === 401 || error.statusCode === 403) {
+    // Gemini는 잘못된 키를 401이 아니라 400 `INVALID_ARGUMENT`로 돌려줍니다. 본문의
+    // `reason=API_KEY_INVALID`로 갈라야 요청 형식 오류와 섞이지 않습니다. 판별은 `errors.ts`에
+    // 실측 근거와 함께 있습니다.
+    if (
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      (error.statusCode === 400 && isAuthFailureResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", {
         cause: error,
       });
@@ -279,6 +323,17 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
       return new ExperienceCandidateOutputError("llm_configuration", "LLM 모델 설정이 올바르지 않습니다.", {
         cause: error,
       });
+    }
+    // Gemini는 모델 과부하를 503 `UNAVAILABLE`로, 내부 오류를 500 `INTERNAL`로 돌려줍니다. Groq
+    // 기준으로 배선했을 때는 이 갈래가 없어도 됐지만 flash 계열에서는 가장 흔한 일시 실패입니다.
+    // 기다리면 풀리는 실패이므로 재시도 가능한 `llm_failure`로 두고, 문구에서 원인이 일시 장애임을
+    // 밝힙니다. 504는 위에서 이미 시간 초과로 갈라 두었습니다.
+    if ((error.statusCode ?? 0) >= 500) {
+      return new ExperienceCandidateOutputError(
+        "llm_failure",
+        "LLM 서비스가 일시적으로 응답하지 못했습니다.",
+        { cause: error }
+      );
     }
     // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
     // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
@@ -364,7 +419,8 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
         localInputScopeHint(),
       prompt: renderStageAPrompt(payload),
       abortSignal,
-      ...localSamplingOptions(),
+      maxRetries: LLM_MAX_RETRIES,
+      ...judgmentSamplingOptions(),
     });
     /**
      * 로컬 제공자는 한도 헤더를 보내지 않으므로 여기서 합성합니다.
@@ -416,11 +472,13 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
   };
 }
 
-const generateWithGroq: GenerateStageA = createStageAGenerate();
+// 프로덕션은 Gemini, 로컬 전환에서는 OpenAI 호환 엔드포인트로 갑니다. 제공자 이름을 여기 붙이지
+// 않는 이유입니다. 2026-09-01까지 이 상수 이름이 `generateWithGroq`였습니다.
+const defaultGenerate: GenerateStageA = createStageAGenerate();
 
 export async function selectStageACandidates(
   input: StageAInput,
-  generate: GenerateStageA = generateWithGroq,
+  generate: GenerateStageA = defaultGenerate,
   // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
   timeoutMs = resolveLlmTimeoutMs(STAGE_A_TIMEOUT_MS)
 ): Promise<StageAChunkOutput> {

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExperienceCandidateOutputError } from "./errors";
 import {
+  createInterviewQuestionModel,
   createStageAModel,
   createStageBModel,
   isLocalLlm,
   resolveLocalLlm,
-  localSamplingOptions,
+  judgmentSamplingOptions,
+  STAGE_JUDGMENT_TEMPERATURE,
   resolveLlmTimeoutMs,
   resolveStageBMaxInputCommits,
   resolveStageBMaxTotalPatchChars,
@@ -52,6 +54,17 @@ describe("환경변수 미설정", () => {
     expect(stageB.options).toBeUndefined();
   });
 
+  // 첫 질문 경로도 같은 스위치를 따라야 합니다. 2026-09-01까지 이 경로만 `createGoogle()`을 직접
+  // 불러서, 로컬 스위치를 켜면 Stage A·B는 Ollama로 가고 첫 질문만 Google로 갔습니다.
+  it("첫 질문 생성도 Google 경로를 그대로 탄다", () => {
+    stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: undefined });
+
+    const question = asFake(createInterviewQuestionModel("gemini-3.1-flash-lite"));
+
+    expect(question).toMatchObject({ provider: "google", modelId: "gemini-3.1-flash-lite" });
+    expect(question.options).toBeUndefined();
+  });
+
   // 모델 환경변수만으로 프로덕션 모델이 바뀌면 사용자 실행 경로가 로컬 사정에 끌려갑니다.
   it("모델 환경변수만 설정해도 프로덕션 모델을 바꾸지 않는다", () => {
     stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: undefined, STAGE_A_MODEL: "qwen2.5:7b", STAGE_B_MODEL: "qwen2.5:7b" });
@@ -87,6 +100,31 @@ describe("NEXT_PUBLIC_LLM_BASE_URL 설정", () => {
     for (const model of [stageA, stageB]) {
       expect(model.options).toEqual({ baseURL: "http://localhost:11434/v1", apiKey: "ollama" });
     }
+  });
+
+  /**
+   * 첫 질문 경로는 로컬 모델 환경변수를 따로 두지 않고 `STAGE_A_MODEL`을 씁니다. 로컬은 모델 하나를
+   * 띄워 쓰는 환경이고 프로덕션에서도 첫 질문 모델이 Stage A와 같은 모델입니다.
+   */
+  it("첫 질문 생성도 같은 baseURL과 STAGE_A_MODEL을 탄다", () => {
+    stubLocal({
+      NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1",
+      LLM_API_KEY: "ollama",
+      STAGE_A_MODEL: "qwen2.5:7b",
+    });
+
+    const question = asFake(createInterviewQuestionModel("gemini-3.1-flash-lite"));
+
+    expect(question).toMatchObject({ provider: "groq", modelId: "qwen2.5:7b" });
+    expect(question.options).toEqual({ baseURL: "http://localhost:11434/v1", apiKey: "ollama" });
+  });
+
+  it("첫 질문 생성도 모델 환경변수가 없으면 설정 오류로 먼저 끊는다", () => {
+    stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1", STAGE_A_MODEL: undefined });
+
+    expect(() => createInterviewQuestionModel("gemini-3.1-flash-lite")).toThrow(
+      ExperienceCandidateOutputError
+    );
   });
 
   it("LLM_API_KEY가 없으면 자리값을 채운다", () => {
@@ -209,42 +247,44 @@ describe("Stage B 입력 축소값", () => {
   });
 });
 
-describe("로컬 전용 시한과 샘플링", () => {
-  it("환경변수가 없으면 프로덕션 시한과 제공자 기본 샘플링을 쓴다", () => {
-    stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: undefined, LLM_TIMEOUT_MS: "1000", LLM_TEMPERATURE: "0" });
+describe("판단 시한과 샘플링", () => {
+  it("환경변수가 없으면 프로덕션 시한과 고정 온도를 쓴다", () => {
+    stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: undefined, LLM_TIMEOUT_MS: "1000", LLM_TEMPERATURE: "0.9" });
 
-    // 로컬 전환이 아니면 두 값 모두 무시합니다. 프로덕션 시한은 이슈 #19 실측에 묶여 있습니다.
+    // 로컬 전환이 아니면 두 환경변수 모두 무시합니다. 프로덕션 시한은 이슈 #19 실측에 묶여 있고,
+    // 온도는 2026-09-01 실측으로 고정했습니다. 프로덕션에서 환경변수로 온도를 흔들 수 있게 두면
+    // 실측 조건과 실행 조건이 갈립니다.
     expect(resolveLlmTimeoutMs(55_000)).toBe(55_000);
-    expect(localSamplingOptions()).toEqual({});
+    expect(judgmentSamplingOptions()).toEqual({ temperature: STAGE_JUDGMENT_TEMPERATURE });
   });
 
   it("로컬 전환이면 시한과 온도를 적용한다", () => {
     stubLocal({
       NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1",
       LLM_TIMEOUT_MS: "300000",
-      LLM_TEMPERATURE: "0",
+      LLM_TEMPERATURE: "0.7",
     });
 
     expect(resolveLlmTimeoutMs(55_000)).toBe(300_000);
-    expect(localSamplingOptions()).toEqual({ temperature: 0 });
+    expect(judgmentSamplingOptions()).toEqual({ temperature: 0.7 });
   });
 
-  it("값이 없거나 숫자가 아니면 무시한다", () => {
+  it("값이 없거나 숫자가 아니면 프로덕션 값으로 돌아간다", () => {
     stubLocal({
       NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1",
       LLM_TIMEOUT_MS: "빠르게",
-      LLM_TEMPERATURE: undefined,
+      LLM_TEMPERATURE: "뜨겁게",
     });
 
     expect(resolveLlmTimeoutMs(55_000)).toBe(55_000);
-    expect(localSamplingOptions()).toEqual({});
+    expect(judgmentSamplingOptions()).toEqual({ temperature: STAGE_JUDGMENT_TEMPERATURE });
   });
 
-  // `Number("")`는 0이고 0은 유효한 온도입니다. 빈 값을 걸러내지 않으면 값을 지운 환경변수가
-  // 온도를 0으로 고정한 설정과 구별되지 않습니다.
-  it("온도를 빈 문자열로 두면 제공자 기본 샘플링을 쓴다", () => {
+  // 온도를 지운 환경변수가 제공자 기본값으로 되돌리는 경로가 되면 안 됩니다. 프로덕션 온도가
+  // 고정값이므로 빈 값은 그 고정값으로 돌아가야 합니다.
+  it("온도를 빈 문자열로 두면 고정 온도로 돌아간다", () => {
     stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1", LLM_TEMPERATURE: "  " });
 
-    expect(localSamplingOptions()).toEqual({});
+    expect(judgmentSamplingOptions()).toEqual({ temperature: STAGE_JUDGMENT_TEMPERATURE });
   });
 });

@@ -1,4 +1,3 @@
-import { createGoogle } from "@ai-sdk/google";
 import { streamText } from "ai";
 import { generationEmptyError } from "./errors";
 import { mapInterviewLlmError } from "./llm-error";
@@ -13,6 +12,7 @@ import {
   EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN,
   EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
 } from "@/features/experience-candidates/evidence-snapshot";
+import { createInterviewQuestionModel } from "@/features/experience-candidates/llm-provider";
 import type { ExperienceEvidenceSnapshot } from "@/features/experience-candidates/types";
 
 /**
@@ -181,7 +181,7 @@ export function createInterviewQuestionGenerate(
   return ({ system, evidence }, abortSignal) =>
     toThrowingTextStream(
       streamText({
-        model: createGoogle()(model),
+        model: createInterviewQuestionModel(model),
         system,
         prompt: evidence,
         abortSignal,
@@ -190,7 +190,9 @@ export function createInterviewQuestionGenerate(
     );
 }
 
-const generateWithGroq: GenerateInterviewQuestion = createInterviewQuestionGenerate();
+// 제공자 이름을 붙이지 않습니다. 프로덕션은 Gemini이고 로컬 전환에서는 OpenAI 호환 엔드포인트로
+// 갑니다. 2026-09-01까지 이 상수 이름이 `generateWithGroq`였습니다.
+const defaultGenerate: GenerateInterviewQuestion = createInterviewQuestionGenerate();
 
 /**
  * 첫 조각이 도착한 뒤의 생성 스트림입니다.
@@ -220,7 +222,7 @@ export interface StartInterviewQuestionStreamOptions {
 export async function startInterviewQuestionStream(
   snapshot: ExperienceEvidenceSnapshot,
   {
-    generate = generateWithGroq,
+    generate = defaultGenerate,
     variant,
     firstChunkTimeoutMs = INTERVIEW_QUESTION_FIRST_CHUNK_TIMEOUT_MS,
     totalTimeoutMs = INTERVIEW_QUESTION_TOTAL_TIMEOUT_MS,

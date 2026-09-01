@@ -2,6 +2,7 @@ import {
   buildStageAPayload,
   renderStageAPrompt,
   STAGE_A_CHUNK_MAX_BYTES,
+  STAGE_A_CHUNK_MAX_UNITS,
 } from "@/features/experience-candidates/stage-a";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -234,7 +235,8 @@ describe("POST /api/candidates/stage-a", () => {
   it("묶음 수 상한을 넘는 단일 청크는 LLM 호출 전에 422로 거부한다", async () => {
     const generate = vi.fn();
     const response = await handleStageA(request({
-      units: Array.from({ length: 21 }, (_, index) =>
+      // 개수를 숫자로 박아 두면 상한이 오를 때 이 테스트가 통과 경로를 재게 됩니다.
+      units: Array.from({ length: STAGE_A_CHUNK_MAX_UNITS + 1 }, (_, index) =>
         unit(index + 1, String(index).padStart(40, "0"))
       ),
       contributionItems: [],
@@ -343,6 +345,34 @@ describe("POST /api/candidates/stage-a", () => {
       { sha: SHA, source: "automatic_recommendation", contributionItem: null },
     ]);
     expect(output.unjudgedShas).toEqual([SHA_2]);
+  });
+
+  /**
+   * 복구 호출마다 새 시한을 주면 라우트가 `maxDuration` 60초를 넘길 수 있습니다. 넘기면 플랫폼이
+   * 함수를 끊어 우리 오류 계약이 나가지 못하고 생 504가 나갑니다. 잔여 예산이 복구 한 번을 담지
+   * 못하면 시작하지 않고 부분 결과를 살립니다.
+   */
+  it("잔여 예산이 부족하면 복구를 시작하지 않고 부분 결과를 살린다", async () => {
+    const twoUnits = {
+      units: [unit(1, SHA), unit(2, SHA_2)],
+      contributionItems: [],
+      candidateLimit: 2,
+    };
+    const generate = vi.fn().mockResolvedValue({
+      decisions: [{ pullRequestNumber: 1, contributionItem: null, recommended: true }],
+    });
+
+    // 예산을 최소 LLM 예산보다 작게 줍니다. 첫 호출은 끝나지만 복구는 시작하지 않아야 합니다.
+    const response = await handleStageA(request(twoUnits), generate, 100);
+    const output = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(output.candidates).toEqual([
+      { sha: SHA, source: "automatic_recommendation", contributionItem: null },
+    ]);
+    expect(output.unjudgedShas).toEqual([SHA_2]);
+    expect(output.rateLimit).toBeNull();
   });
 
   it("세 번 판단하지 못한 묶음은 실패가 아니라 판단 불가로 돌려준다", async () => {

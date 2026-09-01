@@ -1,13 +1,15 @@
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import {
   ExperienceCandidateOutputError,
+  isAuthFailureResponseBody,
   isModelOutputFailureResponseBody,
   isRateLimitResponseBody,
 } from "./errors";
 import {
   createStageBModel,
   isLocalLlm,
-  localSamplingOptions,
+  judgmentSamplingOptions,
+  LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
   resolveStageBMaxTotalPatchChars,
 } from "./llm-provider";
@@ -190,7 +192,14 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
     );
   }
   if (APICallError.isInstance(error)) {
-    if (error.statusCode === 401 || error.statusCode === 403) {
+    // Gemini는 잘못된 키를 401이 아니라 400 `INVALID_ARGUMENT`로 돌려줍니다. 본문의
+    // `reason=API_KEY_INVALID`로 갈라야 요청 형식 오류와 섞이지 않습니다. 판별은 `errors.ts`에
+    // 실측 근거와 함께 있습니다.
+    if (
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      (error.statusCode === 400 && isAuthFailureResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", {
         cause: error,
       });
@@ -230,6 +239,15 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         "LLM 모델 설정이 올바르지 않습니다.",
         { cause: error }
       );
+    }
+    // Gemini는 모델 과부하를 503 `UNAVAILABLE`로, 내부 오류를 500 `INTERNAL`로 돌려줍니다. Groq
+    // 기준으로 배선했을 때는 이 갈래가 없어도 됐지만 flash 계열에서는 가장 흔한 일시 실패입니다.
+    // 기다리면 풀리는 실패이므로 재시도 가능한 `llm_failure`로 두고, 문구에서 원인이 일시 장애임을
+    // 밝힙니다. 504는 위에서 이미 시간 초과로 갈라 두었습니다.
+    if ((error.statusCode ?? 0) >= 500) {
+      return new ExperienceCandidateOutputError("llm_failure", "LLM 서비스가 일시적으로 응답하지 못했습니다.", {
+        cause: error,
+      });
     }
     // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
     // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
@@ -294,13 +312,15 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
         "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
       prompt: JSON.stringify(payload),
       abortSignal,
-      ...localSamplingOptions(),
+      maxRetries: LLM_MAX_RETRIES,
+      ...judgmentSamplingOptions(),
     });
     return object;
   };
 }
 
-const generateWithGemini: GenerateStageB = createStageBGenerate();
+// 제공자 이름을 붙이지 않습니다. 로컬 전환에서는 OpenAI 호환 엔드포인트로 갑니다.
+const defaultGenerate: GenerateStageB = createStageBGenerate();
 
 /**
  * 같은 Pull Request(작업 묶음)에서 나온 최종 후보가 여럿이면 입력 순서상 첫 번째만 남기고
@@ -344,7 +364,7 @@ function dedupeCandidatesByWorkUnit(
 export async function selectStageBCandidates(
   commits: readonly CommitDetail[],
   candidates: readonly StageACandidate[],
-  generate: GenerateStageB = generateWithGemini,
+  generate: GenerateStageB = defaultGenerate,
   // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
   timeoutMs = resolveLlmTimeoutMs(STAGE_B_TOTAL_BUDGET_MS)
 ): Promise<ExperienceCandidateOutput> {

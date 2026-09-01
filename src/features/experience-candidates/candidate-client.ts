@@ -179,7 +179,12 @@ function contributionItemPromptBytes(contributionItems: readonly string[]): numb
 
 export function toStageAUnits(
   commits: readonly ReadonlyCommitDetail[],
-  contributionItems: readonly string[] = []
+  contributionItems: readonly string[] = [],
+  /**
+   * 선별 예산을 주입할 수 있게 열어 둡니다. 상한을 바꿔 가며 재려면 필요합니다. 모델 ID를 열어 둔
+   * 것과 같은 이유이고, 프로덕션 경로는 기본값을 씁니다.
+   */
+  maxSelectionBytes: number = STAGE_A_MAX_SELECTION_BYTES
 ): {
   units: StageAUnitInput[];
   /** Stage B 근거를 펼칠 때 필요합니다. Stage A 요청에는 실리지 않습니다. */
@@ -193,7 +198,7 @@ export function toStageAUnits(
   const { units, excludedCommits } = groupCommitsIntoWorkUnits(commits);
   const selection = selectWorkUnitsForStageA(
     units,
-    STAGE_A_MAX_SELECTION_BYTES - contributionItemPromptBytes(contributionItems)
+    maxSelectionBytes - contributionItemPromptBytes(contributionItems)
   );
   return {
     units: selection.selected.map(({ unit }) => ({

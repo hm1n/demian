@@ -167,6 +167,12 @@ describe("Stage B", () => {
   // 413을 한도로 분류하지 않으면 일반 실패(502)로 새어 재시도 가능 여부를 알 수 없다.
   const rateLimitBody = '{"error":{"code":"rate_limit_exceeded","type":"tokens"}}';
   const tooLargeBody = '{"error":{"code":"request_too_large","type":"invalid_request_error"}}';
+  // Gemini가 잘못된 키에 돌려주는 400 본문(2026-09-01 실측). 상태 코드는 요청 형식 오류와 같고
+  // `details`의 `reason`만 다르다.
+  const invalidKeyBody =
+    '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.",' +
+    '"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",' +
+    '"reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}';
   // 413은 상태 코드만으로는 갈리지 않는다. 한도 초과 413은 기다리면 풀리지만, 요청·컨텍스트가
   // 너무 큰 413은 같은 페이로드로 몇 번을 기다려도 풀리지 않는다. 본문으로 판별해야 한다.
   it.each([
@@ -174,6 +180,12 @@ describe("Stage B", () => {
     { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
     { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
     { statusCode: 413, responseBody: "", kind: "llm_request" },
+    // Gemini는 잘못된 키를 401이 아니라 400으로 돌려준다(2026-09-01 실측).
+    { statusCode: 400, responseBody: invalidKeyBody, kind: "llm_auth" },
+    { statusCode: 400, responseBody: "", kind: "llm_request" },
+    // Gemini는 모델 과부하를 503, 내부 오류를 500으로 돌려준다. 기다리면 풀리는 실패다.
+    { statusCode: 500, responseBody: "", kind: "llm_failure" },
+    { statusCode: 503, responseBody: "", kind: "llm_failure" },
   ] as const)("상태 코드 $statusCode를 본문에 따라 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
     const error = new APICallError({
       message: "provider error",
@@ -197,7 +209,9 @@ describe("Stage B", () => {
     { statusCode: 413, responseBody: rateLimitBody, kind: "llm_rate_limit" },
     { statusCode: 413, responseBody: tooLargeBody, kind: "llm_request" },
     { statusCode: 401, responseBody: "", kind: "llm_auth" },
+    { statusCode: 400, responseBody: invalidKeyBody, kind: "llm_auth" },
     { statusCode: 404, responseBody: "", kind: "llm_configuration" },
+    { statusCode: 503, responseBody: "", kind: "llm_failure" },
   ] as const)("재시도로 감싸인 $statusCode도 $kind로 매핑한다", async ({ statusCode, responseBody, kind }) => {
     const wrapped = new RetryError({
       message: "failed after 3 attempts",
