@@ -15,8 +15,11 @@ import { ExperienceCandidateOutputError } from "./errors";
  * Stage B도 같은 OpenAI 호환 경로를 탑니다.
  *
  * 로컬 실행 결과는 계약 준수율이나 후보 품질의 근거로 쓰지 않습니다. 프로덕션 판단 품질의 근거는
- * 이슈 #19 실측(Groq `openai/gpt-oss-120b`, Gemini `gemini-3.7-flash`)뿐입니다. 로컬은 파이프라인이
- * 끝까지 돌아가는지만 봅니다.
+ * 이슈 #69 실측입니다. 로컬은 파이프라인이 끝까지 돌아가는지만 봅니다.
+ *
+ * 2026-09-01에 두 단계의 프로덕션 제공자를 Google Gemini 유료 등급으로 모았습니다. Stage A는
+ * `gemini-3.1-flash-lite`, Stage B는 `gemini-3.5-flash-lite`입니다. 근거와 탈락 사유는
+ * `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
  *
  * 환경변수를 읽는 시점을 함수 호출 시점으로 미룹니다. `candidate-client.ts`가 `stage-b.ts`를
  * import하므로 이 모듈은 클라이언트 번들에도 실립니다. 모듈 최상단에서 읽으면 서버 전용 값을
@@ -35,8 +38,8 @@ export interface LocalLlmConfig {
 }
 
 /**
- * `NEXT_PUBLIC_LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A Groq, Stage B Google)가 그대로
- * 동작합니다. 이 함수 하나가 로컬 전환의 유일한 스위치입니다.
+ * `NEXT_PUBLIC_LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A·Stage B 모두 Google)가
+ * 그대로 동작합니다. 이 함수 하나가 로컬 전환의 유일한 스위치입니다.
  */
 export function resolveLocalLlm(): LocalLlmConfig | null {
   const baseURL = process.env.NEXT_PUBLIC_LLM_BASE_URL?.trim();
@@ -73,7 +76,10 @@ function requireLocalModel(config: LocalLlmConfig, model: string | null, envName
  */
 export function createStageAModel(model: string) {
   const local = resolveLocalLlm();
-  if (!local) return createGroq()(model);
+  // 2026-09-01에 Groq에서 Google로 옮겼습니다. 근거는
+  // `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`입니다. Groq는 유료 전환이 막혀 있고 무료
+  // 등급 분당 8,000토큰이 이 단계의 입력을 받지 못합니다.
+  if (!local) return createGoogle()(model);
   return requireLocalModel(local, local.stageAModel, "STAGE_A_MODEL");
 }
 

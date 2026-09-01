@@ -15,11 +15,13 @@ import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExper
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
-// 이슈 #19 실측(2026-08-24)으로 유효성 확인: Google 모델 목록에 존재하며 정상 응답합니다.
-// 무료 등급 일일 한도가 하루 20요청(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`)이고
-// 모델별로 따로 걸립니다. 측정에서 관측된 낮은 성공률은 모델의 일시적 과부하가 아니라 이 일일
-// 쿼터 소진이 주 원인이었습니다. 근거는 위키 측정 문서에 있습니다.
-export const STAGE_B_MODEL = "gemini-3.7-flash";
+// 2026-09-01에 `gemini-3.7-flash`에서 옮겼습니다. 그 모델은 실데이터에서 55,016밀리초로
+// `STAGE_B_TOTAL_BUDGET_MS`를 넘겨 `llm_timeout`으로 실패했습니다. 이 모델은 같은 입력에서
+// 4,190밀리초이며 예산의 7.6%입니다. 인용 파일을 후보마다 5~9개 끌어와 `gemini-3.1-flash-lite`의
+// 2개 고정보다 근거가 풍부했고, 그 차이에 회당 0.005달러를 지불하는 것이 이 선택의 내용입니다.
+// 유료 등급 한도는 RPM 4,000, 분당 입력 토큰 4,000,000, RPD 150,000이고 프로젝트별이면서
+// 모델별입니다. 근거는 `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
+export const STAGE_B_MODEL = "gemini-3.5-flash-lite";
 /**
  * Stage B 입력 커밋 수 상한입니다.
  *

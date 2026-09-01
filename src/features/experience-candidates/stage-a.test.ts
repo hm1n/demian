@@ -323,13 +323,22 @@ describe("한도 메타데이터", () => {
     return payload;
   }
 
-  it("헤더가 없으면 프로덕션 경로는 null을 돌려준다", async () => {
+  /**
+   * `x-ratelimit-*`는 Groq 규약입니다. 2026-09-01에 Stage A 제공자를 Google로 옮기면서 프로덕션도
+   * 헤더를 받지 못하게 됐고, null을 돌려주면 청크가 둘 이상일 때 `candidate-client.ts`가
+   * `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
+   */
+  it("헤더가 없으면 프로덕션 경로도 메타데이터를 합성한다", async () => {
     vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
     const payload = mockGenerateObject({});
 
     const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
 
-    expect((output as { __rateLimit: unknown }).__rateLimit).toBeNull();
+    expect((output as { __rateLimit: unknown }).__rateLimit).toEqual({
+      remainingTokens: Number.MAX_SAFE_INTEGER,
+      resetAfterMs: 0,
+      usedTokens: 1_234,
+    });
   });
 
   /**

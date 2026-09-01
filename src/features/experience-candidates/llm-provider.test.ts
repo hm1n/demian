@@ -38,17 +38,17 @@ afterEach(() => {
 
 describe("환경변수 미설정", () => {
   // 프로덕션 기본 동작 불변이 이슈 #66의 제약입니다. 이 테스트가 그 회귀를 잡습니다.
-  it("Stage A는 Groq, Stage B는 Google 경로를 그대로 탄다", () => {
+  it("Stage A와 Stage B 모두 Google 경로를 그대로 탄다", () => {
     stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: undefined, LLM_API_KEY: undefined });
 
-    const stageA = asFake(createStageAModel("openai/gpt-oss-120b"));
-    const stageB = asFake(createStageBModel("gemini-3.7-flash"));
+    const stageA = asFake(createStageAModel("gemini-3.1-flash-lite"));
+    const stageB = asFake(createStageBModel("gemini-3.5-flash-lite"));
 
     expect(resolveLocalLlm()).toBeNull();
     expect(isLocalLlm()).toBe(false);
-    expect(stageA).toMatchObject({ provider: "groq", modelId: "openai/gpt-oss-120b" });
+    expect(stageA).toMatchObject({ provider: "google", modelId: "gemini-3.1-flash-lite" });
     expect(stageA.options).toBeUndefined();
-    expect(stageB).toMatchObject({ provider: "google", modelId: "gemini-3.7-flash" });
+    expect(stageB).toMatchObject({ provider: "google", modelId: "gemini-3.5-flash-lite" });
     expect(stageB.options).toBeUndefined();
   });
 
@@ -64,7 +64,7 @@ describe("환경변수 미설정", () => {
     stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: "   " });
 
     expect(isLocalLlm()).toBe(false);
-    expect(asFake(createStageAModel("openai/gpt-oss-120b")).provider).toBe("groq");
+    expect(asFake(createStageAModel("gemini-3.1-flash-lite")).provider).toBe("google");
   });
 });
 
@@ -77,8 +77,8 @@ describe("NEXT_PUBLIC_LLM_BASE_URL 설정", () => {
       STAGE_B_MODEL: "qwen2.5:7b",
     });
 
-    const stageA = asFake(createStageAModel("openai/gpt-oss-120b"));
-    const stageB = asFake(createStageBModel("gemini-3.7-flash"));
+    const stageA = asFake(createStageAModel("gemini-3.1-flash-lite"));
+    const stageB = asFake(createStageBModel("gemini-3.5-flash-lite"));
 
     expect(isLocalLlm()).toBe(true);
     // Gemini API는 OpenAI 호환이 아니므로 Stage B도 로컬에서는 Groq 제공자를 통해 같은 경로를 탑니다.

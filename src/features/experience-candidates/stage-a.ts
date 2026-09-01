@@ -23,7 +23,7 @@ import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary
 // 이슈 #19 실측(2026-08-24): 기존 `llama-3.3-70b-versatile`은 Groq 모델 목록에서 사라져 404를
 // 반환했습니다. 현재 서빙 중인 구조화 출력 가능 모델 중 입력 SHA 전수 응답 계약을 가장 잘
 // 지킨 모델입니다. 같은 조건에서 `openai/gpt-oss-20b`는 8개 입력에도 1/8만 응답했습니다.
-export const STAGE_A_MODEL = "openai/gpt-oss-120b";
+export const STAGE_A_MODEL = "gemini-3.1-flash-lite";
 export const INITIAL_STAGE_A_CANDIDATE_LIMIT = 20;
 export const UNCLASSIFIED_LABEL = "미분류";
 // 이슈 #19 실측으로 확정: 성공 호출은 3.1~11.1초, 계약 위반으로 끝난 호출도 29.0초였습니다.
@@ -365,28 +365,41 @@ recommended가 true이거나 기여 항목에 맞는 묶음은 합쳐서 최대 
      * 프로덕션 경로의 null은 그대로 둡니다. 라우트 `degrade`가 부분 결과를 표시할 때 쓰는 표식이라
      * 의미가 다릅니다.
      */
-    if (isLocalLlm()) {
-      return {
-        ...object,
-        __rateLimit: {
-          remainingTokens: Number.MAX_SAFE_INTEGER,
-          resetAfterMs: 0,
-          usedTokens: usage.totalTokens ?? 0,
-        },
-      };
-    }
     const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);
     const reset = response.headers?.["x-ratelimit-reset-tokens"];
     const match = reset?.match(/^(\d+(?:\.\d+)?)(ms|s|m)$/);
     const resetAfterMs = match
       ? Number(match[1]) * ({ ms: 1, s: 1_000, m: 60_000 }[match[2]] ?? 0)
       : Number.NaN;
+    if (Number.isFinite(remaining) && Number.isFinite(resetAfterMs)) {
+      return {
+        ...object,
+        __rateLimit: { remainingTokens: remaining, resetAfterMs, usedTokens: usage.totalTokens ?? 0 },
+      };
+    }
+    /**
+     * 한도 헤더를 주지 않는 제공자에서는 여기서 합성합니다. 로컬 Ollama와 Google Gemini가 그렇고,
+     * `x-ratelimit-*`는 Groq 규약입니다.
+     *
+     * 합성하지 않으면 `__rateLimit`이 null이 되고, 청크가 둘 이상일 때 첫 청크가 정상 완주하면
+     * (`unjudgedShas`가 빈 배열) `candidate-client.ts`가 이 응답을 저하가 아닌 형식 오류로 보고
+     * `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
+     *
+     * 남은 토큰을 최댓값으로 두어 클라이언트가 대기하지 않게 합니다. Gemini 유료 등급의 분당 입력
+     * 토큰 한도가 4,000,000이고 이 단계의 회당 입력이 전량 투입에서도 24,000토큰이라 분당 166회를
+     * 감당합니다. 대기가 필요한 구간이 아닙니다. 한도 실측은
+     * `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
+     *
+     * 라우트 `degrade`가 부분 결과를 표시할 때 쓰는 null은 그대로 둡니다. 그 null은 의미가 다르고
+     * 이 함수가 아니라 `route.ts`가 만듭니다.
+     */
     return {
       ...object,
-      __rateLimit:
-        Number.isFinite(remaining) && Number.isFinite(resetAfterMs)
-          ? { remainingTokens: remaining, resetAfterMs, usedTokens: usage.totalTokens ?? 0 }
-          : null,
+      __rateLimit: {
+        remainingTokens: Number.MAX_SAFE_INTEGER,
+        resetAfterMs: 0,
+        usedTokens: usage.totalTokens ?? 0,
+      },
     };
   };
 }
