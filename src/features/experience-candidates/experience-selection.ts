@@ -1,4 +1,8 @@
-import { buildExperienceEvidenceSnapshot } from "./evidence-snapshot";
+import { renderInterviewEvidencePrompt } from "@/features/interview/question-prompt";
+import {
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+  buildExperienceEvidenceSnapshot,
+} from "./evidence-snapshot";
 import type {
   EvidenceSnapshotFailureReason,
   ExperienceCandidateListItem,
@@ -57,7 +61,15 @@ export function confirmExperienceSelection(
   data: CandidateDataOutput,
   candidates: StageBCandidateResult
 ): ExperienceSelectionState {
-  const result = buildExperienceEvidenceSnapshot(item, data, candidates);
+  // 근거 상한은 모델 입력을 묶는 값이므로 실제 첫 질문 프롬프트로 잽니다. JSON 직렬화로 재면
+  // patch가 큰 근거에서 상한이 보증되지 않습니다(2026-08-28 실측).
+  const result = buildExperienceEvidenceSnapshot(
+    item,
+    data,
+    candidates,
+    EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+    renderInterviewEvidencePrompt
+  );
   return result.ok
     ? { status: "confirmed", snapshot: result.snapshot }
     : { status: "error", reason: result.reason };

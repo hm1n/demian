@@ -4,10 +4,15 @@ import { generationEmptyError } from "./errors";
 import { mapInterviewLlmError } from "./llm-error";
 import {
   INTERVIEW_QUESTION_PROMPT_VARIANT,
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES,
   renderInterviewEvidencePrompt,
   renderInterviewQuestionSystemPrompt,
   type InterviewPromptVariant,
 } from "./question-prompt";
+import {
+  EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN,
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+} from "@/features/experience-candidates/evidence-snapshot";
 import type { ExperienceEvidenceSnapshot } from "@/features/experience-candidates/types";
 
 /**
@@ -45,19 +50,42 @@ export const INTERVIEW_QUESTION_FIRST_CHUNK_TIMEOUT_MS = 20_000;
 export const INTERVIEW_QUESTION_TOTAL_TIMEOUT_MS = 55_000;
 
 /**
+ * 프롬프트 바이트 상한을 넘겼는지 볼 때 쓰는 허용 오차입니다.
+ *
+ * 근거 바이트는 수식으로 묶이지만, 스냅샷을 만들 때 patch 몫을 `serializedByteLength`로 세고 완성된
+ * 근거를 다시 재지는 않습니다. 그 구성 오차를 흡수합니다. 실측에서 상한 대비 여유가 1.2~1.6%로
+ * 남았으므로 이 오차가 실제로 쓰일 일은 없어야 하고, 회귀 테스트가 그 사실을 고정합니다.
+ */
+const PROMPT_BYTES_TOLERANCE = 256;
+
+/**
  * 모델에 실제로 실리는 프롬프트(시스템 + 근거)의 바이트 상한입니다.
  *
  * 근거 스냅샷 자체는 `evidence-snapshot.ts`가 이미 추정 토큰으로 묶습니다. 그런데 그 상한은
- * 스냅샷을 만드는 쪽에서만 걸리고, 이 route는 클라이언트가 보낸 스냅샷을 그대로 받습니다.
- * 상한을 넘긴 스냅샷을 보내면 Groq 분당 토큰 한도를 넘겨 413을 받게 되므로 실제 프롬프트를
- * 서버에서 접어 보고 한 번 더 확인합니다. Stage A route가 같은 이유로 같은 가드를 둡니다.
+ * 스냅샷을 만드는 쪽에서만 걸리고, 이 route는 클라이언트가 보낸 스냅샷을 그대로 받습니다. 상한을
+ * 넘긴 스냅샷을 보내면 그대로 모델에 실리므로 실제 프롬프트를 서버에서 접어 보고 한 번 더
+ * 확인합니다. Stage A route가 같은 이유로 같은 가드를 둡니다.
  *
- * 값의 근거는 실측입니다(2026-08-25). 근거 상한 3,500토큰을 꽉 채운 스냅샷의 실제 프롬프트가
- * 10,446~10,797바이트였고 바이트당 토큰은 3.64~3.67이었습니다. 14,000바이트는 약 3,840토큰이고
- * 관측된 최대 응답 1,678토큰을 더해도 분당 한도 8,000의 69%입니다. 정상 입력보다 30% 위에 두어
- * 정상 요청을 막지 않으면서 한도를 넘기는 요청은 걸러냅니다.
+ * **값을 손으로 고르지 않고 근거 상한에서 유도합니다.** 2026-08-28까지는 14,000이었고, 근거를 JSON
+ * 직렬화로 재던 시절에 관측된 프롬프트 10,446~10,797바이트 위에 30% 여유를 얹은 값이었습니다. 그
+ * 여유가 필요했던 까닭은 재는 대상(JSON)과 보내는 대상(프롬프트)이 달라 렌더가 더 커질 수 있었기
+ * 때문이고, 실제로 그 가정이 깨진 것을 확인했습니다(JSON 10,436바이트 대 프롬프트 10,632바이트).
+ *
+ * 이제 근거 예산을 렌더된 프롬프트로 재므로 근거 바이트가 수식으로 묶입니다.
+ * `ceil(근거 바이트 / EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN) <= EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS`이므로
+ * 근거 바이트는 두 상수의 곱을 넘지 못합니다. 여기에 시스템 프롬프트와 두 문단을 잇는 2바이트를
+ * 더하면 프롬프트 전체의 상한이 나옵니다. 실측이 이 계산과 맞았습니다. 근거 상한 3,500에서
+ * 11,687~11,715바이트(계산 11,851), 5,250에서 16,776~16,883바이트(계산 17,101)입니다.
+ *
+ * 유도로 두면 근거 상한만 바꿔도 이 값이 따라오고, 근거 상한을 넘긴 스냅샷은 예외 없이 걸립니다.
+ * 예전 14,000은 계산된 상한보다 18% 높아 그만큼 넘긴 스냅샷을 통과시켰습니다. 측정 근거는
+ * `llm-wiki/raw/2026-08-28-첫-질문-생성-모델-실측.md`에 있습니다.
  */
-export const INTERVIEW_QUESTION_MAX_PROMPT_BYTES = 14_000;
+export const INTERVIEW_QUESTION_MAX_PROMPT_BYTES =
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN +
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES +
+  2 +
+  PROMPT_BYTES_TOLERANCE;
 
 export interface InterviewQuestionPrompt {
   readonly system: string;
