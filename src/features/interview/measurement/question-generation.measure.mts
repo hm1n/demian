@@ -23,6 +23,8 @@
  *   --first-chunk-timeout=<ms>  첫 청크 시한. 기본 20000
  *   --total-timeout=<ms>   생성 전체 시한. 기본 55000
  *   --check-errors         인증·모델 설정 실패의 오류 분류를 확인합니다. 정상 호출을 쓰지 않습니다.
+ *   --sse-route            SSE route 전 구간을 실제 provider로 통과시킵니다. 프롬프트 가드와 이벤트
+ *                          계약, seq 번호까지 프로덕션 코드로 확인합니다.
  *   --metadata-breakdown   근거 예산을 항목별 바이트로 쪼개 봅니다. LLM을 호출하지 않습니다.
  *
  * 재는 것:
@@ -51,7 +53,9 @@ import type {
   ExperienceEvidenceSnapshot,
   StageBCandidateResult,
 } from "../../experience-candidates/types";
+import { NextRequest } from "next/server";
 import {
+  INTERVIEW_QUESTION_MAX_PROMPT_BYTES,
   INTERVIEW_QUESTION_MAX_RETRIES,
   buildInterviewQuestionPrompt,
   interviewQuestionPromptBytes,
@@ -60,6 +64,9 @@ import {
   type GenerateInterviewQuestion,
 } from "../question-generation";
 import { renderInterviewEvidencePrompt, type InterviewPromptVariant } from "../question-prompt";
+import { createSseEventParser, type InterviewStreamEvent } from "../sse";
+import { handleInterviewQuestionStream } from "../../../app/api/interview/stream/route";
+import { encryptGitHubToken, GITHUB_SESSION_COOKIE } from "../../../lib/github/auth-session";
 import { GITHUB_API_BASE, githubFetch, parseJson } from "../../../lib/github/commits";
 import { fetchCommitDetailBySha, withoutPatch } from "../../../lib/github/contributions";
 import type { CandidateDataOutput, CommitDetail } from "../../../lib/github/types";
@@ -89,6 +96,7 @@ const reasoningFormat = flag("reasoning-format", "");
 const firstChunkTimeoutMs = Number(flag("first-chunk-timeout", "20000"));
 const totalTimeoutMs = Number(flag("total-timeout", "55000"));
 const checkErrors = args.includes("--check-errors");
+const sseRoute = args.includes("--sse-route");
 
 const githubToken = process.env.GITHUB_TOKEN;
 if (!githubToken) {
@@ -451,6 +459,80 @@ async function checkErrorClassification(snapshot: ExperienceEvidenceSnapshot): P
 }
 
 // ---------------------------------------------------------------------------
+// SSE route 전 구간
+// ---------------------------------------------------------------------------
+// 모델과 프롬프트는 위 경로로 확인했지만 route를 통과하는 전 구간은 확인하지 않았습니다. 여기서
+// 확인하는 것은 provider 응답이 아니라 **그 사이의 배선**입니다. 세션 쿠키 검사, 본문 스키마 검사,
+// 프롬프트 바이트 가드, 첫 조각 시한, SSE 이벤트 계약과 seq 번호입니다. `generate`를 주입하지
+// 않으므로 route가 프로덕션 기본값을 그대로 씁니다.
+
+async function measureSseRoute(
+  pullRequestNumber: number,
+  snapshot: ExperienceEvidenceSnapshot
+): Promise<void> {
+  const promptBytes = interviewQuestionPromptBytes(buildInterviewQuestionPrompt(snapshot));
+  console.log(
+    `
+## SSE route 전 구간 / PR #${pullRequestNumber}
+
+` +
+      `- 프롬프트 ${promptBytes}바이트 대 가드 ${INTERVIEW_QUESTION_MAX_PROMPT_BYTES}바이트`
+  );
+
+  // 세션 쿠키는 route가 실제로 검사하는 값입니다. 토큰 문자열은 이 경로에서 쓰이지 않으므로
+  // 자리만 채웁니다. 암호화 키는 `.env`의 운영 키를 그대로 씁니다.
+  const request = new NextRequest("https://example.com/api/interview/stream", {
+    method: "POST",
+    headers: { cookie: `${GITHUB_SESSION_COOKIE}=${encryptGitHubToken("measurement-placeholder")}` },
+    body: JSON.stringify({ snapshot }),
+  });
+
+  const startedAt = performance.now();
+  const response = await handleInterviewQuestionStream(request);
+  const headerMs = performance.now() - startedAt;
+  console.log(
+    `- 상태 ${response.status} / Content-Type ${response.headers.get("Content-Type")} / 헤더까지 ${formatMs(headerMs)}`
+  );
+  if (response.status !== 200 || response.body === null) {
+    const body = await response.text();
+    console.log(`- 본문 ${body.slice(0, 200)}`);
+    return;
+  }
+
+  const parser = createSseEventParser();
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  const events: InterviewStreamEvent[] = [];
+  let firstEventMs: number | null = null;
+  let questionChars = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+      if (firstEventMs === null) firstEventMs = performance.now() - startedAt;
+      events.push(event);
+      if (event.type === "chunk") questionChars += event.text.length;
+    }
+  }
+
+  const chunkEvents = events.filter((event) => event.type === "chunk");
+  const lastEvent = events.at(-1);
+  const seqs = chunkEvents.map((event) => (event.type === "chunk" ? event.seq : 0));
+  const seqContiguous = seqs.every((seq, index) => seq === index + 1);
+  console.log(`- 첫 이벤트 ${formatMs(firstEventMs)} / 전체 ${formatMs(performance.now() - startedAt)}`);
+  console.log(`- chunk ${chunkEvents.length}개 / 질문 ${questionChars}자 / seq 연속 ${seqContiguous}`);
+  console.log(
+    `- 마지막 이벤트 ${lastEvent?.type ?? "없음"}` +
+      (lastEvent?.type === "done" ? ` seq=${lastEvent.seq}` : "") +
+      (lastEvent?.type === "error" ? ` kind=${lastEvent.kind}` : "")
+  );
+  console.log(
+    `- done의 seq와 마지막 chunk의 seq 일치 ` +
+      `${lastEvent?.type === "done" && lastEvent.seq === seqs.at(-1)}`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 실행
 // ---------------------------------------------------------------------------
 
@@ -553,6 +635,13 @@ async function main(): Promise<void> {
 
   if (checkErrors) {
     await checkErrorClassification(snapshots.get(numbers[0])!);
+    return;
+  }
+
+  if (sseRoute) {
+    for (const number of numbers) {
+      await measureSseRoute(number, snapshots.get(number)!);
+    }
     return;
   }
 

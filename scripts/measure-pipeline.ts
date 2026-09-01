@@ -9,7 +9,7 @@
  *   details   상세 조회 순차 소요 시간, changedFiles·patch 분포, 페이로드 크기
  *   parallel  상세 조회 병렬도별 소요 시간과 secondary rate limit 관측
  *   commit    단일 커밋 상세 조회. changedFiles 3000 상한 왜곡 관측용
- *   stage-a   실제 Groq 호출 소요 시간과 선정 결과 (GROQ_API_KEY 필요)
+ *   stage-a   실제 Gemini 호출 소요 시간과 선정 결과 (GOOGLE_GENERATIVE_AI_API_KEY 필요)
  *   stage-a-chunks  점수 선별·청크 분할·누락 복구 완주 측정
  *   stage-b   실제 Gemini 호출 소요 시간과 선정 결과 (GOOGLE_GENERATIVE_AI_API_KEY 필요)
  *
@@ -24,6 +24,7 @@
  *   --skip-stage-a         Stage A를 건너뛰고 Stage B만 측정
  *   --sha=<40자 SHA>        commit 단계의 대상 커밋
  *   --item=<기여 항목>       Stage A 기여 항목. 여러 번 지정 가능
+ *   --selection-bytes=N    Stage A 선별 예산 오버라이드. 상한 재산정 측정에 씁니다
  *
  * 출력에는 수치와 요약만 담습니다. 토큰·키·응답 원문을 출력하지 않습니다.
  */
@@ -35,6 +36,7 @@ import { fetchCommitDetail } from "../src/lib/github/contributions";
 import {
   buildStageAPayload,
   createStageAGenerate,
+  renderStageAPrompt,
   selectStageACandidates,
   resolveChunkQuota,
   STAGE_A_TIMEOUT_MS,
@@ -48,6 +50,7 @@ import {
   splitUnitsIntoChunks,
   toStageAUnits,
 } from "../src/features/experience-candidates/candidate-client";
+import { STAGE_A_MAX_SELECTION_BYTES } from "../src/features/experience-candidates/work-unit-selection";
 import { renderWorkUnitSummary } from "../src/features/experience-candidates/work-unit-summary";
 import {
   buildStageBPayload,
@@ -413,13 +416,31 @@ async function runStageA() {
     // 후보 상한은 프로덕션이 쓰는 값과 같아야 합니다. 전역 상한 20을 그대로 쓰면 클라이언트가
     // 실제로 보내는 쿼터와 다른 것을 재게 되고, Stage B로 넘어가는 후보 수도 달라집니다.
     // 기여 항목이 선별 예산을 먹는다. 프로덕션과 같게 넘겨야 같은 묶음 수를 잰다.
-    const { units: stageAUnits, workUnits: stageAWorkUnits } = toStageAUnits(details, contributionItems);
+    // 선별 예산을 플래그로 바꿔 가며 잽니다. 프로덕션 상한 10,500바이트는 Groq 무료 등급의 분당
+    // 토큰 8,000에서 나온 값이라 Gemini에서 재산정해야 하고, 그 재산정에 필요한 것이 묶음 수를
+    // 늘렸을 때 전수 응답 계약이 유지되는지입니다.
+    const selectionBytes = numericOption("selection-bytes", STAGE_A_MAX_SELECTION_BYTES);
+    const { units: stageAUnits, workUnits: stageAWorkUnits, excludedUnits } = toStageAUnits(
+      details,
+      contributionItems,
+      selectionBytes
+    );
     const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
     if (stageAChunks.length > 1) {
       console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
     }
     const candidateLimit = Math.min(resolveChunkQuota(stageAChunks.length), stageAUnits.length);
-    console.log(`[stage-a] 선별 입력묶음=${stageAUnits.length} 후보상한=${candidateLimit}`);
+    // 실제로 모델에 실리는 프롬프트 바이트입니다. 상한을 재산정하려면 묶음 수만이 아니라 그
+    // 묶음이 실제로 몇 바이트인지 알아야 합니다.
+    const stageAPromptBytes = new TextEncoder().encode(
+      renderStageAPrompt(
+        buildStageAPayload({ units: stageAUnits, contributionItems, candidateLimit })
+      )
+    ).byteLength;
+    console.log(
+      `[stage-a] 선별 예산=${selectionBytes}B 선별 입력묶음=${stageAUnits.length} 제외묶음=${excludedUnits.length} ` +
+        `프롬프트=${stageAPromptBytes}B 후보상한=${candidateLimit}`
+    );
     const output = await selectStageACandidates(
       {
         units: stageAUnits,
