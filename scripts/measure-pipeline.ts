@@ -420,38 +420,71 @@ async function runStageA() {
     // 토큰 8,000에서 나온 값이라 Gemini에서 재산정해야 하고, 그 재산정에 필요한 것이 묶음 수를
     // 늘렸을 때 전수 응답 계약이 유지되는지입니다.
     const selectionBytes = numericOption("selection-bytes", STAGE_A_MAX_SELECTION_BYTES);
+    const syntheticUnits = numericOption("synthetic-units", 0);
     const {
       units: stageAUnits,
       workUnits: stageAWorkUnits,
       excludedUnits,
       thresholdScore,
     } = toStageAUnits(details, contributionItems, selectionBytes);
+    /**
+     * 묶음 수의 천장을 재려고 입력을 부풀립니다.
+     *
+     * 전수 응답 계약(입력 묶음 N개면 decisions도 N개)이 묶음 수에 따라 깨진다는 것은 Groq 시절에
+     * 확인했습니다. 66묶음에서 첫 시도 준수가 33퍼센트였습니다. Gemini가 어디서 깨지는지는 저장소
+     * 크기에 막혀 재지 못했고, 개수 상한을 실측 없이 정하면 다음 저장소에서 같은 문제가 납니다.
+     *
+     * 실제 묶음을 복제하되 PR 번호와 대표 SHA를 새로 붙여 서로 다른 묶음으로 만듭니다. 이렇게 만든
+     * 입력으로는 **형식 계약만** 잴 수 있습니다. 내용이 중복이므로 어느 것을 골랐는지는 판단 품질의
+     * 근거가 되지 않습니다. 계약이 깨지는 지점을 찾는 것이 목적입니다.
+     */
+    const inflatedUnits =
+      syntheticUnits <= stageAUnits.length
+        ? stageAUnits
+        : Array.from({ length: syntheticUnits }, (_, index) => {
+            const source = stageAUnits[index % stageAUnits.length];
+            const round = Math.floor(index / stageAUnits.length);
+            if (round === 0) return source;
+            const pullRequestNumber = source.pullRequestNumber + round * 10_000;
+            return {
+              ...source,
+              pullRequestNumber,
+              representativeSha: index.toString(16).padStart(40, "0"),
+              summary: { ...source.summary, pullRequestNumber },
+            };
+          });
+    if (syntheticUnits > stageAUnits.length) {
+      console.log(
+        `[stage-a] 합성 입력: 실제 묶음 ${stageAUnits.length}개를 복제해 ${inflatedUnits.length}개로 부풀림. ` +
+          `형식 계약만 잰다`
+      );
+    }
     const stageAChunks = splitUnitsIntoChunks(stageAUnits, contributionItems);
     if (stageAChunks.length > 1) {
       console.log(`[stage-a] 경고: 선별 결과가 청크 ${stageAChunks.length}개다. 이 단계는 한 번에 보내므로 상한을 넘을 수 있다`);
     }
-    const candidateLimit = Math.min(resolveChunkQuota(stageAChunks.length), stageAUnits.length);
+    const candidateLimit = Math.min(resolveChunkQuota(stageAChunks.length), inflatedUnits.length);
     // 실제로 모델에 실리는 프롬프트 바이트입니다. 상한을 재산정하려면 묶음 수만이 아니라 그
     // 묶음이 실제로 몇 바이트인지 알아야 합니다.
     const stageAPromptBytes = new TextEncoder().encode(
       renderStageAPrompt(
-        buildStageAPayload({ units: stageAUnits, contributionItems, candidateLimit })
+        buildStageAPayload({ units: inflatedUnits, contributionItems, candidateLimit })
       )
     ).byteLength;
     // 제외 사유를 갈라 봅니다. 갈라 두지 않으면 선별이 멈춘 원인이 바이트 예산인지 점수 경계인지
     // 알 수 없습니다. 예산을 올려도 묶음 수가 그대로인 저장소가 있어 이 구분이 필요했습니다.
-    const belowScore = excludedUnits.filter(
-      ({ reason }) => reason === "below_score_threshold"
+    const overInputBudget = excludedUnits.filter(
+      ({ reason }) => reason === "over_input_budget"
     ).length;
     const overBytes = excludedUnits.filter(({ reason }) => reason === "over_byte_budget").length;
     console.log(
-      `[stage-a] 선별 예산=${selectionBytes}B 선별 입력묶음=${stageAUnits.length} ` +
-        `제외묶음=${excludedUnits.length}(점수미달 ${belowScore}, 분량초과 ${overBytes}) ` +
+      `[stage-a] 선별 예산=${selectionBytes}B 선별 입력묶음=${inflatedUnits.length} ` +
+        `제외묶음=${excludedUnits.length}(상한초과 ${overInputBudget}, 분량초과 ${overBytes}) ` +
         `경계점수=${thresholdScore} 프롬프트=${stageAPromptBytes}B 후보상한=${candidateLimit}`
     );
     const output = await selectStageACandidates(
       {
-        units: stageAUnits,
+        units: inflatedUnits,
         candidateLimit,
         contributionItems,
       },
