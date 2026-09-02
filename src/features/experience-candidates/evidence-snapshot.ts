@@ -8,27 +8,41 @@ import type {
   EvidenceSnapshotResult,
   EvidenceVerifiability,
   ExperienceCandidateListItem,
+  ExperienceEvidenceSnapshot,
   StageBCandidateResult,
 } from "./types";
 import type { CandidateDataOutput, ReadonlyCommitDetail } from "@/lib/github/types";
 
 /**
  * 근거 인계 입력 전체의 추정 토큰 상한입니다. patch만이 아니라 커밋 메시지, 변경 파일 목록,
- * PR 정보까지 포함한 직렬화 결과를 이 값으로 묶습니다.
+ * PR 정보까지 포함한 렌더 결과를 이 값으로 묶습니다.
  *
- * Groq 무료 등급의 분당 토큰 한도는 8,000이고 초과를 429가 아니라 413 `rate_limit_exceeded`로
- * 반환합니다(`llm-wiki/wiki/2026-08-24-실데이터-검증-배치-상한-확정.md`). 꼬리 질문이 같은 근거를
- * 매 턴 다시 싣기 때문에 한 번의 요청이 한도를 다 쓰면 다음 턴이 곧바로 막힙니다. 시스템 프롬프트와
- * 사용자 답변, 응답 토큰이 쓸 몫을 남기려고 근거 입력에는 3,500토큰만 배정합니다.
+ * **2026-09-01에 3,500에서 5,250으로 올렸습니다.**
  *
- * 이슈 #63 실측(2026-08-25)으로 이 값을 유지하기로 확정했습니다. 상한을 꽉 채운 스냅샷의 실제 입력
- * 토큰이 2,874~3,049였고 응답 토큰이 939~1,678이었습니다. 최악 조합 4,621토큰은 분당 한도 8,000의
- * 58%입니다. 꼬리 질문이 같은 근거를 매 턴 다시 싣기 때문에 남은 42%가 다음 턴의 몫이고, 상한을
- * 올리면 그 몫이 사라집니다. 추정이 실제보다 약 18% 크므로 올릴 여지는 있지만 꼬리 질문의 실제
- * 소비를 재기 전에는 쓰지 않습니다. 측정값은
- * `llm-wiki/wiki/2026-08-25-첫-질문-생성-provider-실측과-재개-방침.md`에 있습니다.
+ * 3,500의 근거는 Groq 무료 등급의 분당 토큰 한도 8,000이었습니다. 초과를 429가 아니라 413
+ * `rate_limit_exceeded`로 받고(`llm-wiki/wiki/2026-08-24-실데이터-검증-배치-상한-확정.md`), 상한을 꽉
+ * 채운 요청이 입력 2,874~3,049에 응답 939~1,678토큰이라 최악 4,621토큰이 한도의 58%였습니다. 꼬리
+ * 질문이 같은 근거를 매 턴 다시 싣기 때문에 남은 42%를 다음 턴 몫으로 남긴 값이 3,500이었습니다.
+ *
+ * 네 경로를 Gemini로 옮기면서 그 한도가 사라졌습니다. Groq는 유료 전환이 막혀 있어 후보가 아니고,
+ * Gemini에는 분당 8,000토큰이라는 벽이 없습니다. 벽에서 나온 값이므로 벽과 함께 재산정합니다.
+ *
+ * 새 값의 근거는 실측입니다(2026-08-28, `llm-wiki/raw/2026-08-28-첫-질문-생성-모델-실측.md`).
+ * 메타데이터 중복을 걷어낸 뒤 3,500에서 patch 몫이 4,881바이트, 5,250에서 10,131바이트였습니다.
+ * 3,500에서는 `gemini-3.5-flash-lite`가 두 회차 모두 patch에 닿지 못해 커밋 메시지만으로 질문을
+ * 만들었고, 5,250에서는 patch 안의 주석과 코드 표현식을 그대로 인용했습니다. 첫 청크 지연은 입력
+ * 2,863토큰에서 5,043토큰까지 Lite 두 모델이 0.9~1.4초로 평평해 지연 대가가 없었습니다.
+ *
+ * 꼬리 질문은 이 값을 묶지 않습니다. 매 턴 근거를 다시 싣는 것은 그대로지만, 상한을 3,500에서
+ * 5,250으로 올릴 때 늘어나는 것은 턴당 약 0.0004달러와 0초짜리 지연뿐입니다. 그 경로가 앞 단계의
+ * 할당량을 먹지 않게 하는 것은 상한이 아니라 **모델 배분**으로 풉니다. Groq에서 Stage A가
+ * `gpt-oss-120b`의 하루 한도를 소진해 첫 질문을 `gpt-oss-20b`로 갈랐던 것과 같은 방식입니다
+ * (`question-generation.ts`). 꼬리 질문 경로를 구현할 때 근거를 매 턴 다시 실을지 정해지면 그때
+ * 턴 수를 곱해 이 값을 다시 봅니다.
+ *
+ * 이 상수를 바꾸면 `INTERVIEW_QUESTION_MAX_PROMPT_BYTES`가 유도식으로 따라옵니다.
  */
-export const EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS = 3_500;
+export const EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS = 5_250;
 
 /**
  * 토큰 추정에 쓰는 UTF-8 바이트 대 토큰 비율입니다.
@@ -70,11 +84,31 @@ export function serializedByteLength(text: string): number {
   return bytes;
 }
 
-/** 직렬화한 근거의 추정 토큰입니다. */
+/** 직렬화한 근거의 추정 토큰입니다. 문자열을 주면 그 문자열을 그대로 잽니다. */
 export function estimateEvidenceTokens(value: unknown): number {
   const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
   return Math.ceil(new TextEncoder().encode(text).byteLength / EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN);
 }
+
+/**
+ * 근거의 크기를 잴 때 쓰는 렌더러입니다. 모델에 실제로 가는 문자열을 내야 합니다.
+ *
+ * 예산은 모델 입력을 묶는 값이므로 실제 프롬프트로 재야 합니다. 2026-08-28까지는 JSON 직렬화
+ * 바이트로 쟀고, 키와 따옴표가 빠지는 만큼 프롬프트가 더 작다고 보았습니다. 실측에서 그 가정이
+ * 깨졌습니다. patch가 큰 근거에서는 렌더러가 붙이는 확인 수준 문장과 코드 블록 울타리가 키·따옴표
+ * 보다 커서 JSON 10,436바이트에 프롬프트 10,632바이트였습니다
+ * (`llm-wiki/raw/2026-08-28-근거-스냅샷-메타데이터-항목별-비용.md`).
+ *
+ * 이 모듈이 프롬프트 렌더러를 직접 부르면 기능 사이 의존이 양방향이 되므로 주입으로 받습니다.
+ */
+export type EvidenceBudgetRenderer = (snapshot: ExperienceEvidenceSnapshot) => string;
+
+/**
+ * 렌더러를 받지 못했을 때 쓰는 기본값입니다. JSON 직렬화 바이트로 재므로 프롬프트를 아는 호출부는
+ * 반드시 자기 렌더러를 넘겨야 합니다. 프로덕션 경로는 `confirmExperienceSelection`이 넘깁니다.
+ */
+const serializeSnapshotForBudget: EvidenceBudgetRenderer = (snapshot) =>
+  JSON.stringify(snapshot) ?? "";
 
 /**
  * 직렬화 바이트 상한을 넘지 않는 가장 긴 앞부분을 남깁니다.
@@ -96,11 +130,16 @@ export function sliceEvidencePatchBySerializedBytes(text: string, maxBytes: numb
 }
 
 /**
- * patch 하나가 본문 밖에서 더 쓰는 바이트입니다. 감싸는 따옴표와, patch 유무에 따라 길이가
- * 달라지는 `patchTruncated`·`patchOmittedReason` 값의 차이를 덮는 보수적인 몫입니다. 이 몫이
- * 없으면 patch가 예산을 꽉 채울 때 완성된 스냅샷이 상한을 몇 바이트 넘습니다.
+ * patch 하나가 본문 밖에서 더 쓰는 바이트입니다. patch가 있을 때와 없을 때 본문 밖 표기가 달라지는
+ * 몫을 덮는 보수적인 값입니다. 이 몫이 없으면 patch가 예산을 꽉 채울 때 완성된 근거가 상한을 몇
+ * 바이트 넘습니다.
+ *
+ * 2026-08-28에 4에서 8로 올렸습니다. 크기를 JSON 직렬화가 아니라 실제 프롬프트로 재게 되면서
+ * (`buildExperienceEvidenceSnapshot`의 `renderForBudget`) 덮어야 하는 차이가 바뀌었습니다. patch가
+ * 없는 파일은 `[patch 없음: 상한]` 같은 표식을 쓰고 있다가 patch가 실리면 그 표식이 사라지고 코드
+ * 블록 울타리와 `[patch 잘림]`이 붙습니다. 실측 최악 조합이 파일당 5바이트 증가였습니다.
  */
-const PATCH_ENVELOPE_BYTES = 4;
+const PATCH_ENVELOPE_BYTES = 8;
 
 const EVIDENCE_STATEMENT_VERIFIABILITY: EvidenceVerifiability = {
   status: "unverifiable",
@@ -244,7 +283,8 @@ function assembleCommits(inputs: readonly CommitInput[], maxPatchBytes: number):
  * 정보·변경 파일 목록은 `data.includedCommits`에서 오고 patch 본문은 `candidates.diffs`에만
  * 있습니다(`/api/github/commit-details`가 `withoutPatch`로 벗깁니다).
  *
- * 크기는 patch만 재지 않고 직렬화한 근거 전체를 잽니다. patch를 뺀 나머지 근거의 추정 토큰을
+ * 크기는 patch만 재지 않고 근거 전체를 잽니다. 무엇으로 재는지는 `renderForBudget`이 정하고,
+ * 프로덕션은 실제 첫 질문 프롬프트를 넘깁니다. patch를 뺀 나머지 근거의 추정 토큰을
  * 먼저 재고 남은 몫만 patch에 줍니다. 커밋 메시지와 변경 파일 목록, PR 정보가 상한 밖에 있으면
  * patch를 아무리 잘라도 413을 막을 수 없습니다. 나머지 근거만으로 상한을 넘으면 스냅샷을 만들지
  * 않고 실패로 알립니다.
@@ -253,7 +293,8 @@ export function buildExperienceEvidenceSnapshot(
   item: ExperienceCandidateListItem,
   data: CandidateDataOutput,
   candidates: StageBCandidateResult,
-  maxInputTokens: number = EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS
+  maxInputTokens: number = EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+  renderForBudget: EvidenceBudgetRenderer = serializeSnapshotForBudget
 ): EvidenceSnapshotResult {
   const { candidate, commit, origin, normalizedRelatedShas, normalizedCitedFilePaths } = item;
   // 대표 커밋을 색인에서 찾지 못하면 제목·메시지·PR·변경 파일이 모두 없어 인터뷰할 근거가 없습니다.
@@ -310,13 +351,15 @@ export function buildExperienceEvidenceSnapshot(
     patchBudget,
   });
   const metadataTokens = estimateEvidenceTokens(
-    snapshotShape(withoutPatches.commits, {
-      maxInputTokens,
-      metadataTokens: maxInputTokens,
-      maxPatchBytes: budgetUpperBound,
-      patchBytes: budgetUpperBound,
-      truncatedByBudget: true,
-    })
+    renderForBudget(
+      snapshotShape(withoutPatches.commits, {
+        maxInputTokens,
+        metadataTokens: maxInputTokens,
+        maxPatchBytes: budgetUpperBound,
+        patchBytes: budgetUpperBound,
+        truncatedByBudget: true,
+      })
+    )
   );
   const remainingTokens = maxInputTokens - metadataTokens;
   if (remainingTokens <= 0) return { ok: false, reason: "evidence_input_too_large" };

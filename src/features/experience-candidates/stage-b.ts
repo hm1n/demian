@@ -1,25 +1,31 @@
 import { APICallError, generateObject, LoadAPIKeyError, NoObjectGeneratedError, RetryError } from "ai";
 import {
   ExperienceCandidateOutputError,
+  isAuthFailureResponseBody,
   isModelOutputFailureResponseBody,
   isRateLimitResponseBody,
 } from "./errors";
 import {
   createStageBModel,
   isLocalLlm,
-  localSamplingOptions,
+  judgmentSamplingOptions,
+  LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
   resolveStageBMaxTotalPatchChars,
+  toLlmUsageSample,
+  type LlmUsageSink,
 } from "./llm-provider";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
 import type { CommitDetail } from "@/lib/github/types";
 
-// 이슈 #19 실측(2026-08-24)으로 유효성 확인: Google 모델 목록에 존재하며 정상 응답합니다.
-// 무료 등급 일일 한도가 하루 20요청(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`)이고
-// 모델별로 따로 걸립니다. 측정에서 관측된 낮은 성공률은 모델의 일시적 과부하가 아니라 이 일일
-// 쿼터 소진이 주 원인이었습니다. 근거는 위키 측정 문서에 있습니다.
-export const STAGE_B_MODEL = "gemini-3.7-flash";
+// 2026-09-01에 `gemini-3.7-flash`에서 옮겼습니다. 그 모델은 실데이터에서 55,016밀리초로
+// `STAGE_B_TOTAL_BUDGET_MS`를 넘겨 `llm_timeout`으로 실패했습니다. 이 모델은 같은 입력에서
+// 4,190밀리초이며 예산의 7.6%입니다. 인용 파일을 후보마다 5~9개 끌어와 `gemini-3.1-flash-lite`의
+// 2개 고정보다 근거가 풍부했고, 그 차이에 회당 0.005달러를 지불하는 것이 이 선택의 내용입니다.
+// 유료 등급 한도는 RPM 4,000, 분당 입력 토큰 4,000,000, RPD 150,000이고 프로젝트별이면서
+// 모델별입니다. 근거는 `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
+export const STAGE_B_MODEL = "gemini-3.5-flash-lite";
 /**
  * Stage B 입력 커밋 수 상한입니다.
  *
@@ -188,7 +194,14 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
     );
   }
   if (APICallError.isInstance(error)) {
-    if (error.statusCode === 401 || error.statusCode === 403) {
+    // Gemini는 잘못된 키를 401이 아니라 400 `INVALID_ARGUMENT`로 돌려줍니다. 본문의
+    // `reason=API_KEY_INVALID`로 갈라야 요청 형식 오류와 섞이지 않습니다. 판별은 `errors.ts`에
+    // 실측 근거와 함께 있습니다.
+    if (
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      (error.statusCode === 400 && isAuthFailureResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", {
         cause: error,
       });
@@ -228,6 +241,15 @@ function mapLlmError(error: unknown): ExperienceCandidateOutputError {
         "LLM 모델 설정이 올바르지 않습니다.",
         { cause: error }
       );
+    }
+    // Gemini는 모델 과부하를 503 `UNAVAILABLE`로, 내부 오류를 500 `INTERNAL`로 돌려줍니다. Groq
+    // 기준으로 배선했을 때는 이 갈래가 없어도 됐지만 flash 계열에서는 가장 흔한 일시 실패입니다.
+    // 기다리면 풀리는 실패이므로 재시도 가능한 `llm_failure`로 두고, 문구에서 원인이 일시 장애임을
+    // 밝힙니다. 504는 위에서 이미 시간 초과로 갈라 두었습니다.
+    if ((error.statusCode ?? 0) >= 500) {
+      return new ExperienceCandidateOutputError("llm_failure", "LLM 서비스가 일시적으로 응답하지 못했습니다.", {
+        cause: error,
+      });
     }
     // 400이라도 본문에 `json_validate_failed`가 있으면 요청이 아니라 모델 출력이 실패한 것이다.
     // 같은 입력을 다시 보내면 다른 출력이 나오므로 스키마 검증 실패로 분류해 재시도에 맡긴다.
@@ -274,10 +296,17 @@ function localOutputContractHint(): string {
   return isLocalLlm() ? LOCAL_OUTPUT_CONTRACT_HINT_TEXT : "";
 }
 
-/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
-export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateStageB {
+/**
+ * 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다.
+ *
+ * `onUsage`는 측정용 통로입니다. 프로덕션은 넘기지 않습니다. 근거는 `LlmUsageSample`에 있습니다.
+ */
+export function createStageBGenerate(
+  model: string = STAGE_B_MODEL,
+  onUsage?: LlmUsageSink
+): GenerateStageB {
   return async (payload, abortSignal) => {
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model: createStageBModel(model),
       schema: experienceCandidateOutputSchema,
       system:
@@ -292,13 +321,16 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
         "절단 표시가 있으면 전체 diff를 본 것으로 단정하지 마세요. 한국어로 답하세요.",
       prompt: JSON.stringify(payload),
       abortSignal,
-      ...localSamplingOptions(),
+      maxRetries: LLM_MAX_RETRIES,
+      ...judgmentSamplingOptions(),
     });
+    onUsage?.(toLlmUsageSample(usage));
     return object;
   };
 }
 
-const generateWithGemini: GenerateStageB = createStageBGenerate();
+// 제공자 이름을 붙이지 않습니다. 로컬 전환에서는 OpenAI 호환 엔드포인트로 갑니다.
+const defaultGenerate: GenerateStageB = createStageBGenerate();
 
 /**
  * 같은 Pull Request(작업 묶음)에서 나온 최종 후보가 여럿이면 입력 순서상 첫 번째만 남기고
@@ -342,7 +374,7 @@ function dedupeCandidatesByWorkUnit(
 export async function selectStageBCandidates(
   commits: readonly CommitDetail[],
   candidates: readonly StageACandidate[],
-  generate: GenerateStageB = generateWithGemini,
+  generate: GenerateStageB = defaultGenerate,
   // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
   timeoutMs = resolveLlmTimeoutMs(STAGE_B_TOTAL_BUDGET_MS)
 ): Promise<ExperienceCandidateOutput> {

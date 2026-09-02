@@ -10,8 +10,9 @@ import {
   type StageAInput,
   type StageAUnitInput,
 } from "./stage-a";
+import { LLM_MAX_RETRIES, STAGE_JUDGMENT_TEMPERATURE } from "./llm-provider";
 
-// `createStageAGenerate`가 실제로 Groq에 보내는 프롬프트를 가로채기 위한 부분 모킹입니다.
+// `createStageAGenerate`가 실제로 제공자에 보내는 프롬프트를 가로채기 위한 부분 모킹입니다.
 // `generateObject`만 대체하고 나머지(`jsonSchema`, `APICallError` 등)는 실제 구현을 씁니다.
 vi.mock("ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("ai")>();
@@ -72,7 +73,6 @@ describe("Stage A 후보 선별", () => {
       ],
       unclassifiedShas: ["unclassified"],
       unjudgedShas: [],
-      rateLimit: null,
     });
   });
 
@@ -187,6 +187,12 @@ describe("Stage A 후보 선별", () => {
   const rateLimitBody = '{"error":{"code":"rate_limit_exceeded","type":"tokens"}}';
   // 요청·컨텍스트 자체가 모델 한도보다 클 때의 413 본문. 한도 초과가 아니다.
   const tooLargeBody = '{"error":{"code":"request_too_large","type":"invalid_request_error"}}';
+  // Gemini가 잘못된 키에 돌려주는 400 본문(2026-09-01 실측). 상태 코드는 요청 형식 오류와 같고
+  // `details`의 `reason`만 다르다.
+  const invalidKeyBody =
+    '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.",' +
+    '"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",' +
+    '"reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}';
   const retried = (statusCode: number, responseBody?: string) => new RetryError({
     message: "failed after 3 attempts",
     reason: "maxRetriesExceeded",
@@ -221,6 +227,13 @@ describe("Stage A 후보 선별", () => {
     [apiError(408), "llm_timeout"],
     [apiError(504), "llm_timeout"],
     [apiError(404), "llm_configuration"],
+    // Gemini는 모델 과부하를 503, 내부 오류를 500으로 돌려준다. 기다리면 풀리는 실패다.
+    [apiError(500), "llm_failure"],
+    [apiError(503), "llm_failure"],
+    [retried(503), "llm_failure"],
+    // Gemini는 잘못된 키를 401이 아니라 400으로 돌려준다(2026-09-01 실측). 본문으로 갈라야 한다.
+    [apiError(400, invalidKeyBody), "llm_auth"],
+    [retried(400, invalidKeyBody), "llm_auth"],
     [apiError(400), "llm_request"],
     [apiError(409), "llm_request"],
     [apiError(422), "llm_request"],
@@ -286,7 +299,7 @@ describe("renderStageAPrompt", () => {
 
   // 이 테스트가 핵심입니다. 라우트가 예산을 재는 문자열과 모델에 실제로 실리는 문자열이
   // 다시 어긋나면(Codex 리뷰 P2-1처럼) 이 테스트가 잡습니다.
-  it("createStageAGenerate가 Groq에 실제로 보내는 프롬프트와 같은 문자열을 만든다", async () => {
+  it("createStageAGenerate가 제공자에 실제로 보내는 프롬프트와 같은 문자열을 만든다", async () => {
     const payload = buildStageAPayload(input);
     const generateObjectMock = vi.mocked(generateObject);
     generateObjectMock.mockResolvedValue({
@@ -303,51 +316,6 @@ describe("renderStageAPrompt", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     const actualPrompt = generateObjectMock.mock.calls[0]![0].prompt;
     expect(actualPrompt).toBe(renderStageAPrompt(payload));
-  });
-});
-
-describe("한도 메타데이터", () => {
-  function mockGenerateObject(headers: Record<string, string>) {
-    const payload = buildStageAPayload(input);
-    vi.mocked(generateObject).mockResolvedValue({
-      object: {
-        decisions: payload.units.map(({ pullRequestNumber }) => ({
-          pullRequestNumber,
-          contributionItem: null,
-          recommended: false,
-        })),
-      },
-      response: { headers },
-      usage: { totalTokens: 1_234 },
-    } as unknown as Awaited<ReturnType<typeof generateObject>>);
-    return payload;
-  }
-
-  it("헤더가 없으면 프로덕션 경로는 null을 돌려준다", async () => {
-    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
-    const payload = mockGenerateObject({});
-
-    const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
-
-    expect((output as { __rateLimit: unknown }).__rateLimit).toBeNull();
-  });
-
-  /**
-   * 로컬 제공자는 `x-ratelimit-*`를 보내지 않습니다. 합성하지 않으면 청크가 둘 이상일 때
-   * `candidate-client.ts`가 `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
-   */
-  it("로컬 제공자는 헤더가 없어도 메타데이터를 합성한다", async () => {
-    vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", "http://localhost:11434/v1");
-    vi.stubEnv("STAGE_A_MODEL", "qwen2.5:7b");
-    const payload = mockGenerateObject({});
-
-    const output = await createStageAGenerate("test-model")(payload, new AbortController().signal);
-
-    expect((output as { __rateLimit: unknown }).__rateLimit).toEqual({
-      remainingTokens: Number.MAX_SAFE_INTEGER,
-      resetAfterMs: 0,
-      usedTokens: 1_234,
-    });
   });
 });
 
@@ -372,13 +340,16 @@ describe("로컬 전용 입력 범위 안내", () => {
     return generateObjectMock.mock.calls.at(-1)![0];
   }
 
-  it("프로덕션 경로에서는 프롬프트와 샘플링을 건드리지 않는다", async () => {
+  // 온도는 프로덕션에서도 고정값을 보냅니다. 2026-09-01 실측에서 제공자 기본 온도(1.0)가 같은 입력
+  // 7회에 서로 다른 후보 집합 4개를 냈습니다. 프롬프트의 로컬 전용 문구만 프로덕션에서 빠집니다.
+  it("프로덕션 경로에서는 프롬프트를 건드리지 않고 고정 온도를 보낸다", async () => {
     vi.stubEnv("NEXT_PUBLIC_LLM_BASE_URL", undefined);
 
     const call = await capturedCall();
 
     expect(call.system).not.toContain("커밋 제목 안에 적힌 다른 PR 번호");
-    expect(call.temperature).toBeUndefined();
+    expect(call.temperature).toBe(STAGE_JUDGMENT_TEMPERATURE);
+    expect(call.maxRetries).toBe(LLM_MAX_RETRIES);
   });
 
   /**

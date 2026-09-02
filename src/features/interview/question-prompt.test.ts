@@ -48,8 +48,114 @@ describe("renderInterviewEvidencePrompt", () => {
       })
     );
 
-    expect(budgetExhausted).toContain("patch 본문이 근거 상한 때문에 실리지 않았습니다.");
+    // 표식으로 갈라 적습니다. 파일마다 같은 문장을 싣던 것이 파일 27개에서 약 1,300바이트였습니다.
+    // 뜻은 `## 읽는 방법`에 한 번만 적습니다.
+    const path = "src/features/interview/sse.ts (modified +12/-3)";
+    expect(budgetExhausted).toContain(`- ${path} [patch 없음: 상한]`);
+    expect(notProvided).toContain(`- ${path} [patch 없음: 미제공]`);
+    expect(budgetExhausted).toContain("## 읽는 방법");
+    expect(budgetExhausted).toContain("근거 상한 때문에 patch 본문이 실리지 않았습니다.");
     expect(notProvided).toContain("GitHub이 patch 본문을 제공하지 않았습니다.");
+  });
+
+  it("같은 확인 수준 문장을 커밋마다 반복하지 않는다", () => {
+    const related = (sha: string) =>
+      snapshotCommit({ sha, role: "related", files: [snapshotFile()] });
+    const prompt = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        relatedCommits: [related("c".repeat(40)), related("d".repeat(40)), related("e".repeat(40))],
+      })
+    );
+    const sentence = "커밋 SHA, 제목, 메시지, 변경 파일, patch 본문은 GitHub 응답 값입니다.";
+
+    // 대표 커밋과 관련 커밋 셋이 같은 문장을 들고 오지만 범례에 한 번만 나옵니다.
+    expect(prompt.split(sentence).length - 1).toBe(1);
+    expect(prompt).toContain("## 커밋 확인 수준");
+    // 커밋 자리는 남아 있어야 합니다. 줄인 것은 문장이고 근거가 아닙니다.
+    for (const sha of ["c".repeat(40), "d".repeat(40), "e".repeat(40)]) {
+      expect(prompt).toContain(`## 관련 커밋 ${sha}`);
+    }
+  });
+
+  it("이름이 같은 커밋들의 확인 수준이 서로 다르면 커밋 자리에 그대로 적는다", () => {
+    const prompt = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        relatedCommits: [
+          snapshotCommit({ sha: "c".repeat(40), role: "related" }),
+          snapshotCommit({
+            sha: "d".repeat(40),
+            role: "related",
+            verifiability: {
+              status: "unverifiable",
+              aiSelected: true,
+              detail: "와이어로 들어온 다른 확인 수준입니다.",
+            },
+          }),
+        ],
+      })
+    );
+
+    // 와이어로 어긋난 값이 오면 하나로 뭉개지 않습니다. 뭉개면 확인 수준을 잘못 알립니다.
+    expect(prompt).toContain("와이어로 들어온 다른 확인 수준입니다.");
+    expect(prompt).toContain("대표 커밋과 같은 PR에 속한다는 관계까지만 확인됩니다.");
+  });
+
+  it("같은 Pull Request를 한 번만 싣는다", () => {
+    const prompt = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        relatedCommits: [
+          snapshotCommit({ sha: "c".repeat(40), role: "related" }),
+          snapshotCommit({ sha: "d".repeat(40), role: "related" }),
+        ],
+      })
+    );
+    const line = "Pull Request: #61 질문 스트리밍 표시 기반 (closed, develop <- hm1n/issue-60-streaming)";
+
+    expect(prompt.split(line).length - 1).toBe(1);
+    // PR이 하나뿐이면 커밋 자리에 번호를 다시 적지 않습니다.
+    expect(prompt.split("Pull Request: #61").length - 1).toBe(1);
+  });
+
+  it("Pull Request가 둘 이상이면 커밋 자리에 번호만 적는다", () => {
+    const prompt = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        relatedCommits: [
+          snapshotCommit({
+            sha: "c".repeat(40),
+            role: "related",
+            pullRequests: [
+              { number: 62, title: "다른 PR", state: "merged", baseBranch: "develop", headBranch: "hm1n/other" },
+            ],
+          }),
+        ],
+      })
+    );
+
+    expect(prompt).toContain("Pull Request: #61 질문 스트리밍 표시 기반");
+    expect(prompt).toContain("Pull Request: #62 다른 PR");
+    // 어느 커밋이 어느 PR에 속하는지 알아야 하므로 번호는 커밋 자리에도 적습니다.
+    expect(prompt.split("Pull Request: #62").length - 1).toBe(2);
+  });
+
+  it("메시지가 제목과 같으면 메시지를 싣지 않는다", () => {
+    const title = "feat: 근거 스냅샷 예산 재산정";
+    const same = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        representativeCommit: snapshotCommit({ title, message: title }),
+        relatedCommits: [],
+      })
+    );
+    const different = renderInterviewEvidencePrompt(
+      evidenceSnapshotFixture({
+        representativeCommit: snapshotCommit({ title, message: "본문이 따로 있는 커밋이다." }),
+        relatedCommits: [],
+      })
+    );
+
+    expect(same).not.toContain("메시지:");
+    expect(same).toContain(`제목: ${title}`);
+    expect(different).toContain("메시지:");
+    expect(different).toContain("본문이 따로 있는 커밋이다.");
   });
 
   it("절단한 patch는 원본보다 짧다는 사실을 함께 적는다", () => {

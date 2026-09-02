@@ -1,32 +1,45 @@
-import { createGroq } from "@ai-sdk/groq";
 import { streamText } from "ai";
 import { generationEmptyError } from "./errors";
 import { mapInterviewLlmError } from "./llm-error";
 import {
   INTERVIEW_QUESTION_PROMPT_VARIANT,
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES,
   renderInterviewEvidencePrompt,
   renderInterviewQuestionSystemPrompt,
   type InterviewPromptVariant,
 } from "./question-prompt";
+import {
+  EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN,
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+} from "@/features/experience-candidates/evidence-snapshot";
+import { createInterviewQuestionModel } from "@/features/experience-candidates/llm-provider";
 import type { ExperienceEvidenceSnapshot } from "@/features/experience-candidates/types";
 
 /**
  * 첫 질문 생성 모델입니다.
  *
- * Groq를 씁니다. Stage B가 쓰는 Gemini 무료 등급은 하루 요청 20건을 프로젝트 전체가 공유하므로
- * (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`) 인터뷰 시작마다 1건을 쓰면 후보 생성이
- * 먼저 막힙니다. 순서상 뒤 단계가 앞 단계의 할당량을 먹어서는 안 됩니다.
+ * 2026-09-01에 Groq `openai/gpt-oss-20b`에서 옮겼습니다. 근거는
+ * `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`입니다.
  *
- * Groq 안에서 Stage A와 다른 모델을 쓰는 이유는 **일일 토큰 한도가 모델별**이기 때문입니다. Stage
- * A가 `openai/gpt-oss-120b`를 쓰고, 측정하던 날 그 모델의 일일 200,000토큰이 소진되어 질문 생성을
- * 한 번도 호출할 수 없었습니다. 창은 24시간 롤링이라 40분 동안 잔여가 896토큰만 늘었습니다. 같은
- * 모델을 쓰면 후보 생성을 몇 번 돌린 날에는 인터뷰를 시작할 수 없습니다.
+ * 이 경로의 기준은 총 지연이 아니라 첫 청크 지연입니다. 이 모델은 근거 상한 5,250 기준으로 첫 청크가
+ * 1,172~1,581밀리초이며 시한 20초의 6~8%입니다. 인용 검증 위반과 근거 밖 사실이 0건이었습니다.
  *
- * `openai/gpt-oss-20b`는 근거에 없는 사실을 만드는 것이 관측되었습니다. 남은 문제이고 위키의
- * `확인 필요`에 있습니다. 지연·토큰 실측과 품질 비교는
+ * 2순위는 `gemini-3.5-flash-lite`입니다. 지연 구간이 겹치고 인용 위반도 없어 마지막 축은 질문의
+ * 성격이었습니다. 이 모델은 여러 파일을 엮어 설계 전체의 의도를 묻고, 2순위는 한 지점을 인용해 좁게
+ * 묻습니다. 사용자가 자기 경험을 스스로 설명하도록 잣대를 준다는 목적에 앞의 성격이 맞다고
+ * 판단했습니다. **질문을 코드 수준으로 좁혀야 하면 모델을 바꾸지 않고 프롬프트를 고도화합니다.**
+ *
+ * Stage A와 같은 모델을 씁니다. 한도가 프로젝트별이면서 모델별이라 두 경로가 한 통을 공유하지만,
+ * 유료 등급 한도가 RPM 4,000, 분당 입력 토큰 4,000,000, RPD 150,000이라 문제가 되지 않습니다. Groq
+ * 무료 등급에서 Stage A가 `openai/gpt-oss-120b`의 일일 200,000토큰을 소진해 질문 생성을 한 번도
+ * 호출하지 못했던 것과 조건이 다릅니다.
+ *
+ * 탈락한 후보와 사유입니다. `openai/gpt-oss-20b`는 근거에 없는 사실을 만들고 4문장 규칙을 어겼으며
+ * Groq 유료 전환이 막혀 있습니다. `gemini-3.6-flash`는 같은 입력 4회 중 2회가 첫 청크 시한을 넘겨
+ * `llm_timeout`으로 끝났고 사고 토큰을 끌 수 없습니다. 이전 측정 기록은
  * `llm-wiki/wiki/2026-08-25-첫-질문-생성-provider-실측과-재개-방침.md`에 있습니다.
  */
-export const INTERVIEW_QUESTION_MODEL = "openai/gpt-oss-20b";
+export const INTERVIEW_QUESTION_MODEL = "gemini-3.1-flash-lite";
 
 /**
  * 첫 청크가 오기까지 기다리는 시한입니다.
@@ -45,19 +58,42 @@ export const INTERVIEW_QUESTION_FIRST_CHUNK_TIMEOUT_MS = 20_000;
 export const INTERVIEW_QUESTION_TOTAL_TIMEOUT_MS = 55_000;
 
 /**
+ * 프롬프트 바이트 상한을 넘겼는지 볼 때 쓰는 허용 오차입니다.
+ *
+ * 근거 바이트는 수식으로 묶이지만, 스냅샷을 만들 때 patch 몫을 `serializedByteLength`로 세고 완성된
+ * 근거를 다시 재지는 않습니다. 그 구성 오차를 흡수합니다. 실측에서 상한 대비 여유가 1.2~1.6%로
+ * 남았으므로 이 오차가 실제로 쓰일 일은 없어야 하고, 회귀 테스트가 그 사실을 고정합니다.
+ */
+const PROMPT_BYTES_TOLERANCE = 256;
+
+/**
  * 모델에 실제로 실리는 프롬프트(시스템 + 근거)의 바이트 상한입니다.
  *
  * 근거 스냅샷 자체는 `evidence-snapshot.ts`가 이미 추정 토큰으로 묶습니다. 그런데 그 상한은
- * 스냅샷을 만드는 쪽에서만 걸리고, 이 route는 클라이언트가 보낸 스냅샷을 그대로 받습니다.
- * 상한을 넘긴 스냅샷을 보내면 Groq 분당 토큰 한도를 넘겨 413을 받게 되므로 실제 프롬프트를
- * 서버에서 접어 보고 한 번 더 확인합니다. Stage A route가 같은 이유로 같은 가드를 둡니다.
+ * 스냅샷을 만드는 쪽에서만 걸리고, 이 route는 클라이언트가 보낸 스냅샷을 그대로 받습니다. 상한을
+ * 넘긴 스냅샷을 보내면 그대로 모델에 실리므로 실제 프롬프트를 서버에서 접어 보고 한 번 더
+ * 확인합니다. Stage A route가 같은 이유로 같은 가드를 둡니다.
  *
- * 값의 근거는 실측입니다(2026-08-25). 근거 상한 3,500토큰을 꽉 채운 스냅샷의 실제 프롬프트가
- * 10,446~10,797바이트였고 바이트당 토큰은 3.64~3.67이었습니다. 14,000바이트는 약 3,840토큰이고
- * 관측된 최대 응답 1,678토큰을 더해도 분당 한도 8,000의 69%입니다. 정상 입력보다 30% 위에 두어
- * 정상 요청을 막지 않으면서 한도를 넘기는 요청은 걸러냅니다.
+ * **값을 손으로 고르지 않고 근거 상한에서 유도합니다.** 2026-08-28까지는 14,000이었고, 근거를 JSON
+ * 직렬화로 재던 시절에 관측된 프롬프트 10,446~10,797바이트 위에 30% 여유를 얹은 값이었습니다. 그
+ * 여유가 필요했던 까닭은 재는 대상(JSON)과 보내는 대상(프롬프트)이 달라 렌더가 더 커질 수 있었기
+ * 때문이고, 실제로 그 가정이 깨진 것을 확인했습니다(JSON 10,436바이트 대 프롬프트 10,632바이트).
+ *
+ * 이제 근거 예산을 렌더된 프롬프트로 재므로 근거 바이트가 수식으로 묶입니다.
+ * `ceil(근거 바이트 / EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN) <= EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS`이므로
+ * 근거 바이트는 두 상수의 곱을 넘지 못합니다. 여기에 시스템 프롬프트와 두 문단을 잇는 2바이트를
+ * 더하면 프롬프트 전체의 상한이 나옵니다. 실측이 이 계산과 맞았습니다. 근거 상한 3,500에서
+ * 11,687~11,715바이트(계산 11,851), 5,250에서 16,776~16,883바이트(계산 17,101)입니다.
+ *
+ * 유도로 두면 근거 상한만 바꿔도 이 값이 따라오고, 근거 상한을 넘긴 스냅샷은 예외 없이 걸립니다.
+ * 예전 14,000은 계산된 상한보다 18% 높아 그만큼 넘긴 스냅샷을 통과시켰습니다. 측정 근거는
+ * `llm-wiki/raw/2026-08-28-첫-질문-생성-모델-실측.md`에 있습니다.
  */
-export const INTERVIEW_QUESTION_MAX_PROMPT_BYTES = 14_000;
+export const INTERVIEW_QUESTION_MAX_PROMPT_BYTES =
+  EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN +
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES +
+  2 +
+  PROMPT_BYTES_TOLERANCE;
 
 export interface InterviewQuestionPrompt {
   readonly system: string;
@@ -145,7 +181,7 @@ export function createInterviewQuestionGenerate(
   return ({ system, evidence }, abortSignal) =>
     toThrowingTextStream(
       streamText({
-        model: createGroq()(model),
+        model: createInterviewQuestionModel(model),
         system,
         prompt: evidence,
         abortSignal,
@@ -154,7 +190,9 @@ export function createInterviewQuestionGenerate(
     );
 }
 
-const generateWithGroq: GenerateInterviewQuestion = createInterviewQuestionGenerate();
+// 제공자 이름을 붙이지 않습니다. 프로덕션은 Gemini이고 로컬 전환에서는 OpenAI 호환 엔드포인트로
+// 갑니다. 2026-09-01까지 이 상수 이름이 `generateWithGroq`였습니다.
+const defaultGenerate: GenerateInterviewQuestion = createInterviewQuestionGenerate();
 
 /**
  * 첫 조각이 도착한 뒤의 생성 스트림입니다.
@@ -184,7 +222,7 @@ export interface StartInterviewQuestionStreamOptions {
 export async function startInterviewQuestionStream(
   snapshot: ExperienceEvidenceSnapshot,
   {
-    generate = generateWithGroq,
+    generate = defaultGenerate,
     variant,
     firstChunkTimeoutMs = INTERVIEW_QUESTION_FIRST_CHUNK_TIMEOUT_MS,
     totalTimeoutMs = INTERVIEW_QUESTION_TOTAL_TIMEOUT_MS,

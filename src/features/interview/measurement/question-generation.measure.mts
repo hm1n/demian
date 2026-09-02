@@ -13,7 +13,9 @@
  *   --max-commits=<N>      PR에서 가져올 커밋 수 상한. 기본 6
  *   --skip-gemini          Gemini 호출을 건너뜁니다. 무료 등급 일일 20건을 Stage B와 공유합니다.
  *   --skip-groq            Groq 호출을 건너뜁니다. 일일 토큰 한도가 소진됐을 때 씁니다.
+ *   --skip-deepinfra       DeepInfra 호출을 건너뜁니다. 선불 잔액을 아낄 때 씁니다.
  *   --model=<id>           이 모델만 잽니다. 분당 토큰 한도 때문에 호출을 나눠 돌릴 때 씁니다.
+ *   --provider=<groq|google|deepinfra>  이 provider만 잽니다.
  *   --variant=<merged|split>  이 프롬프트 변형만 잽니다.
  *   --max-input-tokens=<N> 근거 입력 상한을 바꿔 patch 몫이 질문 품질에 미치는 영향을 봅니다.
  *   --reasoning-format=<parsed|raw|hidden>  Groq 추론 모델의 사고 과정 처리 방식입니다. 지정하지
@@ -21,6 +23,9 @@
  *   --first-chunk-timeout=<ms>  첫 청크 시한. 기본 20000
  *   --total-timeout=<ms>   생성 전체 시한. 기본 55000
  *   --check-errors         인증·모델 설정 실패의 오류 분류를 확인합니다. 정상 호출을 쓰지 않습니다.
+ *   --sse-route            SSE route 전 구간을 실제 provider로 통과시킵니다. 프롬프트 가드와 이벤트
+ *                          계약, seq 번호까지 프로덕션 코드로 확인합니다.
+ *   --metadata-breakdown   근거 예산을 항목별 바이트로 쪼개 봅니다. LLM을 호출하지 않습니다.
  *
  * 재는 것:
  *   - 첫 청크 지연, 총 지연, 청크 수, 출력 길이
@@ -48,7 +53,9 @@ import type {
   ExperienceEvidenceSnapshot,
   StageBCandidateResult,
 } from "../../experience-candidates/types";
+import { NextRequest } from "next/server";
 import {
+  INTERVIEW_QUESTION_MAX_PROMPT_BYTES,
   INTERVIEW_QUESTION_MAX_RETRIES,
   buildInterviewQuestionPrompt,
   interviewQuestionPromptBytes,
@@ -56,7 +63,10 @@ import {
   toThrowingTextStream,
   type GenerateInterviewQuestion,
 } from "../question-generation";
-import type { InterviewPromptVariant } from "../question-prompt";
+import { renderInterviewEvidencePrompt, type InterviewPromptVariant } from "../question-prompt";
+import { createSseEventParser, type InterviewStreamEvent } from "../sse";
+import { handleInterviewQuestionStream } from "../../../app/api/interview/stream/route";
+import { encryptGitHubToken, GITHUB_SESSION_COOKIE } from "../../../lib/github/auth-session";
 import { GITHUB_API_BASE, githubFetch, parseJson } from "../../../lib/github/commits";
 import { fetchCommitDetailBySha, withoutPatch } from "../../../lib/github/contributions";
 import type { CandidateDataOutput, CommitDetail } from "../../../lib/github/types";
@@ -76,6 +86,9 @@ const pullRequestNumbers = args
   .map((arg) => Number(arg.split("=")[1]));
 const skipGemini = args.includes("--skip-gemini");
 const skipGroq = args.includes("--skip-groq");
+const skipDeepinfra = args.includes("--skip-deepinfra");
+const providerFilter = flag("provider", "");
+const metadataBreakdown = args.includes("--metadata-breakdown");
 const maxInputTokens = Number(flag("max-input-tokens", "0")) || undefined;
 const variantFilter = flag("variant", "");
 const modelFilter = flag("model", "");
@@ -83,6 +96,7 @@ const reasoningFormat = flag("reasoning-format", "");
 const firstChunkTimeoutMs = Number(flag("first-chunk-timeout", "20000"));
 const totalTimeoutMs = Number(flag("total-timeout", "55000"));
 const checkErrors = args.includes("--check-errors");
+const sseRoute = args.includes("--sse-route");
 
 const githubToken = process.env.GITHUB_TOKEN;
 if (!githubToken) {
@@ -167,7 +181,15 @@ async function buildSnapshot(pullRequestNumber: number): Promise<ExperienceEvide
     diffs: details.map(toDiff),
   };
 
-  const result = buildExperienceEvidenceSnapshot(item, data, candidates, maxInputTokens);
+  // 프로덕션과 같은 방식으로 재야 patch 몫이 같습니다. `confirmExperienceSelection`이 넘기는 것과
+  // 같은 렌더러를 넘깁니다.
+  const result = buildExperienceEvidenceSnapshot(
+    item,
+    data,
+    candidates,
+    maxInputTokens,
+    renderInterviewEvidencePrompt
+  );
   if (!result.ok) throw new Error(`PR #${pullRequestNumber} 스냅샷 조립 실패: ${result.reason}`);
   return result.snapshot;
 }
@@ -182,13 +204,26 @@ async function buildSnapshot(pullRequestNumber: number): Promise<ExperienceEvide
 interface CallMetadata {
   inputTokens: number | null;
   outputTokens: number | null;
+  /** 사고 토큰입니다. 첫 청크 전에 소비되므로 첫 청크 지연의 직접 원인입니다. */
+  reasoningTokens: number | null;
   rateLimitHeaders: Record<string, string>;
 }
 
-type ProviderId = "groq" | "google";
+type ProviderId = "groq" | "google" | "deepinfra";
+
+// DeepInfra는 OpenAI 호환 엔드포인트만 냅니다. 새 의존성을 넣지 않고 `llm-provider.ts`의
+// `requireLocalModel`과 같은 방식으로 Groq 클라이언트의 baseURL을 갈아 씁니다. 즉 여기서 재는 배선
+// 비용이 실제 전환 비용과 같습니다.
+const DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai";
 
 function resolveModel(provider: ProviderId, model: string) {
-  return provider === "groq" ? createGroq()(model) : createGoogle()(model);
+  if (provider === "google") return createGoogle()(model);
+  if (provider === "deepinfra") {
+    const apiKey = process.env.DEEPINFRA_API_KEY;
+    if (!apiKey) throw new Error("DEEPINFRA_API_KEY가 필요합니다.");
+    return createGroq({ baseURL: DEEPINFRA_BASE_URL, apiKey })(model);
+  }
+  return createGroq()(model);
 }
 
 
@@ -211,10 +246,25 @@ function createMeasuredGenerate(
     });
     return (async function* () {
       yield* toThrowingTextStream(result);
-      const [usage, response] = await Promise.all([result.usage, result.response]);
+      const [usage, response, providerMetadata] = await Promise.all([
+        result.usage,
+        result.response,
+        result.providerMetadata,
+      ]);
+      // 사고 토큰의 자리는 provider마다 다릅니다. SDK의 공통 usage에 없으면 Google 메타데이터에서
+      // 찾습니다. 첫 청크 전에 소비되는 토큰이라 첫 청크 지연을 설명하는 값입니다.
+      const usageRecord = usage as unknown as Record<string, unknown>;
+      const googleMetadata = (providerMetadata?.google ?? {}) as Record<string, unknown>;
+      const reasoningTokens =
+        typeof usageRecord.reasoningTokens === "number"
+          ? usageRecord.reasoningTokens
+          : typeof googleMetadata.thoughtsTokenCount === "number"
+            ? googleMetadata.thoughtsTokenCount
+            : null;
       onMetadata({
         inputTokens: usage.inputTokens ?? null,
         outputTokens: usage.outputTokens ?? null,
+        reasoningTokens,
         rateLimitHeaders: Object.fromEntries(
           Object.entries(response.headers ?? {}).filter(([name]) =>
             name.toLowerCase().startsWith("x-ratelimit-")
@@ -409,6 +459,87 @@ async function checkErrorClassification(snapshot: ExperienceEvidenceSnapshot): P
 }
 
 // ---------------------------------------------------------------------------
+// SSE route 전 구간
+// ---------------------------------------------------------------------------
+// 모델과 프롬프트는 위 경로로 확인했지만 route를 통과하는 전 구간은 확인하지 않았습니다. 여기서
+// 확인하는 것은 provider 응답이 아니라 **그 사이의 배선**입니다. 세션 쿠키 검사, 본문 스키마 검사,
+// 프롬프트 바이트 가드, 첫 조각 시한, SSE 이벤트 계약과 seq 번호입니다. `generate`를 주입하지
+// 않으므로 route가 프로덕션 기본값을 그대로 씁니다.
+
+async function measureSseRoute(
+  pullRequestNumber: number,
+  snapshot: ExperienceEvidenceSnapshot
+): Promise<void> {
+  const promptBytes = interviewQuestionPromptBytes(buildInterviewQuestionPrompt(snapshot));
+  console.log(
+    `
+## SSE route 전 구간 / PR #${pullRequestNumber}
+
+` +
+      `- 프롬프트 ${promptBytes}바이트 대 가드 ${INTERVIEW_QUESTION_MAX_PROMPT_BYTES}바이트`
+  );
+
+  // 세션 쿠키는 route가 실제로 검사하는 값입니다. 토큰 문자열은 이 경로에서 쓰이지 않으므로
+  // 자리만 채웁니다. 암호화 키는 `.env`의 운영 키를 그대로 씁니다.
+  const request = new NextRequest("https://example.com/api/interview/stream", {
+    method: "POST",
+    headers: { cookie: `${GITHUB_SESSION_COOKIE}=${encryptGitHubToken("measurement-placeholder")}` },
+    body: JSON.stringify({ snapshot }),
+  });
+
+  const startedAt = performance.now();
+  const response = await handleInterviewQuestionStream(request);
+  const headerMs = performance.now() - startedAt;
+  console.log(
+    `- 상태 ${response.status} / Content-Type ${response.headers.get("Content-Type")} / 헤더까지 ${formatMs(headerMs)}`
+  );
+  if (response.status !== 200 || response.body === null) {
+    const body = await response.text();
+    console.log(`- 본문 ${body.slice(0, 200)}`);
+    return;
+  }
+
+  const parser = createSseEventParser();
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  const events: InterviewStreamEvent[] = [];
+  let firstEventMs: number | null = null;
+  let questionChars = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+      if (firstEventMs === null) firstEventMs = performance.now() - startedAt;
+      events.push(event);
+      if (event.type === "chunk") questionChars += event.text.length;
+    }
+  }
+
+  const chunkEvents = events.filter((event) => event.type === "chunk");
+  const lastEvent = events.at(-1);
+  const seqs = chunkEvents.map((event) => (event.type === "chunk" ? event.seq : 0));
+  const seqContiguous = seqs.every((seq, index) => seq === index + 1);
+  console.log(`- 첫 이벤트 ${formatMs(firstEventMs)} / 전체 ${formatMs(performance.now() - startedAt)}`);
+  console.log(`- chunk ${chunkEvents.length}개 / 질문 ${questionChars}자 / seq 연속 ${seqContiguous}`);
+  console.log(
+    `- 마지막 이벤트 ${lastEvent?.type ?? "없음"}` +
+      (lastEvent?.type === "done" ? ` seq=${lastEvent.seq}` : "") +
+      (lastEvent?.type === "error" ? ` kind=${lastEvent.kind}` : "")
+  );
+  console.log(
+    `- done의 seq와 마지막 chunk의 seq 일치 ` +
+      `${lastEvent?.type === "done" && lastEvent.seq === seqs.at(-1)}`
+  );
+  // 질문 원문도 남깁니다. 이 경로가 실제 route를 통과하므로, 사용자가 화면에서 읽을 문장과 같습니다.
+  // 수치만 남기면 배선은 확인되지만 질문이 근거에 붙어 있는지는 사람이 볼 수 없습니다.
+  const question = chunkEvents
+    .map((event) => (event.type === "chunk" ? event.text : ""))
+    .join("");
+  console.log("  --- 질문 ---");
+  console.log(question);
+}
+
+// ---------------------------------------------------------------------------
 // 실행
 // ---------------------------------------------------------------------------
 
@@ -435,8 +566,89 @@ async function main(): Promise<void> {
     );
   }
 
+  if (metadataBreakdown) {
+    // 메타데이터가 근거 예산을 어디서 먹는지 항목별로 잽니다. 예산은 JSON 직렬화 바이트로 걸리므로
+    // 각 항목을 같은 방식으로 재야 비교됩니다. 내용은 출력하지 않고 바이트와 토큰만 냅니다.
+    for (const number of numbers) {
+      const snapshot = snapshots.get(number)!;
+      const bytesOf = (value: unknown) =>
+        new TextEncoder().encode(JSON.stringify(value ?? null)).byteLength;
+      const commits = [snapshot.representativeCommit, ...snapshot.relatedCommits];
+      const sum = (pick: (commit: (typeof commits)[number]) => unknown) =>
+        commits.reduce((total, commit) => total + bytesOf(pick(commit)), 0);
+      const filesWithoutPatch = commits.reduce(
+        (total, commit) =>
+          total +
+          commit.files.reduce(
+            (fileTotal, file) =>
+              fileTotal +
+              bytesOf({
+                path: file.path,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patchTruncated: file.patchTruncated,
+                patchOmittedReason: file.patchOmittedReason,
+              }),
+            0
+          ),
+        0
+      );
+      const patchBytes = commits.reduce(
+        (total, commit) =>
+          total + commit.files.reduce((fileTotal, file) => fileTotal + bytesOf(file.patch), 0),
+        0
+      );
+      const rows: [string, number][] = [
+        ["커밋 sha", sum((commit) => commit.sha)],
+        ["커밋 role·indexed", sum((commit) => ({ role: commit.role, indexed: commit.indexed }))],
+        ["커밋 title", sum((commit) => commit.title)],
+        ["커밋 message", sum((commit) => commit.message)],
+        ["커밋 pullRequests", sum((commit) => commit.pullRequests)],
+        ["커밋 verifiability", sum((commit) => commit.verifiability)],
+        ["파일 목록(patch 제외)", filesWithoutPatch],
+        ["patch 본문", patchBytes],
+        ["evidence(해석 문장)", bytesOf(snapshot.evidence)],
+        ["citedFilePaths", bytesOf(snapshot.citedFilePaths)],
+        ["unverifiableItems", bytesOf(snapshot.unverifiableItems)],
+        ["patchBudget", bytesOf(snapshot.patchBudget)],
+        ["candidateSha·source·origin", bytesOf({
+          candidateSha: snapshot.candidateSha,
+          source: snapshot.source,
+          origin: snapshot.origin,
+        })],
+      ];
+      const total = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+      // 예산이 재는 대상은 렌더된 프롬프트입니다. 실제 상한 준수를 여기서도 확인합니다.
+      const promptBytes = interviewQuestionPromptBytes(
+        buildInterviewQuestionPrompt(snapshot, "split")
+      );
+      const promptTokens = estimateEvidenceTokens(renderInterviewEvidencePrompt(snapshot));
+      const fileCount = commits.reduce((count, commit) => count + commit.files.length, 0);
+      console.log(
+        `
+[PR #${number}] 커밋 ${commits.length}개 / 파일 ${fileCount}개 / 직렬화 ${total}바이트 / ` +
+          `metadataTokens ${snapshot.patchBudget.metadataTokens}` +
+          ` / 프롬프트 ${promptBytes}바이트 / 근거 추정 ${promptTokens}토큰 대 상한 ${snapshot.patchBudget.maxInputTokens}`
+      );
+      for (const [label, bytes] of rows.sort((left, right) => right[1] - left[1])) {
+        const share = ((bytes / total) * 100).toFixed(1);
+        console.log(`  ${label}: ${bytes}바이트 (${share}%) / 추정 ${Math.ceil(bytes / 3)}토큰`);
+      }
+    }
+    return;
+  }
+
   if (checkErrors) {
     await checkErrorClassification(snapshots.get(numbers[0])!);
+    return;
+  }
+
+  if (sseRoute) {
+    for (const number of numbers) {
+      await measureSseRoute(number, snapshots.get(number)!);
+    }
     return;
   }
 
@@ -459,7 +671,22 @@ async function main(): Promise<void> {
           // 그래도 후보에서 말로만 빼지 않고 한 번 재봅니다.
           { provider: "groq" as const, model: "groq/compound-mini" },
         ]),
-    ...(skipGemini ? [] : [{ provider: "google" as const, model: "gemini-3.6-flash" }]),
+    ...(skipGemini
+      ? []
+      : [
+          { provider: "google" as const, model: "gemini-3.6-flash" },
+          // Stage A·B 확정 모델입니다. 배치에서 사고 토큰을 쓰지 않아 첫 청크가 빠를 수 있으나
+          // 자유 텍스트 품질은 이 경로에서 재본 적이 없습니다.
+          { provider: "google" as const, model: "gemini-3.1-flash-lite" },
+          { provider: "google" as const, model: "gemini-3.5-flash-lite" },
+        ]),
+    // Groq 유료 전환이 막혀 있어 같은 모델을 다른 곳에서 서빙할 때의 값이 필요합니다.
+    ...(skipDeepinfra
+      ? []
+      : [
+          { provider: "deepinfra" as const, model: "openai/gpt-oss-120b" },
+          { provider: "deepinfra" as const, model: "openai/gpt-oss-20b" },
+        ]),
   ];
   const variants: InterviewPromptVariant[] = ["split", "merged"];
   const configs = models
@@ -467,7 +694,8 @@ async function main(): Promise<void> {
     .filter(
       (config) =>
         (variantFilter === "" || config.variant === variantFilter) &&
-        (modelFilter === "" || config.model === modelFilter)
+        (modelFilter === "" || config.model === modelFilter) &&
+        (providerFilter === "" || config.provider === providerFilter)
     );
 
   const results: RunResult[] = [];
@@ -491,6 +719,7 @@ async function main(): Promise<void> {
           `출력 ${result.questionChars}자`,
           `입력 토큰 ${result.metadata?.inputTokens ?? "-"}`,
           `출력 토큰 ${result.metadata?.outputTokens ?? "-"}`,
+          `사고 토큰 ${result.metadata?.reasoningTokens ?? "-"}`,
           result.errorKind ? `오류 ${result.errorKind}` : "",
         ]
           .filter((part) => part !== "")

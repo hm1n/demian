@@ -35,6 +35,7 @@ const EMPTY_STAGE_A_SELECTION: StageASelectionState = {
   excludedCommits: [],
   excludedUnits: [],
   thresholdScore: 0,
+  selectedUnitCount: 0,
   unjudgedShas: [],
 };
 
@@ -73,7 +74,7 @@ describe("RepositoryAnalysisView Loading", () => {
     [{ status: "loading", loading: { step: "commits" } }, "1단계", "전체 커밋을 조회하고 있습니다"],
     [{ status: "loading", loading: { step: "details", completed: 2, total: 5, phase: "commit_details" } }, "2단계", "5개 중 2개를 확인했습니다."],
     [{ status: "loading", loading: { step: "deriving" } }, "3단계", "파생 지표를 계산하고 있습니다"],
-      [{ status: "loading", loading: { step: "stage_a", completed: 2, total: 5, waitingForRateLimit: false } }, "4단계", "경험 후보를 1차 선별하고 있습니다"],
+    [{ status: "loading", loading: { step: "stage_a", total: 5 } }, "4단계", "경험 후보를 1차 선별하고 있습니다"],
     [{ status: "loading", loading: { step: "stage_b" } }, "5·6단계", "diff·PR 근거를 수집하고 최종 후보를 판단하고 있습니다"],
   ] as const)("각 단계의 %s 상태를 구분해 표시한다", async (state, step, copy) => {
     mockState(state);
@@ -81,6 +82,18 @@ describe("RepositoryAnalysisView Loading", () => {
     await submitRepository();
     expect(screen.getByRole("status")).toHaveTextContent(step);
     expect(screen.getByRole("status")).toHaveTextContent(copy);
+  });
+
+  // 요청이 하나가 되면서 중간 보고 지점이 사라졌습니다. 판단한 개수를 계속 세는 문구는 응답이 올
+  // 때까지 0에 멈춰 있어 실제와 달랐습니다(2026-09-02 브라우저 실측에서 5~6초 동안 관측).
+  it("stage_a는 판단한 개수 대신 한 번에 보낸 묶음 수를 알린다", async () => {
+    mockState({ status: "loading", loading: { step: "stage_a", total: 67 } });
+    render(<RepositoryAnalysisView hasSession={true} />);
+    await submitRepository();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "67개 묶음을 한 번의 요청으로 판단하고 있습니다. 중간 진행률은 알 수 없습니다."
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent("판단했고");
   });
 });
 
@@ -189,6 +202,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });
@@ -238,6 +252,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });
@@ -256,6 +271,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });

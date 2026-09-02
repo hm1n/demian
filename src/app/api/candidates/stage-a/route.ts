@@ -5,18 +5,20 @@ import { ExperienceCandidateOutputError } from "@/features/experience-candidates
 import type {
   StageACandidate,
   StageACandidateOutput,
-  StageAChunkOutput,
 } from "@/features/experience-candidates/types";
 import {
-  STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_REQUEST_BYTES,
-  STAGE_A_CHUNK_MAX_UNITS,
+  STAGE_A_MAX_PROMPT_BYTES,
+  STAGE_A_MAX_REQUEST_BYTES,
+  STAGE_A_MAX_UNITS,
+  STAGE_A_MIN_LLM_BUDGET_MS,
+  STAGE_A_TIMEOUT_MS,
   buildStageAPayload,
   renderStageAPrompt,
   selectStageACandidates,
   type GenerateStageA,
   type StageAInput,
 } from "@/features/experience-candidates/stage-a";
+import { resolveLlmTimeoutMs } from "@/features/experience-candidates/llm-provider";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -58,7 +60,7 @@ function isStageAInput(value: unknown): value is StageAInput {
   const input = value as StageAInput;
   if (typeof value !== "object" || value === null) return false;
   if (!Array.isArray(input.units) || !input.units.every(isUnit)) return false;
-  if (input.units.length === 0 || input.units.length > STAGE_A_CHUNK_MAX_UNITS) return false;
+  if (input.units.length === 0 || input.units.length > STAGE_A_MAX_UNITS) return false;
   // 같은 묶음을 두 번 보내면 전수 응답 계약이 성립하지 않습니다.
   const numbers = input.units.map(({ pullRequestNumber }) => pullRequestNumber);
   if (new Set(numbers).size !== numbers.length) return false;
@@ -109,6 +111,17 @@ export async function handleStageA(
   generate?: GenerateStageA,
   timeoutMs?: number
 ): Promise<Response> {
+  /**
+   * 예산을 라우트 전체로 한 번만 잽니다.
+   *
+   * 복구 호출마다 새 시한을 주면 라우트가 `maxDuration` 60초를 넘길 수 있습니다. 넘기면 플랫폼이
+   * 함수를 끊어 우리 오류 계약이 나가지 못합니다. 남은 시간을 각 호출의 시한으로 넘겨 세 번을
+   * 합쳐도 한 번의 예산 안에서 끝나게 합니다. 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 예산을
+   * 대신합니다. Stage B 라우트가 같은 방식을 씁니다.
+   */
+  const startedAt = Date.now();
+  const totalBudgetMs = timeoutMs ?? resolveLlmTimeoutMs(STAGE_A_TIMEOUT_MS);
+  const remainingBudgetMs = () => totalBudgetMs - (Date.now() - startedAt);
   try {
     getGitHubTokenFromRequest(request);
     const declaredLength = Number(request.headers.get("content-length"));
@@ -129,7 +142,7 @@ export async function handleStageA(
     }
     if (
       !isStageAInput(body) ||
-      new TextEncoder().encode(text).byteLength > STAGE_A_CHUNK_MAX_REQUEST_BYTES
+      new TextEncoder().encode(text).byteLength > STAGE_A_MAX_REQUEST_BYTES
     ) {
       return Response.json({ error: { kind: "invalid_request", message: "Stage A 입력 형식이 올바르지 않습니다." } }, { status: 422 });
     }
@@ -139,7 +152,7 @@ export async function handleStageA(
     // 실제 프롬프트에서는 Groq 분당 토큰 한도를 넘겨 413을 받았습니다(Codex 리뷰 P2-1).
     const stageAPayload = buildStageAPayload(body);
     const promptBytes = new TextEncoder().encode(renderStageAPrompt(stageAPayload)).byteLength;
-    if (promptBytes > STAGE_A_CHUNK_MAX_BYTES) {
+    if (promptBytes > STAGE_A_MAX_PROMPT_BYTES) {
       // 원인을 구분해 알려줍니다. 요약만으로도 이미 상한을 넘었다면 기여 항목과 무관한 입력
       // 문제입니다. 요약은 상한 안인데 기여 항목을 더해 넘었다면 기여 항목이 원인입니다.
       // 오류 종류(kind)는 화면이 문구를 소유한 계약이라 늘리지 않고 메시지만 구분합니다.
@@ -147,7 +160,7 @@ export async function handleStageA(
         stageAPayload.units.map(({ summary }) => summary).join("\n")
       ).byteLength;
       const causedByContributionItems =
-        stageAPayload.contributionItems.length > 0 && summaryOnlyBytes <= STAGE_A_CHUNK_MAX_BYTES;
+        stageAPayload.contributionItems.length > 0 && summaryOnlyBytes <= STAGE_A_MAX_PROMPT_BYTES;
       return Response.json({
         error: {
           kind: "invalid_request",
@@ -201,19 +214,18 @@ export async function handleStageA(
     const degrade = (
       partial: StageACandidateOutput,
       unjudgedShas: readonly string[]
-    ): StageAChunkOutput => ({
+    ): StageACandidateOutput => ({
       candidates: partial.candidates,
       unclassifiedShas: partial.unclassifiedShas,
       unjudgedShas: [...unjudgedShas],
-      rateLimit: null,
     });
 
     const selectWithRecovery = async (
       input: StageAInput,
       attemptsLeft = 2
-    ): Promise<StageAChunkOutput> => {
+    ): Promise<StageACandidateOutput> => {
       try {
-        return await selectStageACandidates(input, generate, timeoutMs);
+        return await selectStageACandidates(input, generate, Math.max(1, remainingBudgetMs()));
       } catch (error) {
         // 모델이 형식에 맞는 응답 자체를 만들지 못한 경우입니다. 살릴 부분 응답이 없으므로 같은
         // 입력을 그대로 다시 보냅니다. 실측에서 같은 입력이 시도마다 다른 출력을 냈습니다.
@@ -221,7 +233,8 @@ export async function handleStageA(
           error instanceof ExperienceCandidateOutputError &&
           error.kind === "schema_validation" &&
           !error.partialOutput &&
-          attemptsLeft > 0
+          attemptsLeft > 0 &&
+          remainingBudgetMs() >= STAGE_A_MIN_LLM_BUDGET_MS
         ) {
           return await selectWithRecovery(input, attemptsLeft - 1);
         }
@@ -233,10 +246,14 @@ export async function handleStageA(
         }
         const partial = error.partialOutput;
         const missingShas = error.missingShas;
-        if (attemptsLeft === 0) return degrade(partial, missingShas);
+        // 잔여 예산이 복구 한 번을 담지 못하면 시작하지 않고 부분 결과를 살립니다. 시작해 놓고
+        // 시한에 걸리면 그만큼 라우트 예산만 쓰고 결과는 같습니다.
+        if (attemptsLeft === 0 || remainingBudgetMs() < STAGE_A_MIN_LLM_BUDGET_MS) {
+          return degrade(partial, missingShas);
+        }
 
         const missing = new Set(missingShas);
-        let recovered: StageAChunkOutput;
+        let recovered: StageACandidateOutput;
         try {
           recovered = await selectWithRecovery({
             ...input,
@@ -257,7 +274,6 @@ export async function handleStageA(
           candidates: kept,
           unclassifiedShas: [...partial.unclassifiedShas, ...recovered.unclassifiedShas, ...demoted],
           unjudgedShas: recovered.unjudgedShas,
-          rateLimit: recovered.rateLimit,
         };
       }
     };

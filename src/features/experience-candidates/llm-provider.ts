@@ -15,8 +15,11 @@ import { ExperienceCandidateOutputError } from "./errors";
  * Stage B도 같은 OpenAI 호환 경로를 탑니다.
  *
  * 로컬 실행 결과는 계약 준수율이나 후보 품질의 근거로 쓰지 않습니다. 프로덕션 판단 품질의 근거는
- * 이슈 #19 실측(Groq `openai/gpt-oss-120b`, Gemini `gemini-3.7-flash`)뿐입니다. 로컬은 파이프라인이
- * 끝까지 돌아가는지만 봅니다.
+ * 이슈 #69 실측입니다. 로컬은 파이프라인이 끝까지 돌아가는지만 봅니다.
+ *
+ * 2026-09-01에 두 단계의 프로덕션 제공자를 Google Gemini 유료 등급으로 모았습니다. Stage A는
+ * `gemini-3.1-flash-lite`, Stage B는 `gemini-3.5-flash-lite`입니다. 근거와 탈락 사유는
+ * `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
  *
  * 환경변수를 읽는 시점을 함수 호출 시점으로 미룹니다. `candidate-client.ts`가 `stage-b.ts`를
  * import하므로 이 모듈은 클라이언트 번들에도 실립니다. 모듈 최상단에서 읽으면 서버 전용 값을
@@ -35,8 +38,8 @@ export interface LocalLlmConfig {
 }
 
 /**
- * `NEXT_PUBLIC_LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A Groq, Stage B Google)가 그대로
- * 동작합니다. 이 함수 하나가 로컬 전환의 유일한 스위치입니다.
+ * `NEXT_PUBLIC_LLM_BASE_URL`이 없으면 null입니다. 그때는 프로덕션 경로(Stage A·Stage B 모두 Google)가
+ * 그대로 동작합니다. 이 함수 하나가 로컬 전환의 유일한 스위치입니다.
  */
 export function resolveLocalLlm(): LocalLlmConfig | null {
   const baseURL = process.env.NEXT_PUBLIC_LLM_BASE_URL?.trim();
@@ -73,7 +76,10 @@ function requireLocalModel(config: LocalLlmConfig, model: string | null, envName
  */
 export function createStageAModel(model: string) {
   const local = resolveLocalLlm();
-  if (!local) return createGroq()(model);
+  // 2026-09-01에 Groq에서 Google로 옮겼습니다. 근거는
+  // `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`입니다. Groq는 유료 전환이 막혀 있고 무료
+  // 등급 분당 8,000토큰이 이 단계의 입력을 받지 못합니다.
+  if (!local) return createGoogle()(model);
   return requireLocalModel(local, local.stageAModel, "STAGE_A_MODEL");
 }
 
@@ -81,6 +87,24 @@ export function createStageBModel(model: string) {
   const local = resolveLocalLlm();
   if (!local) return createGoogle()(model);
   return requireLocalModel(local, local.stageBModel, "STAGE_B_MODEL");
+}
+
+/**
+ * 첫 질문 생성이 쓸 모델입니다.
+ *
+ * 2026-09-01 검토에서 이 경로만 로컬 전환을 무시하고 있었습니다. `question-generation.ts`가
+ * `createGoogle()`을 직접 불러서, 로컬 스위치를 켜면 Stage A·B는 Ollama로 가고 첫 질문만 Google로
+ * 갔습니다. Google 키가 없는 로컬 환경에서는 인터뷰 화면까지 완주할 수 없었습니다. 첫 질문 경로가
+ * LLM을 쓰게 된 것이 이슈 #60 이후라 로컬 전환을 만들 때 이 경로가 없었습니다.
+ *
+ * 로컬 모델 환경변수를 따로 두지 않고 `STAGE_A_MODEL`을 씁니다. 로컬은 모델 하나를 띄워 쓰는
+ * 환경이고, 프로덕션에서도 첫 질문 모델이 Stage A와 같은 `gemini-3.1-flash-lite`입니다. 환경변수를
+ * 하나 더 요구하면 로컬 완주에 필요한 설정만 늘어납니다.
+ */
+export function createInterviewQuestionModel(model: string) {
+  const local = resolveLocalLlm();
+  if (!local) return createGoogle()(model);
+  return requireLocalModel(local, local.stageAModel, "STAGE_A_MODEL");
 }
 
 /**
@@ -136,20 +160,92 @@ export function resolveLlmTimeoutMs(fallback: number): number {
 }
 
 /**
- * 로컬 모델에만 주는 샘플링 설정입니다.
+ * Stage A·Stage B 판단에 쓰는 온도입니다.
  *
- * 프로덕션은 제공자 기본값을 그대로 씁니다. 이슈 #19 실측이 그 조건에서 나왔습니다.
+ * **2026-09-01에 프로덕션 온도를 고정했습니다.** 그 전까지 프로덕션은 제공자 기본값을 썼고, 온도를
+ * 정하는 경로가 로컬 전환 안에만 있었습니다. Groq 시절에는 그 편이 맞았습니다. 이슈 #19 실측이
+ * 기본 샘플링에서 나왔고 기본값을 바꿀 이유가 없었습니다. 제공자를 Gemini로 옮기면서 사정이
+ * 달라졌습니다. Gemini의 기본 온도는 1.0이고, 두 단계가 하는 일은 창작이 아니라 판단입니다.
  *
- * 2026-08-25 실측입니다. 기본 샘플링으로 화면 경로에서 Stage A를 4회 연속 돌렸을 때 모델이
- * 입력에 없는 PR 번호를 답해 4회 모두 `unknown_sha`로 끝났습니다. 입력 요약에 담긴 커밋 제목의
- * `Merge pull request #35` 같은 문구를 판단 대상으로 끌어오는 형태였습니다.
+ * 실측입니다(2026-09-01, `hm1n/demian` 커밋 141개, 선별 묶음 12개, 같은 입력 7회 반복).
+ * 기본 온도에서 개수는 5·5·5·3·5·5·5였고 **고른 내용은 서로 다른 집합 4개**였습니다. 7회 모두
+ * 살아남은 묶음은 2개뿐이고, 어떤 묶음은 7회 중 1회만 뽑혔습니다. 사용자가 같은 저장소를 두 번
+ * 분석하면 다른 후보 목록을 받는다는 뜻입니다.
+ *
+ * 0으로 고정한 뒤 같은 입력 7회에서 개수와 내용이 모두 같았습니다. 측정은
+ * `llm-wiki/raw/2026-09-01-Stage-A-온도-고정-실측.md`에 있습니다.
+ *
+ * 첫 질문 생성에는 이 값을 주지 않습니다. 그 경로의 확정 근거가 기본 샘플링에서 나왔고, 판단이
+ * 아니라 문장을 만드는 일이라 온도를 낮출 근거가 아직 없습니다.
  */
-export function localSamplingOptions(): { temperature?: number } {
-  if (!isLocalLlm()) return {};
-  // 빈 문자열을 먼저 걸러야 합니다. `Number("")`는 0이고 0은 유효한 온도라서, 값을 지운 환경변수가
-  // 온도를 0으로 고정하는 설정과 구별되지 않습니다.
-  const raw = process.env.LLM_TEMPERATURE?.trim();
-  if (!raw) return {};
-  const temperature = Number(raw);
-  return Number.isFinite(temperature) && temperature >= 0 ? { temperature } : {};
+export const STAGE_JUDGMENT_TEMPERATURE = 0;
+
+/**
+ * 판단 호출의 provider 재시도 횟수입니다. SDK 기본값 2(총 3회)를 1(총 2회)로 낮춥니다.
+ *
+ * 첫 질문 생성이 같은 값을 쓰고 근거도 같습니다(`INTERVIEW_QUESTION_MAX_RETRIES`). 한도 초과와
+ * 과부하는 기다려야 풀리므로 즉시 재시도는 예산만 갉아먹습니다. 실측에서 Groq 일일 토큰 한도
+ * 초과가 세 번 모두 같은 429로 끝나 6.5초를 버렸고, 응답에 `x-should-retry: false`가 붙어 있었는데도
+ * SDK는 재시도했습니다.
+ *
+ * 두 단계에 이 값이 빠져 있어 첫 질문 경로만 1이고 여기는 3이었습니다. Stage A는 그 위에 라우트
+ * 복구가 최대 3회 더 있어, 재시도를 곱하면 한 청크에 provider 호출이 9회까지 나갈 수 있었습니다.
+ *
+ * 0으로 두지 않는 이유는 일시적인 5xx는 한 번 더 보내면 풀리기 때문입니다.
+ */
+export const LLM_MAX_RETRIES = 1;
+
+/**
+ * 판단 호출 한 번이 쓴 토큰 수입니다. 회당 비용을 실측치로 내는 데 씁니다.
+ *
+ * 프로덕션은 이 값을 쓰지 않습니다. 두 단계가 `generateObject`의 `usage`를 그대로 버리고 있었고,
+ * 그래서 Stage B 회당 비용이 입력 40,000토큰이라는 **추정치** 위에 서 있었습니다. 이슈 #70이
+ * "20,000인지 40,000인지 모른다"고 적어 둔 값이고, 그 차이로 10달러 가능 횟수가 442회와 310회로
+ * 갈립니다.
+ *
+ * 측정 스크립트가 `generateObject`를 따로 부르지 않고 이 통로로 받는 이유는 프롬프트와 옵션이
+ * 프로덕션과 갈리지 않게 하기 위함입니다. 호출을 한 벌 더 쓰면 상수 하나가 어긋나는 순간 재는
+ * 대상이 프로덕션이 아니게 됩니다.
+ *
+ * provider가 값을 주지 않는 항목은 `null`입니다. 토큰 **수**만 담습니다. 프롬프트 본문과 응답
+ * 원문은 담지 않습니다.
+ */
+export interface LlmUsageSample {
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+}
+
+export type LlmUsageSink = (usage: LlmUsageSample) => void;
+
+/** SDK의 `usage`는 항목마다 `undefined`가 될 수 있습니다. 없는 값을 0으로 접지 않습니다. */
+export function toLlmUsageSample(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}): LlmUsageSample {
+  return {
+    inputTokens: usage.inputTokens ?? null,
+    outputTokens: usage.outputTokens ?? null,
+    totalTokens: usage.totalTokens ?? null,
+  };
+}
+
+/**
+ * 판단 호출에 얹는 샘플링 설정입니다.
+ *
+ * 로컬 전환에서만 `LLM_TEMPERATURE`로 갈아탈 수 있습니다. 프로덕션에서 환경변수로 온도를 흔들 수
+ * 있게 두면 실측 조건과 실행 조건이 갈리고, 그 차이는 로그에 남지 않습니다.
+ *
+ * 2026-08-25 실측입니다. 기본 샘플링으로 화면 경로에서 Stage A를 4회 연속 돌렸을 때 로컬 모델이
+ * 입력에 없는 PR 번호를 답해 4회 모두 `unknown_sha`로 끝났습니다. 입력 요약에 담긴 커밋 제목의
+ * `Merge pull request #35` 같은 문구를 판단 대상으로 끌어오는 형태였습니다. 로컬에서도 온도를
+ * 고정값으로 시작하는 편이 이 혼동에 유리합니다.
+ */
+export function judgmentSamplingOptions(): { temperature: number } {
+  if (!isLocalLlm()) return { temperature: STAGE_JUDGMENT_TEMPERATURE };
+  const temperature = Number(process.env.LLM_TEMPERATURE?.trim());
+  return Number.isFinite(temperature) && temperature >= 0
+    ? { temperature }
+    : { temperature: STAGE_JUDGMENT_TEMPERATURE };
 }

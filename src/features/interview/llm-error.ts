@@ -1,6 +1,7 @@
 import { APICallError, LoadAPIKeyError, RetryError } from "ai";
 import {
   ExperienceCandidateOutputError,
+  isAuthFailureResponseBody,
   isRateLimitResponseBody,
 } from "@/features/experience-candidates/errors";
 
@@ -38,7 +39,14 @@ export function mapInterviewLlmError(
     });
   }
   if (APICallError.isInstance(error)) {
-    if (error.statusCode === 401 || error.statusCode === 403) {
+    // Gemini는 잘못된 키를 401이 아니라 400 `INVALID_ARGUMENT`로 돌려줍니다. 갈라 두지 않으면 이
+    // 실패가 `llm_request`로 가고, 첫 질문 화면이 그 분류에 붙여 둔 "근거가 크기를 넘었습니다"를
+    // 띄웁니다. 판별은 `errors.ts`에 실측 근거와 함께 있습니다.
+    if (
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      (error.statusCode === 400 && isAuthFailureResponseBody(error.responseBody))
+    ) {
       return new ExperienceCandidateOutputError("llm_auth", "LLM 인증에 실패했습니다.", {
         cause: error,
       });
@@ -72,6 +80,15 @@ export function mapInterviewLlmError(
         "LLM 모델 설정이 올바르지 않습니다.",
         { cause: error }
       );
+    }
+    // Gemini는 모델 과부하를 503 `UNAVAILABLE`로, 내부 오류를 500 `INTERNAL`로 돌려줍니다. Groq
+    // 기준으로 배선했을 때는 이 갈래가 없어도 됐지만 flash 계열에서는 가장 흔한 일시 실패입니다.
+    // 기다리면 풀리는 실패이므로 재시도 가능한 `llm_failure`로 두고, 문구에서 원인이 일시 장애임을
+    // 밝힙니다. 504는 위에서 이미 시간 초과로 갈라 두었습니다.
+    if ((error.statusCode ?? 0) >= 500) {
+      return new ExperienceCandidateOutputError("llm_failure", "질문 생성 서비스가 일시적으로 응답하지 못했습니다.", {
+        cause: error,
+      });
     }
     if (error.statusCode === 400 || error.statusCode === 409 || error.statusCode === 422) {
       return new ExperienceCandidateOutputError("llm_request", "LLM이 요청을 거부했습니다.", {

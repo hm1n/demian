@@ -8,6 +8,15 @@ import {
   sliceEvidencePatchBySerializedBytes,
 } from "./evidence-snapshot";
 import { REPOSITORY_UNVERIFIABLE_ITEMS } from "./evidence-verifiability";
+import {
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES,
+  renderInterviewEvidencePrompt,
+} from "@/features/interview/question-prompt";
+import {
+  INTERVIEW_QUESTION_MAX_PROMPT_BYTES,
+  buildInterviewQuestionPrompt,
+  interviewQuestionPromptBytes,
+} from "@/features/interview/question-generation";
 import type {
   CandidateDiff,
   ExperienceCandidate,
@@ -427,5 +436,91 @@ describe("estimateEvidenceTokens", () => {
     expect(estimateEvidenceTokens("abc")).toBe(1);
     // 한글 3자는 9바이트이므로 같은 문자 수의 ASCII보다 3배로 추정됩니다.
     expect(estimateEvidenceTokens("가나다")).toBe(3);
+  });
+});
+
+describe("근거 예산과 실제 프롬프트", () => {
+  // 예산은 모델 입력을 묶는 값입니다. JSON 직렬화로 재던 2026-08-28까지는 patch가 큰 근거에서
+  // 렌더 결과가 JSON보다 커져 상한이 보증되지 않았습니다(JSON 10,436바이트 대 프롬프트 10,632바이트).
+  // 그 회귀를 여기서 고정합니다.
+  const patchOf = (size: number) => `@@ -1,1 +1,1 @@${"\n"}+${"a".repeat(size)}`;
+
+  for (const maxInputTokens of [900, 1_500, EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS, 7_000]) {
+    it(`상한 ${maxInputTokens}토큰에서 렌더된 프롬프트가 상한을 넘지 않는다`, () => {
+      const snapshot = expectSnapshot(
+        buildExperienceEvidenceSnapshot(
+          listItem(),
+          data,
+          stageBResult([queueDiff(patchOf(60_000)), delayDiff(patchOf(60_000))]),
+          maxInputTokens,
+          renderInterviewEvidencePrompt
+        )
+      );
+
+      expect(snapshot.patchBudget.truncatedByBudget).toBe(true);
+      expect(estimateEvidenceTokens(renderInterviewEvidencePrompt(snapshot))).toBeLessThanOrEqual(
+        maxInputTokens
+      );
+    });
+  }
+
+  it("줄바꿈이 많은 patch에서도 상한을 넘지 않는다", () => {
+    // 렌더 결과에서 줄바꿈은 1바이트인데 `serializedByteLength`는 2바이트로 셉니다. 그 방향이
+    // 보수적인지 확인합니다.
+    const lines = Array.from({ length: 2_000 }, (_, index) => `+line ${index}`).join("\n");
+    const snapshot = expectSnapshot(
+      buildExperienceEvidenceSnapshot(
+        listItem(),
+        data,
+        stageBResult([queueDiff(lines), delayDiff(lines)]),
+        EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+        renderInterviewEvidencePrompt
+      )
+    );
+
+    expect(estimateEvidenceTokens(renderInterviewEvidencePrompt(snapshot))).toBeLessThanOrEqual(
+      EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS
+    );
+  });
+
+  it("렌더러로 재면 JSON으로 잴 때보다 patch 몫이 커진다", () => {
+    const build = (render?: typeof renderInterviewEvidencePrompt) =>
+      expectSnapshot(
+        buildExperienceEvidenceSnapshot(
+          listItem(),
+          data,
+          stageBResult([queueDiff(patchOf(60_000)), delayDiff(patchOf(60_000))]),
+          EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+          render
+        )
+      ).patchBudget;
+
+    // JSON은 키와 따옴표를 함께 세므로 메타데이터를 실제보다 크게 봅니다. 그만큼 patch가 굶습니다.
+    expect(build(renderInterviewEvidencePrompt).maxPatchBytes).toBeGreaterThan(
+      build().maxPatchBytes
+    );
+  });
+
+  it("근거 상한을 채운 스냅샷의 프롬프트가 route 가드를 통과한다", () => {
+    // 프롬프트 바이트 상한은 근거 상한에서 유도됩니다. 두 상수가 어긋나면 정상 요청이 route에서
+    // 거절되므로 실제 프롬프트를 접어 보고 확인합니다.
+    const snapshot = expectSnapshot(
+      buildExperienceEvidenceSnapshot(
+        listItem(),
+        data,
+        stageBResult([queueDiff(patchOf(60_000)), delayDiff(patchOf(60_000))]),
+        EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS,
+        renderInterviewEvidencePrompt
+      )
+    );
+
+    const bytes = interviewQuestionPromptBytes(buildInterviewQuestionPrompt(snapshot, "split"));
+    expect(bytes).toBeLessThanOrEqual(INTERVIEW_QUESTION_MAX_PROMPT_BYTES);
+    // 허용 오차를 쓰지 않고도 통과해야 합니다. 오차는 구성 오차용이고 상시로 쓰는 몫이 아닙니다.
+    expect(bytes).toBeLessThanOrEqual(
+      EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN +
+        INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES +
+        2
+    );
   });
 });

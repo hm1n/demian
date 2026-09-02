@@ -47,9 +47,12 @@ function loadingCopy(loading: LoadingPhase) {
     return {
       step: "4단계",
       title: "경험 후보를 1차 선별하고 있습니다",
-      description: loading.waitingForRateLimit
-        ? `${loading.total}개 중 ${loading.completed}개를 판단했습니다. 다음 청크를 위해 LLM 토큰 한도 초기화를 기다리고 있습니다.`
-        : `${loading.total}개 중 ${loading.completed}개를 판단했고 ${loading.total - loading.completed}개가 남았습니다.`,
+      // 청크 사이 한도 대기 문구가 있었습니다. 요청이 한 번이 되면서 기다릴 자리가 없어 지웠습니다.
+      //
+      // 진행 개수도 같은 이유로 지웠습니다. 요청이 하나라 중간에 보고할 지점이 없어 화면이 응답이
+      // 올 때까지 "0개를 판단했다"를 붙들고 있었습니다(2026-09-02 브라우저 실측). 세지 못하는 것을
+      // 세는 척하지 않고, 몇 묶음을 한 번에 보냈는지만 알립니다.
+      description: `${loading.total}개 묶음을 한 번의 요청으로 판단하고 있습니다. 중간 진행률은 알 수 없습니다.`,
     };
   }
   if (loading.step === "stage_b") {
@@ -201,7 +204,9 @@ export function RepositoryAnalysisView({ hasSession: initialHasSession, authErro
 
 function LoadingState({ loading }: { loading: LoadingPhase }) {
   const copy = loadingCopy(loading);
-  const progress = (loading.step === "details" || loading.step === "stage_a") && loading.total > 0
+  // stage_a는 진행률을 알 수 없어 불확정 막대를 씁니다. 응답 전까지 0퍼센트에 멈춘 막대는 멈춘
+  // 것처럼 보이고, 실제로는 요청이 진행 중입니다.
+  const progress = loading.step === "details" && loading.total > 0
     ? (loading.completed / loading.total) * 100
     : null;
   return (

@@ -60,35 +60,15 @@ export interface StageACandidateOutput {
   readonly unjudgedShas: readonly string[];
 }
 
-export interface StageARateLimit {
-  readonly remainingTokens: number;
-  readonly resetAfterMs: number;
-  readonly usedTokens: number;
-}
-
-export interface StageAChunkOutput extends StageACandidateOutput {
-  readonly rateLimit: StageARateLimit | null;
-}
-
-export interface StageACheckpoint extends StageACandidateOutput {
-  readonly processedShas: readonly string[];
-  /**
-   * 선별을 통과해 판단 대상이 된 묶음 수입니다. `processedShas`가 묶음의 대표 커밋 SHA이므로
-   * 진행 상황을 말할 때 견줄 분모가 이 값입니다.
-   *
-   * 실패 문구 쪽에서 커밋 수로 다시 유도하지 않으려고 여기에 싣습니다. 유도하면 분모와 분자가
-   * 서로 다른 단위가 되고, 유도 시점의 입력이 판단 시점과 달라지면 둘이 어긋납니다.
-   * `StageACandidateOutput`이 아니라 체크포인트에만 더해 서버 응답 계약은 건드리지 않습니다.
-   */
-  readonly totalUnits: number;
-}
-
-export interface StageAProgress {
-  readonly completed: number;
-  readonly total: number;
-  readonly waitingForRateLimit: boolean;
-}
-
+/**
+ * Stage A 진행 상황입니다.
+ *
+ * 2026-09-02에 `waitingForRateLimit`을 지웠습니다. 청크를 나눠 보내던 시절 청크 사이 대기를
+ * 화면에 알리는 값이었습니다. 선별이 바이트와 개수 상한을 함께 지키게 되면서 요청이 언제나 한
+ * 번이라 대기할 자리가 없습니다. 같은 이유로 `StageARateLimit`·`StageAChunkOutput`·
+ * `StageACheckpoint`를 함께 지웠습니다. 근거는
+ * `llm-wiki/raw/2026-09-02-Stage-A-묶음-수-천장-실측.md`입니다.
+ */
 export interface CandidateDiffFile {
   readonly path: string;
   readonly status: string;

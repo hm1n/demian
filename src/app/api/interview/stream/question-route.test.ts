@@ -196,6 +196,29 @@ describe("POST /api/interview/stream", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { kind: "llm_auth" } });
   });
 
+  // Gemini는 잘못된 키를 401이 아니라 400 `INVALID_ARGUMENT`로 돌려줍니다(2026-09-01 실측). 본문으로
+  // 갈라 두지 않으면 이 실패가 `llm_request`로 가고, 화면이 "근거가 크기를 넘었습니다"를 띄웁니다.
+  it("잘못된 키의 400도 502와 llm_auth로 보낸다", async () => {
+    const response = await handleInterviewQuestionStream(request({ snapshot }), {
+      generate: () =>
+        (async function* () {
+          throw new APICallError({
+            message: "API key not valid. Please pass a valid API key.",
+            url: "https://generativelanguage.googleapis.com",
+            requestBodyValues: {},
+            statusCode: 400,
+            responseBody:
+              '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.",' +
+              '"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",' +
+              '"reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}',
+          });
+        })(),
+    });
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({ error: { kind: "llm_auth" } });
+  });
+
   it("청크 없이 끝난 생성은 502 generation_empty로 보낸다", async () => {
     const response = await handleInterviewQuestionStream(request({ snapshot }), {
       generate: chunks(),
@@ -205,16 +228,18 @@ describe("POST /api/interview/stream", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { kind: "generation_empty" } });
   });
 
-  it("첫 조각 뒤의 실패는 스트림 안의 error 이벤트로 보낸다", async () => {
+  // 5xx는 Gemini에서 모델 과부하(503 `UNAVAILABLE`)와 내부 오류(500 `INTERNAL`)로 옵니다. 기다리면
+  // 풀리는 실패이므로 재시도 가능한 `llm_failure`로 두고 문구로 일시 장애를 밝힙니다.
+  it.each([500, 503])("첫 조각 뒤의 %i은 스트림 안의 error 이벤트로 보낸다", async (statusCode) => {
     const response = await handleInterviewQuestionStream(request({ snapshot }), {
       generate: () =>
         (async function* () {
           yield "첫 질문";
           throw new APICallError({
             message: "server error",
-            url: "https://api.groq.com",
+            url: "https://generativelanguage.googleapis.com",
             requestBodyValues: {},
-            statusCode: 500,
+            statusCode,
           });
         })(),
     });
@@ -222,7 +247,11 @@ describe("POST /api/interview/stream", () => {
     expect(response.status).toBe(200);
     await expect(readEvents(response)).resolves.toEqual([
       { type: "chunk", seq: 1, text: "첫 질문" },
-      { type: "error", kind: "llm_failure", message: "질문 생성에 실패했습니다." },
+      {
+        type: "error",
+        kind: "llm_failure",
+        message: "질문 생성 서비스가 일시적으로 응답하지 못했습니다.",
+      },
     ]);
   });
 });

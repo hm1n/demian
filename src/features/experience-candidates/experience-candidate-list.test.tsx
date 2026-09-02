@@ -218,6 +218,7 @@ const EMPTY_SELECTION: StageASelectionDisplay = {
   excludedCommits: [],
   excludedUnits: [],
   thresholdScore: 0,
+  selectedUnitCount: 0,
   unjudgedShas: [],
 };
 
@@ -274,8 +275,9 @@ describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)
   it("PR 없는 커밋이 0건이면 그 구획을 렌더하지 않는다", () => {
     renderListWithSelection({
       ...EMPTY_SELECTION,
-      excludedUnits: [excludedUnit(1, 1, "below_score_threshold")],
+      excludedUnits: [excludedUnit(1, 1, "over_input_budget")],
       thresholdScore: 1,
+      selectedUnitCount: 0,
     });
 
     expect(screen.queryByText(/제외한 커밋/)).not.toBeInTheDocument();
@@ -285,13 +287,19 @@ describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)
     renderListWithSelection({
       ...EMPTY_SELECTION,
       thresholdScore: 3,
+      selectedUnitCount: 10,
       excludedUnits: [
-        excludedUnit(1, 1, "below_score_threshold", ["many_commits"]),
-        excludedUnit(2, 2, "below_score_threshold", ["many_files", "long_span"]),
+        excludedUnit(1, 1, "over_input_budget", ["many_commits"]),
+        excludedUnit(2, 2, "over_input_budget", ["many_files", "long_span"]),
       ],
     });
 
-    expect(screen.getByText("점수 3점 미만 2묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
+    // 점수에 합격선이 있다는 뜻으로 읽히던 문구를 고쳤습니다. 실제 방아쇠는 입력 상한이므로
+    // 전체 대비 몇 묶음을 판단했는지 말합니다. 점수 경계는 본문에 남깁니다.
+    expect(
+      screen.getByText("저장소가 커서 전체 12묶음 중 점수 상위 10묶음만 판단했습니다")
+    ).toBeInTheDocument();
+    expect(screen.getByText(/이번 판단의 점수 경계는 3점이었습니다/)).toBeInTheDocument();
     expect(screen.getByText("PR #2")).toBeInTheDocument();
     expect(screen.getByText("PR #1")).toBeInTheDocument();
     expect(screen.getByText("2점 · 휴리스틱")).toBeInTheDocument();
@@ -307,13 +315,16 @@ describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)
     renderListWithSelection({
       ...EMPTY_SELECTION,
       thresholdScore: 2,
+      selectedUnitCount: 10,
       excludedUnits: [
-        excludedUnit(1, 2, "below_score_threshold"),
+        excludedUnit(1, 2, "over_input_budget"),
         excludedUnit(2, 5, "over_byte_budget"),
       ],
     });
 
-    expect(screen.getByText("점수 2점 미만 1묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
+    expect(
+      screen.getByText("저장소가 커서 전체 12묶음 중 점수 상위 10묶음만 판단했습니다")
+    ).toBeInTheDocument();
     expect(screen.getByText("한 번에 보낼 수 있는 분량을 넘어 1묶음을 제외했습니다")).toBeInTheDocument();
   });
 
@@ -329,7 +340,8 @@ describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)
     renderListWithSelection({
       ...EMPTY_SELECTION,
       thresholdScore: 1,
-      excludedUnits: [excludedUnit(1, 1, "below_score_threshold")],
+      selectedUnitCount: 0,
+      excludedUnits: [excludedUnit(1, 1, "over_input_budget")],
     });
 
     const scoreEl = screen.getByText("1점 · 휴리스틱");
@@ -356,11 +368,17 @@ describe("ExperienceCandidateList의 Stage A 제외 표시(이슈 #58 Task 8·9)
   });
 
   it("andbread처럼 제외 묶음이 많아도 목록이 스크롤 영역에 담겨 후보 목록을 밀어내지 않는다", () => {
-    const many = Array.from({ length: 56 }, (_, index) => excludedUnit(index + 1, 1, "below_score_threshold"));
-    renderListWithSelection({ ...EMPTY_SELECTION, thresholdScore: 2, excludedUnits: many });
+    const many = Array.from({ length: 56 }, (_, index) => excludedUnit(index + 1, 1, "over_input_budget"));
+    renderListWithSelection({
+      ...EMPTY_SELECTION,
+      thresholdScore: 2,
+      selectedUnitCount: 10,
+      excludedUnits: many,
+    });
 
-    expect(screen.getByText("점수 2점 미만 56묶음을 판단 대상에서 제외했습니다")).toBeInTheDocument();
-    const details = screen.getByText("점수 2점 미만 56묶음을 판단 대상에서 제외했습니다").closest("details");
+    const summaryText = "저장소가 커서 전체 66묶음 중 점수 상위 10묶음만 판단했습니다";
+    expect(screen.getByText(summaryText)).toBeInTheDocument();
+    const details = screen.getByText(summaryText).closest("details");
     const list = details?.querySelector("ul");
     expect(list?.className).toMatch(/scrollableList/);
   });

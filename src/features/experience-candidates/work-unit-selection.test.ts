@@ -9,6 +9,7 @@ import {
   WORK_UNIT_SELECTION_EXCLUSION_COPY,
   selectWorkUnitsForStageA,
 } from "./work-unit-selection";
+import { STAGE_A_MAX_PROMPT_BYTES } from "./stage-a";
 import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
 
@@ -59,7 +60,7 @@ describe("selectWorkUnitsForStageA", () => {
 
     expect(selection.selected.map(({ unit: item }) => item.pullRequestNumber)).toEqual([2]);
     expect(selection.excluded.map(({ unit: item }) => item.pullRequestNumber)).toEqual([3, 1]);
-    expect(selection.excluded.every(({ reason }) => reason === "below_score_threshold")).toBe(true);
+    expect(selection.excluded.every(({ reason }) => reason === "over_input_budget")).toBe(true);
     expect(selection.thresholdScore).toBe(2);
   });
 
@@ -92,7 +93,17 @@ describe("selectWorkUnitsForStageA", () => {
 
     expect(selection.selected).toHaveLength(2);
     expect(selection.excluded).toHaveLength(1);
-    expect(selection.excluded[0].reason).toBe("over_byte_budget");
+    // 이 묶음은 혼자서는 예산에 들어갑니다. 자리가 없어 밀린 것이므로 입력 상한 사유입니다.
+    expect(selection.excluded[0].reason).toBe("over_input_budget");
+  });
+
+  /**
+   * 두 상한이 어긋나면 선별 결과가 청크 둘로 갈리고, `candidate-client`의 청크 사이 대기가
+   * 살아납니다. 그 61초는 Groq의 분당 토큰 창에서 나온 값이라 Gemini에서는 근거가 없고 사용자가
+   * 이유 없이 1분을 기다립니다. 숫자를 두 파일에 적어 두었으므로 이 테스트가 어긋남을 잡습니다.
+   */
+  it("선별 예산이 청크 바이트 상한과 같다", () => {
+    expect(STAGE_A_MAX_SELECTION_BYTES).toBe(STAGE_A_MAX_PROMPT_BYTES);
   });
 
   it("모든 묶음이 개별적으로 예산을 넘으면 억지로 남기지 않고 전부 제외한다", () => {
