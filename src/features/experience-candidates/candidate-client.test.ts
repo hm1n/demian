@@ -8,6 +8,7 @@ import {
   assertStageARequestWithinLimits,
   expandCandidatesToCommits,
 } from "./candidate-client";
+import { STAGE_A_MAX_SELECTION_BYTES } from "./work-unit-selection";
 import {
   buildStageAPayload,
   renderStageAPrompt,
@@ -232,6 +233,38 @@ describe("expandCandidatesToCommits", () => {
 });
 
 describe("fetchStageACandidatesFromApi", () => {
+  // 청크 루프가 지고 있던 계약입니다. 묶음이 0개면 청크가 0개라 요청이 한 번도 나가지 않았습니다.
+  // 루프를 걷어낸 뒤 빈 배열이 candidateLimit 0과 함께 그대로 나갔고, 라우트가 두 조건을 각각
+  // 422 invalid_request로 거절해 no_stage_a_candidates 빈 상태가 오류 화면으로 바뀌었습니다.
+  it("분석 대상 커밋 전부가 Pull Request에 속하지 않으면 요청하지 않고 빈 결과를 돌려준다", async () => {
+    const withoutPullRequest: ReadonlyCommitDetail = { ...COMMIT, pullRequests: [] };
+
+    const output = await fetchStageACandidatesFromApi([withoutPullRequest], []);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(output.candidates).toEqual([]);
+    expect(output.selectedUnitCount).toBe(0);
+    // 화면이 이유를 말할 값은 그대로 실어 보냅니다. 조용히 버리면 사용자가 자기 커밋이 왜
+    // 안 보이는지 알 수 없습니다.
+    expect(output.excludedCommits.map(({ sha }) => sha)).toEqual(["sha-1"]);
+  });
+
+  // 빈 묶음이 나오는 두 번째 경로입니다. 첫 번째와 달리 excludedUnits가 채워지므로 화면이 그리는
+  // 블록도 다릅니다. 제목만으로 선별 예산을 혼자 넘는 묶음을 만들어 그 경로를 밟습니다.
+  it("묶음이 혼자 바이트 상한을 넘어 하나도 선별되지 않으면 요청하지 않는다", async () => {
+    const oversized: ReadonlyCommitDetail = {
+      ...COMMIT,
+      title: "feat: ".padEnd(STAGE_A_MAX_SELECTION_BYTES + 1, "x"),
+    };
+
+    const output = await fetchStageACandidatesFromApi([oversized], []);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(output.candidates).toEqual([]);
+    expect(output.selectedUnitCount).toBe(0);
+    expect(output.excludedUnits.map(({ reason }) => reason)).toEqual(["over_byte_budget"]);
+  });
+
   it("검증한 Stage A 응답을 반환한다", async () => {
     const output = {
       candidates: [STAGE_A_CANDIDATE],

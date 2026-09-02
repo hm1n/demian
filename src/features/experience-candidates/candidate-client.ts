@@ -275,6 +275,9 @@ export function assertStageARequestWithinLimits(
   units: readonly StageAUnitInput[],
   contributionItems: readonly string[]
 ): void {
+  // 프로덕션 경로는 빈 배열을 여기까지 보내지 않습니다. `fetchStageACandidatesFromApi`가 먼저
+  // 빈 결과로 돌아갑니다. 이 함수는 내보내는 검증이라 그 순서에 의존하지 않고 스스로 통과시킵니다.
+  // 빈 입력은 상한을 넘는 입력이 아니므로 여기서 던질 것이 없습니다.
   if (units.length === 0) return;
   const encoder = new TextEncoder();
   const request = toStageARequest(units, contributionItems, 1);
@@ -338,6 +341,35 @@ export async function fetchStageACandidatesFromApi(
     commits,
     contributionItems
   );
+
+  /**
+   * 보낼 묶음이 없으면 요청하지 않고 빈 결과를 돌려줍니다.
+   *
+   * `work-unit-selection.ts`가 "Stage A를 아예 부르지 않는 것이 호출부의 책임"이라고 적어 둔
+   * 계약입니다. 청크 루프가 그 책임을 암묵적으로 지고 있었습니다. 묶음이 0개면 청크가 0개라
+   * 요청이 한 번도 나가지 않았습니다. 루프를 걷어내면서 그 유일한 집행 장치가 사라졌고,
+   * 빈 배열이 `candidateLimit: 0`과 함께 그대로 나갔습니다.
+   *
+   * 라우트는 두 조건을 각각 422 `invalid_request`로 거절합니다(`route.ts`의 `isStageAInput`).
+   * 그 오류는 재시도 불가라, 의도한 `no_stage_a_candidates` 빈 상태가 오류 화면으로 바뀝니다.
+   * 빈 결과를 돌려주면 호출부가 후보 0개를 보고 제외 사유와 함께 빈 상태를 그립니다.
+   *
+   * 묶음이 0개가 되는 경우는 둘입니다. 분석 대상 커밋 전부가 Pull Request에 속하지 않을 때
+   * (`excludedCommits`가 채워집니다), 그리고 묶음마다 혼자 바이트 상한을 넘을 때
+   * (`excludedUnits`가 채워집니다). 어느 쪽이든 화면이 이유를 말할 값을 이미 갖고 있습니다.
+   */
+  if (units.length === 0) {
+    return {
+      candidates: [],
+      unclassifiedShas: [],
+      unjudgedShas: [],
+      excludedCommits,
+      excludedUnits,
+      thresholdScore,
+      selectedUnitCount: 0,
+    };
+  }
+
   assertStageARequestWithinLimits(units, contributionItems);
 
   const payload = await postCandidateApi(
