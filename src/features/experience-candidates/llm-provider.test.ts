@@ -11,6 +11,7 @@ import {
   resolveLlmTimeoutMs,
   resolveStageBMaxInputCommits,
   resolveStageBMaxTotalPatchChars,
+  toLlmUsageSample,
 } from "./llm-provider";
 
 // 제공자 생성에 넘긴 설정을 그대로 되돌려 받기 위한 모킹입니다. 실제 SDK는 설정을 감춰 두므로
@@ -286,5 +287,25 @@ describe("판단 시한과 샘플링", () => {
     stubLocal({ NEXT_PUBLIC_LLM_BASE_URL: "http://localhost:11434/v1", LLM_TEMPERATURE: "  " });
 
     expect(judgmentSamplingOptions()).toEqual({ temperature: STAGE_JUDGMENT_TEMPERATURE });
+  });
+});
+
+describe("toLlmUsageSample", () => {
+  it("provider가 준 토큰 수를 그대로 담는다", () => {
+    expect(toLlmUsageSample({ inputTokens: 47_861, outputTokens: 1_231, totalTokens: 49_092 })).toEqual({
+      inputTokens: 47_861,
+      outputTokens: 1_231,
+      totalTokens: 49_092,
+    });
+  });
+
+  // 없는 값을 0으로 접으면 "0토큰을 썼다"가 되어 회당 비용이 실제보다 싸게 나옵니다. 값이
+  // 없다는 사실과 0이라는 값을 구분해야 비용 계산이 거짓말을 하지 않습니다.
+  it("provider가 주지 않은 항목을 0이 아니라 null로 둔다", () => {
+    expect(toLlmUsageSample({ inputTokens: 5_500 })).toEqual({
+      inputTokens: 5_500,
+      outputTokens: null,
+      totalTokens: null,
+    });
   });
 });

@@ -25,7 +25,9 @@
  *   --item=<기여 항목>       Stage A 기여 항목. 여러 번 지정 가능
  *   --selection-bytes=N    Stage A 선별 예산 오버라이드. 상한 재산정 측정에 씁니다
  *
- * 출력에는 수치와 요약만 담습니다. 토큰·키·응답 원문을 출력하지 않습니다.
+ * 출력에는 수치와 요약만 담습니다. API 키와 응답 원문은 출력하지 않습니다. `[usage]` 줄이
+ * 남기는 것은 토큰 **개수**뿐이며 프롬프트 본문이 아닙니다. 회당 비용을 추정치가 아닌 실측으로
+ * 내려면 이 개수가 필요합니다(이슈 #70·#71).
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { APICallError } from "ai";
@@ -54,6 +56,7 @@ import {
   STAGE_B_MAX_PATCH_CHARS,
 } from "../src/features/experience-candidates/stage-b";
 import { resolveEffectiveSettings } from "./effective-settings";
+import type { LlmUsageSample } from "../src/features/experience-candidates/llm-provider";
 import type { CommitDetail, CommitSummary, GitHubAuth } from "../src/lib/github/types";
 import type { GenerateStageA } from "../src/features/experience-candidates/stage-a";
 import type { StageACandidate } from "../src/features/experience-candidates/types";
@@ -372,8 +375,16 @@ async function runParallel() {
  * 묶음 15개를 커밋 90개와 비교하게 되어 계약 충족 판정이 구조적으로 항상 거짓이었습니다.
  * 같은 줄의 누락은 `payload.units`로 계산해 맞았으므로 한 줄 안에서 두 지표가 서로 모순했습니다.
  */
+function logUsage(stage: string, usage: LlmUsageSample) {
+  const show = (value: number | null) => (value === null ? "없음" : String(value));
+  console.log(
+    `[usage] ${stage} 입력=${show(usage.inputTokens)} 출력=${show(usage.outputTokens)} ` +
+      `합계=${show(usage.totalTokens)}`
+  );
+}
+
 function instrumentedStageAGenerate(model: string | undefined): GenerateStageA {
-  const generate = createStageAGenerate(model);
+  const generate = createStageAGenerate(model, (usage) => logUsage("stage-a", usage));
   return async (payload, abortSignal) => {
     const output = await generate(payload, abortSignal);
     const decisions =
@@ -590,7 +601,7 @@ async function runStageB() {
     const output = await selectStageBCandidates(
       commits,
       expanded,
-      createStageBGenerate(stageBModelOption)
+      createStageBGenerate(stageBModelOption, (usage) => logUsage("stage-b", usage))
     );
     const elapsed = ms() - startedAt;
     console.log(`[stage-b] 성공 소요=${round(elapsed)}ms 최종 후보=${output.candidates.length}`);

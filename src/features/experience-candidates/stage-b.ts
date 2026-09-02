@@ -12,6 +12,8 @@ import {
   LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
   resolveStageBMaxTotalPatchChars,
+  toLlmUsageSample,
+  type LlmUsageSink,
 } from "./llm-provider";
 import { assertCandidateEvidence, experienceCandidateOutputSchema, validateExperienceCandidateOutput } from "./schema";
 import type { ExperienceCandidateOutput, StageACandidate } from "./types";
@@ -294,10 +296,17 @@ function localOutputContractHint(): string {
   return isLocalLlm() ? LOCAL_OUTPUT_CONTRACT_HINT_TEXT : "";
 }
 
-/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
-export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateStageB {
+/**
+ * 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다.
+ *
+ * `onUsage`는 측정용 통로입니다. 프로덕션은 넘기지 않습니다. 근거는 `LlmUsageSample`에 있습니다.
+ */
+export function createStageBGenerate(
+  model: string = STAGE_B_MODEL,
+  onUsage?: LlmUsageSink
+): GenerateStageB {
   return async (payload, abortSignal) => {
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model: createStageBModel(model),
       schema: experienceCandidateOutputSchema,
       system:
@@ -315,6 +324,7 @@ export function createStageBGenerate(model: string = STAGE_B_MODEL): GenerateSta
       maxRetries: LLM_MAX_RETRIES,
       ...judgmentSamplingOptions(),
     });
+    onUsage?.(toLlmUsageSample(usage));
     return object;
   };
 }

@@ -196,6 +196,42 @@ export const STAGE_JUDGMENT_TEMPERATURE = 0;
 export const LLM_MAX_RETRIES = 1;
 
 /**
+ * 판단 호출 한 번이 쓴 토큰 수입니다. 회당 비용을 실측치로 내는 데 씁니다.
+ *
+ * 프로덕션은 이 값을 쓰지 않습니다. 두 단계가 `generateObject`의 `usage`를 그대로 버리고 있었고,
+ * 그래서 Stage B 회당 비용이 입력 40,000토큰이라는 **추정치** 위에 서 있었습니다. 이슈 #70이
+ * "20,000인지 40,000인지 모른다"고 적어 둔 값이고, 그 차이로 10달러 가능 횟수가 442회와 310회로
+ * 갈립니다.
+ *
+ * 측정 스크립트가 `generateObject`를 따로 부르지 않고 이 통로로 받는 이유는 프롬프트와 옵션이
+ * 프로덕션과 갈리지 않게 하기 위함입니다. 호출을 한 벌 더 쓰면 상수 하나가 어긋나는 순간 재는
+ * 대상이 프로덕션이 아니게 됩니다.
+ *
+ * provider가 값을 주지 않는 항목은 `null`입니다. 토큰 **수**만 담습니다. 프롬프트 본문과 응답
+ * 원문은 담지 않습니다.
+ */
+export interface LlmUsageSample {
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+}
+
+export type LlmUsageSink = (usage: LlmUsageSample) => void;
+
+/** SDK의 `usage`는 항목마다 `undefined`가 될 수 있습니다. 없는 값을 0으로 접지 않습니다. */
+export function toLlmUsageSample(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}): LlmUsageSample {
+  return {
+    inputTokens: usage.inputTokens ?? null,
+    outputTokens: usage.outputTokens ?? null,
+    totalTokens: usage.totalTokens ?? null,
+  };
+}
+
+/**
  * 판단 호출에 얹는 샘플링 설정입니다.
  *
  * 로컬 전환에서만 `LLM_TEMPERATURE`로 갈아탈 수 있습니다. 프로덕션에서 환경변수로 온도를 흔들 수

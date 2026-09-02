@@ -18,6 +18,8 @@ import {
   judgmentSamplingOptions,
   LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
+  toLlmUsageSample,
+  type LlmUsageSink,
 } from "./llm-provider";
 import type { StageACandidate, StageACandidateOutput } from "./types";
 import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
@@ -373,10 +375,17 @@ function localInputScopeHint(): string {
   ].join("\n");
 }
 
-/** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
-export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
+/**
+ * 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다.
+ *
+ * `onUsage`는 측정용 통로입니다. 프로덕션은 넘기지 않습니다. 근거는 `LlmUsageSample`에 있습니다.
+ */
+export function createStageAGenerate(
+  model: string = STAGE_A_MODEL,
+  onUsage?: LlmUsageSink
+): GenerateStageA {
   return async (payload, abortSignal) => {
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model: createStageAModel(model),
       schema: structuredOutputSchema,
       /**
@@ -413,6 +422,7 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
       maxRetries: LLM_MAX_RETRIES,
       ...judgmentSamplingOptions(),
     });
+    onUsage?.(toLlmUsageSample(usage));
     return object;
   };
 }
