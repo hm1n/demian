@@ -12,7 +12,7 @@ import {
   type CandidateRetryPoint,
 } from "./repository-analysis";
 
-const AUTH = { owner: "octocat", repo: "hello-world", token: "token" };
+const AUTH = { owner: "octocat", repo: "hello-world" };
 const COMMIT: CommitSummary = {
   sha: "sha-1",
   title: "feat: add analysis",
@@ -148,7 +148,7 @@ describe("analyzeRepository", () => {
 describe("toAnalysisError", () => {
   it.each([
     ["rate_limit", "GitHub API 호출 한도에 도달했습니다", "retry"],
-    ["auth_revoked", "GitHub 인증을 다시 확인해 주세요", "reauthenticate"],
+    ["auth_revoked", "GitHub에 다시 로그인해 주세요", "reauthenticate"],
     ["repo_not_found", "Repository를 찾을 수 없습니다", "select_repository"],
     ["network", "GitHub에 연결하지 못했습니다", "retry"],
     ["server_error", "GitHub 데이터를 불러오지 못했습니다", "retry"],
