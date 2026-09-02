@@ -5,15 +5,15 @@ import {
   fetchStageBCandidatesFromApi,
   toStageARequest,
   toStageAUnits,
-  splitUnitsIntoChunks,
+  assertStageARequestWithinLimits,
   expandCandidatesToCommits,
 } from "./candidate-client";
 import {
   buildStageAPayload,
   renderStageAPrompt,
-  STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_REQUEST_BYTES,
-  STAGE_A_CHUNK_MAX_UNITS,
+  STAGE_A_MAX_PROMPT_BYTES,
+  STAGE_A_MAX_REQUEST_BYTES,
+  STAGE_A_MAX_UNITS,
 } from "./stage-a";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
@@ -72,7 +72,7 @@ function parseRequest(init: RequestInit | undefined): StageARequestBody {
  * 아무것도 검증하지 않게 됩니다. 2026-09-01에 개수 상한이 20에서 40으로 오르면서 실제로 그런 일이
  * 생겨 25묶음 픽스처가 한 청크가 되었습니다.
  */
-const MULTI_CHUNK_UNITS = STAGE_A_CHUNK_MAX_UNITS + 5;
+const MULTI_CHUNK_UNITS = STAGE_A_MAX_UNITS + 5;
 
 function manyUnits(count: number): ReadonlyCommitDetail[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -100,7 +100,7 @@ function promptBytesOf(
  * 뺍니다. 정확한 경계가 아니라 "예산을 거의 다 먹는다"는 조건만 필요합니다.
  */
 function itemFillingBudgetExcept(room: number): string {
-  return "가".repeat(Math.max(1, Math.floor((STAGE_A_CHUNK_MAX_BYTES - room - 32) / 3)));
+  return "가".repeat(Math.max(1, Math.floor((STAGE_A_MAX_PROMPT_BYTES - room - 32) / 3)));
 }
 
 beforeEach(() => {
@@ -143,7 +143,7 @@ describe("toStageAUnits", () => {
     const bytes = new TextEncoder().encode(
       renderStageAPrompt(buildStageAPayload(toStageARequest(withItems.units, [longItem], 1)))
     ).byteLength;
-    expect(bytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
+    expect(bytes).toBeLessThanOrEqual(STAGE_A_MAX_PROMPT_BYTES);
   });
 
   it("PR에 속하지 않은 커밋을 사유와 함께 제외한다", () => {
@@ -320,11 +320,11 @@ describe("fetchStageACandidatesFromApi", () => {
    * 상한을 넘는 저장소의 계약입니다.
    *
    * 상한을 넘는 것은 고장이 아니라 설계된 동작입니다. 요청을 나눠 보내지 않고, 점수 상위
-   * `STAGE_A_CHUNK_MAX_UNITS`묶음만 한 번에 보냅니다. 넘친 묶음은 조용히 사라지지 않고
+   * `STAGE_A_MAX_UNITS`묶음만 한 번에 보냅니다. 넘친 묶음은 조용히 사라지지 않고
    * `over_input_budget` 사유로 화면에 남습니다.
    */
   it("개수 상한을 넘는 저장소는 상위 묶음만 한 번에 보내고 나머지를 사유와 함께 남긴다", async () => {
-    const commits = manyUnits(STAGE_A_CHUNK_MAX_UNITS + 5);
+    const commits = manyUnits(STAGE_A_MAX_UNITS + 5);
     const sent: number[] = [];
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -342,13 +342,13 @@ describe("fetchStageACandidatesFromApi", () => {
       });
     });
 
-    const output = await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
+    const output = await fetchStageACandidatesFromApi(commits, []);
 
     // 요청은 한 번입니다. 나눠 보내면 청크 사이 대기 경로가 살아납니다.
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-    expect(sent).toHaveLength(STAGE_A_CHUNK_MAX_UNITS);
-    expect(new Set(sent).size).toBe(STAGE_A_CHUNK_MAX_UNITS);
-    expect(output.selectedUnitCount).toBe(STAGE_A_CHUNK_MAX_UNITS);
+    expect(sent).toHaveLength(STAGE_A_MAX_UNITS);
+    expect(new Set(sent).size).toBe(STAGE_A_MAX_UNITS);
+    expect(output.selectedUnitCount).toBe(STAGE_A_MAX_UNITS);
     expect(output.excludedUnits).toHaveLength(5);
     expect(output.excludedUnits.every(({ reason }) => reason === "over_input_budget")).toBe(true);
     expect(output.candidates.length).toBeLessThanOrEqual(20);
@@ -362,11 +362,11 @@ describe("fetchStageACandidatesFromApi", () => {
    * 없습니다. 사용자가 이유 없이 1분을 기다리게 됩니다. 두 상한이 어긋나면 이 테스트가 먼저
    * 실패합니다.
    */
-  it("선별 결과는 묶음이 아무리 많아도 청크 하나에 담긴다", () => {
-    for (const count of [STAGE_A_CHUNK_MAX_UNITS + 1, STAGE_A_CHUNK_MAX_UNITS * 3]) {
+  it("선별 결과는 묶음이 아무리 많아도 개수 상한 안에 들어간다", () => {
+    for (const count of [STAGE_A_MAX_UNITS + 1, STAGE_A_MAX_UNITS * 3]) {
       const { units } = toStageAUnits(manyUnits(count));
-      expect(units.length).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_UNITS);
-      expect(splitUnitsIntoChunks(units, []).length).toBe(1);
+      expect(units.length).toBe(STAGE_A_MAX_UNITS);
+      expect(() => assertStageARequestWithinLimits(units, [])).not.toThrow();
     }
   });
 
@@ -393,8 +393,7 @@ describe("fetchStageACandidatesFromApi", () => {
 
     const waits: number[] = [];
     const output = await fetchStageACandidatesFromApi(
-      commits, [], () => undefined, undefined, async (ms) => { waits.push(ms); }
-    );
+      commits, []);
 
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     expect(output.unjudgedShas).toHaveLength(3);
@@ -402,20 +401,7 @@ describe("fetchStageACandidatesFromApi", () => {
     expect(waits).toEqual([]);
   });
 
-  it("체크포인트가 판단 대상 묶음 수를 함께 싣는다", async () => {
-    // 실패 문구가 커밋 수로 분모를 다시 유도하지 않도록 체크포인트가 분모를 들고 다닌다.
-    const commits = manyUnits(3);
-    vi.mocked(fetch).mockResolvedValue(
-      jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502)
-    );
-
-    const units = toStageAUnits(commits).units;
-    await expect(
-      fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined)
-    ).rejects.toMatchObject({ checkpoint: { totalUnits: units.length } });
-  });
-
-  it("쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
+  it("쿼터를 보내고 쿼터가 전역 상한을 넘지 않는다", async () => {
     const commits = manyUnits(MULTI_CHUNK_UNITS);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -427,50 +413,18 @@ describe("fetchStageACandidatesFromApi", () => {
       });
     });
 
-    await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
+    await fetchStageACandidatesFromApi(commits, []);
 
     const limits = vi.mocked(fetch).mock.calls.map(([, init]) => parseRequest(init).candidateLimit);
     expect(limits.every((limit) => limit >= 1)).toBe(true);
     expect(limits.reduce((sum, limit) => sum + limit, 0)).toBeLessThanOrEqual(20);
   });
 
-  /**
-   * 체크포인트로 재개하면 이미 판단한 묶음을 다시 보내지 않습니다.
-   *
-   * 예전에는 청크 둘을 보내다 두 번째에서 실패하는 방식으로 체크포인트를 만들었습니다. 선별이
-   * 개수 상한을 지키게 되면서 요청이 언제나 한 번이라 그렇게는 만들 수 없고, 남은 계약은 주어진
-   * 체크포인트를 존중하는 것입니다. 체크포인트를 손으로 만들어 그 계약만 확인합니다.
-   */
-  it("체크포인트에 담긴 묶음은 다시 보내지 않는다", async () => {
-    const commits = manyUnits(3);
-    const units = toStageAUnits(commits).units;
-    const checkpoint: import("./types").StageACheckpoint = {
-      processedShas: [units[0].representativeSha],
-      candidates: [],
-      unclassifiedShas: [units[0].representativeSha],
-      unjudgedShas: [],
-      totalUnits: units.length,
-    };
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({
-      candidates: [], unclassifiedShas: [], unjudgedShas: [], rateLimit: null,
-    }));
-
-    await fetchStageACandidatesFromApi(commits, [], () => undefined, checkpoint, async () => undefined);
-
-    const resumed = parseRequest(vi.mocked(fetch).mock.calls[0][1]);
-    expect(resumed.units).toHaveLength(2);
-    expect(
-      resumed.units.some(({ representativeSha }) =>
-        checkpoint.processedShas.includes(representativeSha)
-      )
-    ).toBe(false);
-  });
-
   it("프롬프트 예산을 넘는 묶음은 청크로 쪼개지 않고 선별에서 제외한다", async () => {
     // 점수 선별이 청크 분할보다 먼저 돌고 예산이 같으므로 요청은 항상 한 번입니다.
     const commits = manyUnits(3).map((commit) => ({
       ...commit,
-      title: "x".repeat(Math.floor(STAGE_A_CHUNK_MAX_BYTES / 2) - 250),
+      title: "x".repeat(Math.floor(STAGE_A_MAX_PROMPT_BYTES / 2) - 250),
     }));
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -493,65 +447,62 @@ describe("fetchStageACandidatesFromApi", () => {
   });
 });
 
-describe("splitUnitsIntoChunks", () => {
-  it("묶음 수 상한에서 나눈다", () => {
-    const units = toStageAUnits(manyUnits(STAGE_A_CHUNK_MAX_UNITS * 2 + 5)).units;
-
-    const chunks = splitUnitsIntoChunks(units, []);
-
-    expect(chunks.every((chunk) => chunk.length <= STAGE_A_CHUNK_MAX_UNITS)).toBe(true);
-    expect(chunks.flat().map(({ pullRequestNumber }) => pullRequestNumber))
-      .toEqual(units.map(({ pullRequestNumber }) => pullRequestNumber));
-  });
-
-  it("묶음이 없으면 청크도 없다", () => {
-    expect(splitUnitsIntoChunks([], [])).toEqual([]);
-  });
-
-  it("묶음 하나가 혼자서 상한을 넘으면 청크에 조용히 담지 않고 실패시킨다", () => {
-    // Codex 리뷰 P2-2 회귀 테스트입니다. selectWorkUnitsForStageA가 예산 안의 묶음만 골라야
-    // 하므로 정상 경로에서는 여기 도달하지 않지만, 그 불변조건이 깨지면 조용히 청크에 담아
-    // 서버가 422로 거부하게 두는 대신 바로 실패시켜야 합니다.
-    const oversized = {
+/**
+ * `splitUnitsIntoChunks`를 대신한 검증 함수입니다. 나누는 일은 없어졌고 상한 확인만 남았습니다.
+ *
+ * 정상 경로에서는 선별이 상한 안의 묶음만 고르므로 여기 도달하지 않습니다. 그 불변조건이 깨졌을 때
+ * 조용히 보내 서버가 422로 거부하게 두는 대신 바로 실패시키는 것이 이 함수의 일입니다.
+ */
+describe("assertStageARequestWithinLimits", () => {
+  const oversizedUnit = {
+    pullRequestNumber: 1,
+    representativeSha: "sha-1",
+    summary: {
       pullRequestNumber: 1,
-      representativeSha: "sha-1",
-      summary: {
-        pullRequestNumber: 1,
-        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
-        commitCount: 1,
-        spanDays: 1,
-        additions: 1,
-        deletions: 0,
-        commitTitles: ["feat: 기능 추가"],
-        changedFilePathCount: 1,
-        topFilePaths: ["src/a.ts"],
-      },
-    };
+      pullRequestTitle: "x".repeat(STAGE_A_MAX_PROMPT_BYTES + 1),
+      commitCount: 1,
+      spanDays: 1,
+      additions: 1,
+      deletions: 0,
+      commitTitles: ["feat: 기능 추가"],
+      changedFilePathCount: 1,
+      topFilePaths: ["src/a.ts"],
+    },
+  };
 
-    expect(() => splitUnitsIntoChunks([oversized], [])).toThrow();
+  it("묶음이 없으면 통과한다", () => {
+    expect(() => assertStageARequestWithinLimits([], [])).not.toThrow();
+  });
+
+  it("선별을 통과한 입력은 그대로 통과한다", () => {
+    const units = toStageAUnits(manyUnits(STAGE_A_MAX_UNITS * 2 + 5)).units;
+
+    expect(units.length).toBeLessThanOrEqual(STAGE_A_MAX_UNITS);
+    expect(() => assertStageARequestWithinLimits(units, [])).not.toThrow();
+  });
+
+  it("개수 상한을 넘으면 실패시킨다", () => {
+    // 선별을 거치지 않고 손으로 만든 입력입니다. 선별이 개수 상한을 지키지 않게 되면 이 검증이
+    // 마지막 방어선입니다.
+    const units = Array.from({ length: STAGE_A_MAX_UNITS + 1 }, (_, index) => ({
+      ...oversizedUnit,
+      pullRequestNumber: index + 1,
+      representativeSha: `sha-${index}`,
+      summary: { ...oversizedUnit.summary, pullRequestNumber: index + 1, pullRequestTitle: "PR" },
+    }));
+
+    expect(() => assertStageARequestWithinLimits(units, [])).toThrow(CandidateRequestError);
+  });
+
+  it("묶음 하나가 혼자서 상한을 넘으면 실패시킨다", () => {
+    expect(() => assertStageARequestWithinLimits([oversizedUnit], [])).toThrow();
   });
 
   it("실패는 재시도해도 같은 결과라 재시도 불가로 표시한다", () => {
     // 평범한 Error로 던지면 generateCandidates가 재시도 지점을 남겨(samePayloadAlwaysFails가
     // CandidateRequestError만 봅니다) 같은 입력으로 반드시 같은 실패를 반복하는 버튼을 줍니다.
-    const oversized = {
-      pullRequestNumber: 1,
-      representativeSha: "sha-1",
-      summary: {
-        pullRequestNumber: 1,
-        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
-        commitCount: 1,
-        spanDays: 1,
-        additions: 1,
-        deletions: 0,
-        commitTitles: ["feat: 기능 추가"],
-        changedFilePathCount: 1,
-        topFilePaths: ["src/a.ts"],
-      },
-    };
-
     try {
-      splitUnitsIntoChunks([oversized], []);
+      assertStageARequestWithinLimits([oversizedUnit], []);
       throw new Error("실패해야 합니다");
     } catch (error) {
       expect(error).toBeInstanceOf(CandidateRequestError);
@@ -560,40 +511,12 @@ describe("splitUnitsIntoChunks", () => {
     }
   });
 
-  it("두 번째 이후 묶음이 혼자 상한을 넘어도 잡는다", () => {
-    // 예전에는 초과 검사가 current === undefined일 때만 돌아서, 앞 청크에 못 들어가 새 청크의
-    // 머리가 되는 묶음은 크기를 다시 재지 않았다. 혼자서 상한을 넘는 묶음이 그대로 라우트에 가서
-    // 422를 받았다. 첫 묶음 가드만으로는 부족하다는 것이 Codex 리뷰의 지적이다.
-    const small = toStageAUnits([COMMIT]).units[0];
-    const oversized = {
-      pullRequestNumber: 2,
-      representativeSha: "sha-oversized",
-      summary: {
-        pullRequestNumber: 2,
-        pullRequestTitle: "x".repeat(STAGE_A_CHUNK_MAX_BYTES + 1),
-        commitCount: 1,
-        spanDays: 1,
-        additions: 1,
-        deletions: 0,
-        commitTitles: ["feat: 기능 추가"],
-        changedFilePathCount: 1,
-        topFilePaths: ["src/a.ts"],
-      },
-    };
-
-    // 작은 묶음이 앞에 있어 current !== undefined인 상태로 초과 묶음을 만난다.
-    expect(() => splitUnitsIntoChunks([small, oversized], [])).toThrow(CandidateRequestError);
-  });
-
   it("JSON 이스케이프로 요청 본문만 넘는 묶음도 잡는다", () => {
     // 프롬프트 바이트는 상한 안이지만 JSON.stringify가 따옴표와 백슬래시를 이스케이프해 요청
-    // 본문이 20,000바이트를 넘는 경우다. 선별은 요약 렌더 바이트로만 재므로 여기까지 온다.
-    // 따옴표와 백슬래시를 소스에 리터럴로 두지 않고 만든다. JSON.stringify가 둘 다
-    // 이스케이프해 요청 본문 바이트를 두 배로 만든다.
-    // 쌍 하나가 프롬프트에서 2바이트, JSON에서 4바이트(둘 다 이스케이프)다. 요청 본문이
-    // 상한을 조금 넘고 프롬프트는 상한 안에 드는 길이를 상한에서 유도한다.
+    // 본문이 상한을 넘는 경우입니다. 선별은 요약 렌더 바이트로만 재므로 여기까지 옵니다.
+    // 쌍 하나가 프롬프트에서 2바이트, JSON에서 4바이트입니다.
     const pair = [String.fromCharCode(34), String.fromCharCode(92)].join("");
-    const escaped = pair.repeat(Math.floor((STAGE_A_CHUNK_MAX_REQUEST_BYTES + 200) / 4));
+    const escaped = pair.repeat(Math.floor((STAGE_A_MAX_REQUEST_BYTES + 200) / 4));
     const unit = {
       pullRequestNumber: 3,
       representativeSha: "sha-escaped",
@@ -616,34 +539,20 @@ describe("splitUnitsIntoChunks", () => {
       JSON.stringify(toStageARequest([unit], [], 1))
     ).byteLength;
 
-    // 전제 확인: 프롬프트는 상한 안이고 요청 본문만 넘는다.
-    expect(promptBytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
-    expect(requestBytes).toBeGreaterThan(STAGE_A_CHUNK_MAX_REQUEST_BYTES);
-    expect(() => splitUnitsIntoChunks([unit], [])).toThrow(CandidateRequestError);
+    // 전제 확인: 프롬프트는 상한 안이고 요청 본문만 넘습니다.
+    expect(promptBytes).toBeLessThanOrEqual(STAGE_A_MAX_PROMPT_BYTES);
+    expect(requestBytes).toBeGreaterThan(STAGE_A_MAX_REQUEST_BYTES);
+    expect(() => assertStageARequestWithinLimits([unit], [])).toThrow(CandidateRequestError);
   });
 
-  it("기여 항목을 프롬프트 바이트에 포함해 나눈다", () => {
-    // 서버가 재는 프롬프트는 요약과 기여 항목을 합친 것입니다. 여기서 요약만 재면 서버가 거부할
-    // 청크를 만들어 보냅니다. 실측에서 demian 요약 9,913바이트에 기여 항목 200자만 더해도
-    // 10,530바이트가 되어 상한 10,500을 넘고 모든 청크가 422로 거부됐습니다.
-    const commits = manyUnits(20);
-    const units = toStageAUnits(commits).units;
-    // 청크가 반드시 두 개 이상 되도록 전체 요약의 절반만 들어갈 예산을 남깁니다.
-    const longItem = itemFillingBudgetExcept(Math.floor(promptBytesOf(commits, []) / 2));
+  it("기여 항목을 프롬프트 바이트에 포함해 잰다", () => {
+    // 서버가 재는 프롬프트는 요약과 기여 항목을 합친 것입니다. 요약만 재면 서버가 거부할 요청을
+    // 만들어 보냅니다. 실측에서 demian 요약 9,913바이트에 기여 항목 200자만 더해도 상한을 넘었습니다.
+    const units = toStageAUnits(manyUnits(20)).units;
+    const longItem = "가".repeat(STAGE_A_MAX_PROMPT_BYTES);
 
-    const withoutItems = splitUnitsIntoChunks(units, []);
-    const withItems = splitUnitsIntoChunks(units, [longItem]);
-
-    expect(withItems.length).toBeGreaterThan(withoutItems.length);
-    for (const chunk of withItems) {
-      const bytes = new TextEncoder().encode(
-        renderStageAPrompt(buildStageAPayload(toStageARequest(chunk, [longItem], 1)))
-      ).byteLength;
-      expect(bytes).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
-    }
-    // 묶음을 하나도 잃지 않습니다.
-    expect(withItems.flat().map(({ pullRequestNumber }) => pullRequestNumber))
-      .toEqual(units.map(({ pullRequestNumber }) => pullRequestNumber));
+    expect(() => assertStageARequestWithinLimits(units, [])).not.toThrow();
+    expect(() => assertStageARequestWithinLimits(units, [longItem])).toThrow(CandidateRequestError);
   });
 });
 

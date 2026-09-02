@@ -9,7 +9,7 @@ import {
   WORK_UNIT_SELECTION_EXCLUSION_COPY,
   selectWorkUnitsForStageA,
 } from "./work-unit-selection";
-import { STAGE_A_CHUNK_MAX_BYTES } from "./stage-a";
+import { STAGE_A_MAX_PROMPT_BYTES } from "./stage-a";
 import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
 
@@ -103,7 +103,7 @@ describe("selectWorkUnitsForStageA", () => {
    * 이유 없이 1분을 기다립니다. 숫자를 두 파일에 적어 두었으므로 이 테스트가 어긋남을 잡습니다.
    */
   it("선별 예산이 청크 바이트 상한과 같다", () => {
-    expect(STAGE_A_MAX_SELECTION_BYTES).toBe(STAGE_A_CHUNK_MAX_BYTES);
+    expect(STAGE_A_MAX_SELECTION_BYTES).toBe(STAGE_A_MAX_PROMPT_BYTES);
   });
 
   it("모든 묶음이 개별적으로 예산을 넘으면 억지로 남기지 않고 전부 제외한다", () => {

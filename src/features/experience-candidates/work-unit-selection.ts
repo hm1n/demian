@@ -6,7 +6,7 @@ import {
 } from "./work-unit-score";
 import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
-import { STAGE_A_CHUNK_MAX_UNITS } from "./stage-a";
+import { STAGE_A_MAX_UNITS } from "./stage-a";
 
 /**
  * Stage A 한 번에 보낼 수 있는 작업 묶음의 프롬프트 바이트 상한입니다.
@@ -29,10 +29,10 @@ import { STAGE_A_CHUNK_MAX_UNITS } from "./stage-a";
  * 하나로 정한 값이었고, `andbread`를 재자마자 모자랐습니다. 그 저장소는 66묶음 전량이
  * 35,550바이트인데 20,000에서는 10묶음만 실리고 **56묶음이 모델에 닿지 못했습니다.**
  *
- * 이제 이 값은 묶음 수 상한(`STAGE_A_CHUNK_MAX_UNITS` 200)을 담을 수 있는 크기로 정합니다. 실측에서
+ * 이제 이 값은 묶음 수 상한(`STAGE_A_MAX_UNITS` 200)을 담을 수 있는 크기로 정합니다. 실측에서
  * 200묶음이 109,333바이트였고 110,000은 그 값입니다. **바이트가 아니라 개수가 실질 상한입니다.**
  * 바이트로만 걸면 같은 상한이 저장소마다 다른 묶음 수를 뜻합니다. 묶음 하나의 크기가 저장소마다
- * 다르기 때문입니다. 근거와 측정은 `STAGE_A_CHUNK_MAX_UNITS`에 있습니다.
+ * 다르기 때문입니다. 근거와 측정은 `STAGE_A_MAX_UNITS`에 있습니다.
  *
  * 두 상한은 함께 움직여야 합니다. 어긋나면 선별 결과가 청크 둘로 갈리고, Groq의 분당 창에서 나온
  * 61초 대기가 되살아납니다(`STAGE_A_DEGRADED_WAIT_MS`). 회귀 테스트가 두 값이 같은지 고정합니다.
@@ -110,7 +110,7 @@ export const WORK_UNIT_SELECTION_EXCLUSION_COPY: Record<
 export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
   units: readonly WorkUnit<TCommit>[],
   maxBytes: number = STAGE_A_MAX_SELECTION_BYTES,
-  maxUnits: number = STAGE_A_CHUNK_MAX_UNITS
+  maxUnits: number = STAGE_A_MAX_UNITS
 ): WorkUnitSelection<TCommit> {
   const scored = units.map((unit) => {
     const summary = summarizeWorkUnit(unit);

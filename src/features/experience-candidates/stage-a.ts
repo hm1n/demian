@@ -19,7 +19,7 @@ import {
   LLM_MAX_RETRIES,
   resolveLlmTimeoutMs,
 } from "./llm-provider";
-import type { StageACandidate, StageAChunkOutput, StageARateLimit } from "./types";
+import type { StageACandidate, StageACandidateOutput } from "./types";
 import { renderWorkUnitSummary, type WorkUnitSummary } from "./work-unit-summary";
 
 // 2026-09-01에 Groq `openai/gpt-oss-120b`에서 옮겼습니다. 확정 근거와 탈락 사유는
@@ -60,14 +60,14 @@ export const STAGE_A_MIN_LLM_BUDGET_MS = 12_000;
  * 점수 선별이 입력을 이 상한 안으로 줄이므로 실측 저장소는 청크가 하나입니다. 청크 분할은
  * 선별이 예상보다 큰 입력을 넘길 때를 위한 안전장치로 남습니다.
  */
-export const STAGE_A_CHUNK_MAX_BYTES = 110_000;
+export const STAGE_A_MAX_PROMPT_BYTES = 110_000;
 /**
  * 요청 본문 상한입니다.
  *
  * 구조화 요약의 필드 이름과 구분자 때문에 프롬프트보다 큽니다. 실측 배율은 `demian` 1.52,
  * `andbread` 1.25입니다. 프롬프트 상한 110,000에 최대 배율을 적용하면 167,200이라 여유를 둡니다.
  */
-export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 176_000;
+export const STAGE_A_MAX_REQUEST_BYTES = 176_000;
 /**
  * 한 요청에 담을 작업 묶음 수 상한입니다.
  *
@@ -101,7 +101,7 @@ export const STAGE_A_CHUNK_MAX_REQUEST_BYTES = 176_000;
  * 200을 넘는 저장소는 존재합니다. 그때 점수 선별이 상위 200묶음만 남기고, 남은 묶음에 왜 빠졌는지를
  * 화면이 알립니다. 상한을 넘는 것은 고장이 아니라 설계된 동작입니다.
  */
-export const STAGE_A_CHUNK_MAX_UNITS = 200;
+export const STAGE_A_MAX_UNITS = 200;
 /**
  * 청크 하나가 추천할 수 있는 묶음 수입니다.
  *
@@ -112,42 +112,9 @@ export const STAGE_A_CHUNK_MAX_UNITS = 200;
  * 점수 선별을 넣으면서 2에서 5로 올렸습니다. 선별 뒤에는 청크가 하나뿐이라 2로 두면 저장소당
  * 후보가 2개로 끝납니다. 5면 Stage B 커밋 상한 30을 나눠 후보당 6커밋이 실려 근거가 두터워집니다.
  */
-export const STAGE_A_CHUNK_QUOTA = 5;
+export const STAGE_A_CANDIDATE_QUOTA = 5;
 
-/**
- * 아래 세 값은 청크 사이 대기에만 쓰이고, **현재 제공자에서는 어느 것도 도달하지 않습니다.**
- *
- * 셋 다 Groq 무료 등급의 분당 토큰 창에서 나왔습니다. 그 시절에는 청크 하나를 보낸 뒤 남은 토큰이
- * 적으면 창이 리셋될 때까지 기다려야 다음 청크가 통과했습니다. Gemini에는 그 창이 없습니다. 유료
- * 등급 분당 입력 한도가 4,000,000토큰이고 이 단계 한 회가 24,000토큰을 넘지 않습니다.
- *
- * 도달하지 않는 이유는 두 겹입니다. 첫째로 `createStageAGenerate`가 Gemini 응답에 한도 헤더가 없는
- * 것을 보고 남은 토큰을 최댓값으로 합성하므로 `STAGE_A_TOKEN_RESERVE` 비교가 항상 거짓입니다.
- * 둘째로 선별 예산과 청크 바이트 상한이 같은 값이라 선별 결과가 언제나 청크 하나에 담깁니다.
- * 대기는 청크가 둘 이상일 때만 일어납니다.
- *
- * 그래서 값을 지금 재산정하지 않고 그대로 둡니다. **다만 두 상한을 어긋나게 바꾸면 청크가 갈리고
- * 이 대기가 되살아납니다.** 그때 사용자는 근거 없이 61초를 기다립니다. 두 상한을 함께 움직여야
- * 하는 이유가 이것이고 `STAGE_A_CHUNK_MAX_BYTES`에도 같은 경고를 적어 두었습니다.
- *
- * 걷어내는 편이 맞지만 이 대기는 `candidate-client.ts`의 청크 루프와 화면의
- * `waitingForRateLimit` 상태까지 이어져 있어 별건으로 남깁니다.
- */
-export const STAGE_A_TOKEN_RESERVE = 6_000;
-export const STAGE_A_RESET_SAFETY_MS = 1_000;
-export const STAGE_A_DEGRADED_WAIT_MS = 60_000 + STAGE_A_RESET_SAFETY_MS;
 
-/**
- * 청크 수가 많아 `청크 수 × 쿼터`가 전역 상한을 넘을 때 쿼터를 줄입니다. 상한을 넘는 응답을
- * 받아 놓고 다시 줄이는 대신 요청 단계에서 넘지 않게 만듭니다.
- */
-export function resolveChunkQuota(chunkCount: number): number {
-  if (chunkCount <= 0) return STAGE_A_CHUNK_QUOTA;
-  return Math.max(
-    1,
-    Math.min(STAGE_A_CHUNK_QUOTA, Math.floor(INITIAL_STAGE_A_CANDIDATE_LIMIT / chunkCount))
-  );
-}
 
 /**
  * Stage A가 판단하는 단위입니다.
@@ -177,7 +144,6 @@ interface StageADecision {
 
 interface StageAStructuredOutput {
   readonly decisions: readonly StageADecision[];
-  readonly __rateLimit?: StageARateLimit | null;
 }
 
 /** 모델에 실제로 보내는 형태입니다. 묶음은 이미 문자열로 접혀 있습니다. */
@@ -264,7 +230,7 @@ export function buildStageAPayload(input: StageAInput): StageAPayload {
  * 로컬 가드를 통과한 요청이 실제 프롬프트에서는 Groq 분당 토큰 한도를 넘겨 413을 받는
  * 결함(Codex 리뷰 P2-1)이 생겼습니다.
  *
- * 시스템 프롬프트는 여기 포함하지 않습니다. `STAGE_A_CHUNK_MAX_BYTES`는 실측 시점에 시스템
+ * 시스템 프롬프트는 여기 포함하지 않습니다. `STAGE_A_MAX_PROMPT_BYTES`는 실측 시점에 시스템
  * 프롬프트가 이미 실려 있던 호출에서 관측한 바이트당 토큰 비율(0.676)로 역산한 값이라 시스템
  * 프롬프트의 토큰 기여가 상한에 이미 녹아 있습니다. 여기서 시스템 프롬프트 글자 수를 더하면
  * 같은 기여를 두 번 반영하게 됩니다. 근거는
@@ -410,7 +376,7 @@ function localInputScopeHint(): string {
 /** 모델 ID를 주입할 수 있게 열어 둡니다. 이슈 #19의 측정 스크립트가 후보 모델을 비교할 때 씁니다. */
 export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateStageA {
   return async (payload, abortSignal) => {
-    const { object, response, usage } = await generateObject({
+    const { object } = await generateObject({
       model: createStageAModel(model),
       schema: structuredOutputSchema,
       /**
@@ -447,53 +413,7 @@ export function createStageAGenerate(model: string = STAGE_A_MODEL): GenerateSta
       maxRetries: LLM_MAX_RETRIES,
       ...judgmentSamplingOptions(),
     });
-    /**
-     * 로컬 제공자는 한도 헤더를 보내지 않으므로 여기서 합성합니다.
-     *
-     * 합성하지 않으면 `__rateLimit`이 null이 되고, 청크가 둘 이상일 때 첫 청크가 정상 완주하면
-     * (`unjudgedShas`가 빈 배열) `candidate-client.ts`가 이 응답을 저하가 아닌 형식 오류로 보고
-     * `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다. 클라이언트는 서버
-     * 환경변수를 읽을 수 없으므로 로컬 분기를 여기 서버 쪽에 둡니다.
-     *
-     * 프로덕션 경로의 null은 그대로 둡니다. 라우트 `degrade`가 부분 결과를 표시할 때 쓰는 표식이라
-     * 의미가 다릅니다.
-     */
-    const remaining = Number(response.headers?.["x-ratelimit-remaining-tokens"]);
-    const reset = response.headers?.["x-ratelimit-reset-tokens"];
-    const match = reset?.match(/^(\d+(?:\.\d+)?)(ms|s|m)$/);
-    const resetAfterMs = match
-      ? Number(match[1]) * ({ ms: 1, s: 1_000, m: 60_000 }[match[2]] ?? 0)
-      : Number.NaN;
-    if (Number.isFinite(remaining) && Number.isFinite(resetAfterMs)) {
-      return {
-        ...object,
-        __rateLimit: { remainingTokens: remaining, resetAfterMs, usedTokens: usage.totalTokens ?? 0 },
-      };
-    }
-    /**
-     * 한도 헤더를 주지 않는 제공자에서는 여기서 합성합니다. 로컬 Ollama와 Google Gemini가 그렇고,
-     * `x-ratelimit-*`는 Groq 규약입니다.
-     *
-     * 합성하지 않으면 `__rateLimit`이 null이 되고, 청크가 둘 이상일 때 첫 청크가 정상 완주하면
-     * (`unjudgedShas`가 빈 배열) `candidate-client.ts`가 이 응답을 저하가 아닌 형식 오류로 보고
-     * `LLM 토큰 한도 메타데이터가 없습니다`로 Stage A 전체를 실패시킵니다.
-     *
-     * 남은 토큰을 최댓값으로 두어 클라이언트가 대기하지 않게 합니다. Gemini 유료 등급의 분당 입력
-     * 토큰 한도가 4,000,000이고 이 단계의 회당 입력이 전량 투입에서도 24,000토큰이라 분당 166회를
-     * 감당합니다. 대기가 필요한 구간이 아닙니다. 한도 실측은
-     * `llm-wiki/wiki/2026-09-01-네-경로-LLM-모델-확정.md`에 있습니다.
-     *
-     * 라우트 `degrade`가 부분 결과를 표시할 때 쓰는 null은 그대로 둡니다. 그 null은 의미가 다르고
-     * 이 함수가 아니라 `route.ts`가 만듭니다.
-     */
-    return {
-      ...object,
-      __rateLimit: {
-        remainingTokens: Number.MAX_SAFE_INTEGER,
-        resetAfterMs: 0,
-        usedTokens: usage.totalTokens ?? 0,
-      },
-    };
+    return object;
   };
 }
 
@@ -506,7 +426,7 @@ export async function selectStageACandidates(
   generate: GenerateStageA = defaultGenerate,
   // 로컬 제공자일 때만 `LLM_TIMEOUT_MS`가 이 기본값을 대신합니다.
   timeoutMs = resolveLlmTimeoutMs(STAGE_A_TIMEOUT_MS)
-): Promise<StageAChunkOutput> {
+): Promise<StageACandidateOutput> {
   const payload = buildStageAPayload(input);
   const abortController = new AbortController();
   const timeout = setTimeout(
@@ -593,10 +513,5 @@ export async function selectStageACandidates(
       } }
     );
   }
-  return {
-    candidates,
-    unclassifiedShas,
-    unjudgedShas: [],
-    rateLimit: output.__rateLimit ?? null,
-  };
+  return { candidates, unclassifiedShas, unjudgedShas: [] };
 }

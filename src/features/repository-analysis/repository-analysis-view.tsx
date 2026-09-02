@@ -39,9 +39,8 @@ function loadingCopy(loading: LoadingPhase) {
     return {
       step: "4단계",
       title: "경험 후보를 1차 선별하고 있습니다",
-      description: loading.waitingForRateLimit
-        ? `${loading.total}개 중 ${loading.completed}개를 판단했습니다. 다음 청크를 위해 LLM 토큰 한도 초기화를 기다리고 있습니다.`
-        : `${loading.total}개 중 ${loading.completed}개를 판단했고 ${loading.total - loading.completed}개가 남았습니다.`,
+      // 청크 사이 한도 대기 문구가 있었습니다. 요청이 한 번이 되면서 기다릴 자리가 없어 지웠습니다.
+      description: `${loading.total}개 중 ${loading.completed}개를 판단했고 ${loading.total - loading.completed}개가 남았습니다.`,
     };
   }
   if (loading.step === "stage_b") {

@@ -8,7 +8,6 @@ import {
   type StageASelectionSummary,
 } from "@/features/experience-candidates/candidate-client";
 import type {
-  StageACheckpoint,
   StageBCandidateResult,
 } from "@/features/experience-candidates/types";
 import { buildCandidateData } from "@/lib/github/candidate-data";
@@ -33,7 +32,7 @@ export type LoadingPhase =
       phase: ContributionFetchProgress["phase"];
     }
   | { step: "deriving" }
-  | { step: "stage_a"; completed: number; total: number; waitingForRateLimit: boolean }
+  | { step: "stage_a"; completed: number; total: number }
   // 서버가 diff·PR 수집(5단계)과 판단(6단계)을 한 요청으로 처리해 클라이언트는 경계를 관측할 수 없습니다.
   // 시간 같은 대리 지표로 가짜 전환을 만들지 않고 두 단계를 하나의 Loading으로 표현합니다.
   | { step: "stage_b" };
@@ -69,7 +68,6 @@ export interface CandidateRetryPoint {
   readonly contributionItems: readonly string[];
   readonly data: CandidateDataOutput;
   readonly stageA?: StageACandidateResult;
-  readonly stageACheckpoint?: StageACheckpoint;
 }
 
 /**
@@ -285,18 +283,15 @@ export async function generateCandidates(
 ): Promise<void> {
   const { repository, contributionItems, data } = retryPoint;
   let stageA = retryPoint.stageA;
-  let stageACheckpoint = retryPoint.stageACheckpoint;
   try {
     if (!stageA) {
       onStateChange({ status: "loading", loading: {
-        step: "stage_a", completed: stageACheckpoint?.processedShas.length ?? 0,
-        total: stageAUnitTotal(data, contributionItems), waitingForRateLimit: false,
+        step: "stage_a", completed: 0, total: stageAUnitTotal(data, contributionItems),
       } });
       stageA = await dependencies.fetchStageACandidates(
         data.includedCommits,
         contributionItems,
-        (progress) => onStateChange({ status: "loading", loading: { step: "stage_a", ...progress } }),
-        stageACheckpoint
+        (progress) => onStateChange({ status: "loading", loading: { step: "stage_a", ...progress } })
       );
     }
     // 세 상태(빈 둘·성공)가 같은 선별 값을 싣도록 여기서 한 번만 만듭니다. 후보가 0개일 때가 제외
@@ -331,38 +326,24 @@ export async function generateCandidates(
       stageASelection,
     });
   } catch (error) {
-    if (error instanceof CandidateRequestError && error.checkpoint) {
-      stageACheckpoint = error.checkpoint;
-    }
-    // 계약 위반(422)은 보존한 입력을 그대로 다시 보내면 반드시 같은 결과라 retryPoint를 남기지 않습니다.
-    // retryPoint가 없으면 재시도가 전체 재분석이 되어 입력을 처음부터 다시 구성합니다.
+    /**
+     * 계약 위반(422)은 보존한 입력을 그대로 다시 보내면 반드시 같은 결과라 retryPoint를 남기지
+     * 않습니다. retryPoint가 없으면 재시도가 전체 재분석이 되어 입력을 처음부터 다시 구성합니다.
+     *
+     * 2026-09-02에 Stage A 체크포인트를 걷어냈습니다. 청크를 나눠 보내던 시절에는 앞 청크가 끝난
+     * 뒤 실패하면 그 결과를 체크포인트로 남겨 재개했습니다. 지금은 Stage A 호출이 한 번이라 실패가
+     * 전부 아니면 전무이고, 남길 부분 결과가 없습니다. 그래서 "전체 N묶음 중 M묶음을 판단했습니다"
+     * 문구도 함께 없앴습니다. 그 문구의 M은 이제 언제나 0입니다.
+     */
     const samePayloadAlwaysFails =
       error instanceof CandidateRequestError &&
       (error.kind === "invalid_request" || error.retryable === false);
-    // 체크포인트의 `processedShas`는 묶음의 대표 커밋 SHA이므로 묶음 수와 견줍니다. 분모는
-    // 체크포인트가 실어 온 `totalUnits`를 씁니다. 커밋 수로 다시 유도하면 단위가 섞이고, 유도
-    // 시점의 입력이 판단 시점과 달라지면 두 숫자가 어긋납니다.
-    const judgedUnits = stageACheckpoint?.processedShas.length ?? 0;
-    const totalUnits = stageACheckpoint?.totalUnits ?? 0;
-    const visibleError =
-      error instanceof CandidateRequestError && !stageA && stageACheckpoint
-        ? new CandidateRequestError(
-            error.stage,
-            error.kind,
-            `${error.message} 전체 ${totalUnits}묶음 중 ${judgedUnits}묶음을 판단했고 ${totalUnits - judgedUnits}묶음은 아직 판단하지 못했습니다.`,
-            { cause: error, checkpoint: stageACheckpoint }
-          )
-        : error;
     onStateChange({
       status: "error",
-      error: toCandidateGenerationError(visibleError, stageA ? "stage_b" : "stage_a"),
+      error: toCandidateGenerationError(error, stageA ? "stage_b" : "stage_a"),
       ...(samePayloadAlwaysFails
         ? {}
-        : { retryPoint: {
-            repository, contributionItems, data,
-            ...(stageA ? { stageA } : {}),
-            ...(!stageA && stageACheckpoint ? { stageACheckpoint } : {}),
-          } }),
+        : { retryPoint: { repository, contributionItems, data, ...(stageA ? { stageA } : {}) } }),
     });
   }
 }

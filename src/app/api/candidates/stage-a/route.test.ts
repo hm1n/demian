@@ -1,8 +1,8 @@
 import {
   buildStageAPayload,
   renderStageAPrompt,
-  STAGE_A_CHUNK_MAX_BYTES,
-  STAGE_A_CHUNK_MAX_UNITS,
+  STAGE_A_MAX_PROMPT_BYTES,
+  STAGE_A_MAX_UNITS,
 } from "@/features/experience-candidates/stage-a";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,7 +115,7 @@ describe("POST /api/candidates/stage-a", () => {
     }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      candidates: [], unclassifiedShas: [SHA], unjudgedShas: [], rateLimit: null,
+      candidates: [], unclassifiedShas: [SHA], unjudgedShas: [],
     });
   });
 
@@ -148,7 +148,7 @@ describe("POST /api/candidates/stage-a", () => {
     const generate = vi.fn();
     const long = unit(1, SHA);
     const response = await handleStageA(request({
-      units: [{ ...long, summary: { ...long.summary, commitTitles: ["x".repeat(STAGE_A_CHUNK_MAX_BYTES + 500)] } }],
+      units: [{ ...long, summary: { ...long.summary, commitTitles: ["x".repeat(STAGE_A_MAX_PROMPT_BYTES + 500)] } }],
       contributionItems: [],
       candidateLimit: 1,
     }), generate);
@@ -162,10 +162,10 @@ describe("POST /api/candidates/stage-a", () => {
   it("요약은 상한 안이지만 기여 항목을 더하면 넘는 요청을 LLM 호출 전에 422로 거부한다", async () => {
     const generate = vi.fn();
     const contributionItems = ["y".repeat(500)];
-    const fillerLength = fillerLengthFor(STAGE_A_CHUNK_MAX_BYTES - 200);
+    const fillerLength = fillerLengthFor(STAGE_A_MAX_PROMPT_BYTES - 200);
     // 전제 확인: 요약만으로는 상한 안, 기여 항목을 더하면 상한 밖이어야 이 테스트가 의미 있다.
-    expect(promptBytesFor(fillerLength)).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
-    expect(promptBytesFor(fillerLength, contributionItems)).toBeGreaterThan(STAGE_A_CHUNK_MAX_BYTES);
+    expect(promptBytesFor(fillerLength)).toBeLessThanOrEqual(STAGE_A_MAX_PROMPT_BYTES);
+    expect(promptBytesFor(fillerLength, contributionItems)).toBeGreaterThan(STAGE_A_MAX_PROMPT_BYTES);
 
     const response = await handleStageA(request({
       units: [fillerUnit(1, SHA, fillerLength)], contributionItems, candidateLimit: 1,
@@ -181,8 +181,8 @@ describe("POST /api/candidates/stage-a", () => {
 
   it("요약과 기여 항목을 합쳐도 상한 안이면 정상 처리된다", async () => {
     const contributionItems = ["결제 연동"];
-    const fillerLength = fillerLengthFor(STAGE_A_CHUNK_MAX_BYTES - 500, contributionItems);
-    expect(promptBytesFor(fillerLength, contributionItems)).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_BYTES);
+    const fillerLength = fillerLengthFor(STAGE_A_MAX_PROMPT_BYTES - 500, contributionItems);
+    expect(promptBytesFor(fillerLength, contributionItems)).toBeLessThanOrEqual(STAGE_A_MAX_PROMPT_BYTES);
 
     const response = await handleStageA(request({
       units: [fillerUnit(1, SHA, fillerLength)], contributionItems, candidateLimit: 1,
@@ -193,7 +193,7 @@ describe("POST /api/candidates/stage-a", () => {
 
   it("기여 항목이 빈 배열이면 요약만으로 예산을 재는 기존 동작과 같다", async () => {
     const generate = vi.fn();
-    const fillerLength = fillerLengthFor(STAGE_A_CHUNK_MAX_BYTES + 1);
+    const fillerLength = fillerLengthFor(STAGE_A_MAX_PROMPT_BYTES + 1);
 
     const response = await handleStageA(request({
       units: [fillerUnit(1, SHA, fillerLength)], contributionItems: [], candidateLimit: 1,
@@ -204,10 +204,10 @@ describe("POST /api/candidates/stage-a", () => {
   });
 
   it("프롬프트 바이트 경계에서 정확히 갈린다", async () => {
-    const passFiller = fillerLengthFor(STAGE_A_CHUNK_MAX_BYTES);
-    const failFiller = fillerLengthFor(STAGE_A_CHUNK_MAX_BYTES + 1);
-    expect(promptBytesFor(passFiller)).toBe(STAGE_A_CHUNK_MAX_BYTES);
-    expect(promptBytesFor(failFiller)).toBe(STAGE_A_CHUNK_MAX_BYTES + 1);
+    const passFiller = fillerLengthFor(STAGE_A_MAX_PROMPT_BYTES);
+    const failFiller = fillerLengthFor(STAGE_A_MAX_PROMPT_BYTES + 1);
+    expect(promptBytesFor(passFiller)).toBe(STAGE_A_MAX_PROMPT_BYTES);
+    expect(promptBytesFor(failFiller)).toBe(STAGE_A_MAX_PROMPT_BYTES + 1);
 
     const passResponse = await handleStageA(request({
       units: [fillerUnit(1, SHA, passFiller)], contributionItems: [], candidateLimit: 1,
@@ -236,7 +236,7 @@ describe("POST /api/candidates/stage-a", () => {
     const generate = vi.fn();
     const response = await handleStageA(request({
       // 개수를 숫자로 박아 두면 상한이 오를 때 이 테스트가 통과 경로를 재게 됩니다.
-      units: Array.from({ length: STAGE_A_CHUNK_MAX_UNITS + 1 }, (_, index) =>
+      units: Array.from({ length: STAGE_A_MAX_UNITS + 1 }, (_, index) =>
         unit(index + 1, String(index).padStart(40, "0"))
       ),
       contributionItems: [],
@@ -372,7 +372,6 @@ describe("POST /api/candidates/stage-a", () => {
       { sha: SHA, source: "automatic_recommendation", contributionItem: null },
     ]);
     expect(output.unjudgedShas).toEqual([SHA_2]);
-    expect(output.rateLimit).toBeNull();
   });
 
   it("세 번 판단하지 못한 묶음은 실패가 아니라 판단 불가로 돌려준다", async () => {
@@ -384,7 +383,7 @@ describe("POST /api/candidates/stage-a", () => {
     expect(response.status).toBe(200);
     expect(generate).toHaveBeenCalledTimes(3);
     expect(await response.json()).toEqual({
-      candidates: [], unclassifiedShas: [], unjudgedShas: [SHA], rateLimit: null,
+      candidates: [], unclassifiedShas: [], unjudgedShas: [SHA],
     });
   });
 
