@@ -32,7 +32,7 @@ export type LoadingPhase =
       phase: ContributionFetchProgress["phase"];
     }
   | { step: "deriving" }
-  | { step: "stage_a"; completed: number; total: number }
+  | { step: "stage_a"; total: number }
   // 서버가 diff·PR 수집(5단계)과 판단(6단계)을 한 요청으로 처리해 클라이언트는 경계를 관측할 수 없습니다.
   // 시간 같은 대리 지표로 가짜 전환을 만들지 않고 두 단계를 하나의 Loading으로 표현합니다.
   | { step: "stage_b" };
@@ -80,11 +80,10 @@ export interface StageASelectionState extends StageASelectionSummary {
 }
 
 /**
- * Stage A 진행 단위는 커밋이 아니라 Pull Request 묶음입니다.
+ * Stage A가 한 번에 보내는 단위는 커밋이 아니라 Pull Request 묶음입니다.
  *
- * `fetchStageACandidates`가 보내는 진행률과 체크포인트의 `processedShas`가 모두 묶음 기준입니다.
- * 커밋 수와 섞으면 커밋 여러 개짜리 PR이 있는 저장소에서 진행 바 전체 수가 첫 응답 직후 줄어들고,
- * 실패 문구가 실제보다 훨씬 많이 남은 것처럼 보고합니다.
+ * 커밋 수를 대신 보여주면 커밋 여러 개짜리 PR이 있는 저장소에서 화면이 실제보다 훨씬 많은 수를
+ * 알립니다. `andbread`는 상세 조회 커밋 327개가 묶음 67개입니다.
  *
  * `toStageAUnits`는 네트워크를 쓰지 않는 순수 함수라 클라이언트가 쓰는 값을 여기서 다시 구할 수
  * 있습니다. 기여 항목이 선별 예산을 먹으므로 함께 넘겨야 같은 수가 나옵니다.
@@ -286,13 +285,9 @@ export async function generateCandidates(
   try {
     if (!stageA) {
       onStateChange({ status: "loading", loading: {
-        step: "stage_a", completed: 0, total: stageAUnitTotal(data, contributionItems),
+        step: "stage_a", total: stageAUnitTotal(data, contributionItems),
       } });
-      stageA = await dependencies.fetchStageACandidates(
-        data.includedCommits,
-        contributionItems,
-        (progress) => onStateChange({ status: "loading", loading: { step: "stage_a", ...progress } })
-      );
+      stageA = await dependencies.fetchStageACandidates(data.includedCommits, contributionItems);
     }
     // 세 상태(빈 둘·성공)가 같은 선별 값을 싣도록 여기서 한 번만 만듭니다. 후보가 0개일 때가 제외
     // 사유를 가장 알아야 할 순간이라 두 빈 갈래에도 성공 경로와 동일한 객체를 실어 보냅니다(이슈 #58 P1-2).

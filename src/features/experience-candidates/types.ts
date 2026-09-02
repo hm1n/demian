@@ -69,11 +69,6 @@ export interface StageACandidateOutput {
  * `StageACheckpoint`를 함께 지웠습니다. 근거는
  * `llm-wiki/raw/2026-09-02-Stage-A-묶음-수-천장-실측.md`입니다.
  */
-export interface StageAProgress {
-  readonly completed: number;
-  readonly total: number;
-}
-
 export interface CandidateDiffFile {
   readonly path: string;
   readonly status: string;

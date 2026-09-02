@@ -3,7 +3,6 @@ import type {
   ExperienceCandidateSource,
   StageACandidate,
   StageACandidateOutput,
-  StageAProgress,
   StageBCandidateResult,
 } from "./types";
 import { validateExperienceCandidateOutput } from "./schema";
@@ -333,8 +332,7 @@ export interface StageACandidateResult extends StageACandidateOutput, StageASele
  */
 export async function fetchStageACandidatesFromApi(
   commits: readonly ReadonlyCommitDetail[],
-  contributionItems: readonly string[],
-  onProgress: (progress: StageAProgress) => void = () => undefined
+  contributionItems: readonly string[]
 ): Promise<StageACandidateResult> {
   const { units, workUnits, excludedCommits, excludedUnits, thresholdScore } = toStageAUnits(
     commits,
@@ -355,7 +353,6 @@ export async function fetchStageACandidatesFromApi(
     );
   }
   const { candidates, unclassifiedShas, unjudgedShas } = payload;
-  onProgress({ completed: units.length, total: units.length });
 
   // 후보 상한은 쿼터로 이미 요청에 실었지만, 서버가 쿼터를 어긴 응답을 돌려주는 경우까지
   // 통과시키면 Stage B가 상한 초과 입력으로 422를 받습니다.

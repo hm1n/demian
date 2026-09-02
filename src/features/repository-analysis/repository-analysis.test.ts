@@ -95,7 +95,7 @@ describe("analyzeRepository", () => {
     const deps = dependencies();
     await analyzeRepository(AUTH, ["푸시 알림 구현"], vi.fn(), deps);
     expect(deps.fetchStageACandidates).toHaveBeenCalledWith(
-      CONTRIBUTIONS.commits, ["푸시 알림 구현"], expect.any(Function)
+      CONTRIBUTIONS.commits, ["푸시 알림 구현"]
     );
     expect(deps.fetchStageBCandidates).toHaveBeenCalledWith(AUTH, STAGE_A_OUTPUT.candidates);
   });
