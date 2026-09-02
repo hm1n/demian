@@ -25,6 +25,8 @@ export interface StageASelectionDisplay {
   readonly excludedCommits: readonly ExcludedCommit[];
   readonly excludedUnits: readonly ExcludedWorkUnit<ReadonlyCommitDetail>[];
   readonly thresholdScore: number;
+  /** 점수 선별을 통과해 실제로 판단한 묶음 수입니다. 전체 대비 얼마인지 말하려면 필요합니다. */
+  readonly selectedUnitCount: number;
   readonly unjudgedShas: readonly string[];
 }
 
@@ -163,18 +165,21 @@ export function StageAExclusions({
   excludedCommits,
   excludedUnits,
   thresholdScore,
+  selectedUnitCount,
   unjudgedShas,
 }: StageASelectionDisplay) {
-  const belowThreshold = excludedUnits
-    .filter((item) => item.reason === "below_score_threshold")
+  const overInputBudget = excludedUnits
+    .filter((item) => item.reason === "over_input_budget")
     .sort((a, b) => b.score - a.score);
+  // 전체 묶음 수입니다. 판단한 것과 빠진 것을 합치면 저장소의 묶음 전부가 됩니다.
+  const totalUnitCount = selectedUnitCount + excludedUnits.length;
   const overBudget = excludedUnits
     .filter((item) => item.reason === "over_byte_budget")
     .sort((a, b) => b.score - a.score);
 
   if (
     excludedCommits.length === 0 &&
-    belowThreshold.length === 0 &&
+    overInputBudget.length === 0 &&
     overBudget.length === 0 &&
     unjudgedShas.length === 0
   ) {
@@ -203,17 +208,24 @@ export function StageAExclusions({
         </details>
       ) : null}
 
-      {belowThreshold.length > 0 ? (
+      {overInputBudget.length > 0 ? (
         <details className={styles.exclusionDetails}>
+          {/*
+            접힌 상태에서도 보이는 줄이라 여기에 전체 대비 몇 묶음을 판단했는지 적습니다. 제외
+            개수만 적으면 그것이 전체의 얼마인지 알 수 없어, 저장소가 커서 잘렸다는 사실이 드러나지
+            않습니다. 2026-09-02까지 이 줄은 "점수 N점 미만 M묶음을 제외했습니다"였고, 점수에 합격선이
+            있다는 뜻으로 읽혔습니다. 실제 방아쇠는 입력 상한입니다.
+          */}
           <summary>
-            <span>{`점수 ${thresholdScore}점 미만 ${belowThreshold.length}묶음을 판단 대상에서 제외했습니다`}</span>
+            <span>{`저장소가 커서 전체 ${totalUnitCount}묶음 중 점수 상위 ${selectedUnitCount}묶음만 판단했습니다`}</span>
           </summary>
           <p className={styles.exclusionReason}>
-            {WORK_UNIT_SELECTION_EXCLUSION_COPY.below_score_threshold}
+            {WORK_UNIT_SELECTION_EXCLUSION_COPY.over_input_budget}
+            {` 이번 판단의 점수 경계는 ${thresholdScore}점이었습니다.`}
             <span className={styles.heuristicNotice}> 점수는 자동 계산한 휴리스틱이고 Repository 사실이 아닙니다.</span>
           </p>
           <ul className={`${styles.exclusionList} ${styles.scrollableList}`}>
-            {belowThreshold.map(({ unit, score, signals }) => (
+            {overInputBudget.map(({ unit, score, signals }) => (
               <li key={unit.pullRequestNumber}>
                 <span className={styles.verifiedTag}>{VERIFIABILITY_LABEL.verified}</span>
                 <span>{`PR #${unit.pullRequestNumber}`}</span>

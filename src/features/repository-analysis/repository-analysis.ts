@@ -305,6 +305,7 @@ export async function generateCandidates(
       excludedCommits: stageA.excludedCommits,
       excludedUnits: stageA.excludedUnits,
       thresholdScore: stageA.thresholdScore,
+      selectedUnitCount: stageA.selectedUnitCount,
       unjudgedShas: stageA.unjudgedShas,
     };
     if (stageA.candidates.length === 0) {

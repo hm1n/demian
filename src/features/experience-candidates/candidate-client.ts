@@ -337,6 +337,13 @@ export interface StageASelectionSummary {
   readonly excludedUnits: readonly ExcludedWorkUnit<ReadonlyCommitDetail>[];
   /** 선택된 묶음 중 가장 낮은 점수입니다. */
   readonly thresholdScore: number;
+  /**
+   * 점수 선별을 통과해 실제로 모델에 보낸 묶음 수입니다.
+   *
+   * 화면이 "전체 N묶음 중 M묶음을 판단했습니다"를 말하려면 분자가 필요합니다. 제외 수만 보여주면
+   * 사용자는 그것이 전체의 얼마인지 알 수 없고, 저장소가 커서 잘렸다는 사실이 드러나지 않습니다.
+   */
+  readonly selectedUnitCount: number;
 }
 
 export interface StageACandidateResult extends StageACandidateOutput, StageASelectionSummary {}
@@ -452,6 +459,7 @@ export async function fetchStageACandidatesFromApi(
     excludedCommits,
     excludedUnits,
     thresholdScore,
+    selectedUnitCount: units.length,
   };
 }
 

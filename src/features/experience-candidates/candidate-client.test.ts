@@ -14,7 +14,6 @@ import {
   STAGE_A_CHUNK_MAX_BYTES,
   STAGE_A_CHUNK_MAX_REQUEST_BYTES,
   STAGE_A_CHUNK_MAX_UNITS,
-  STAGE_A_DEGRADED_WAIT_MS,
 } from "./stage-a";
 import type { StageACandidate } from "./types";
 import type { ReadonlyCommitDetail } from "@/lib/github/types";
@@ -137,8 +136,9 @@ describe("toStageAUnits", () => {
     const withItems = toStageAUnits(commits, [longItem]);
 
     expect(withItems.units.length).toBeLessThan(withoutItems.units.length);
-    // 빠진 묶음은 조용히 사라지지 않고 분량 초과 사유로 남습니다.
-    expect(withItems.excludedUnits.some(({ reason }) => reason === "over_byte_budget")).toBe(true);
+    // 빠진 묶음은 조용히 사라지지 않고 입력 상한 사유로 남습니다. 묶음 하나가 혼자 예산을 넘은
+    // 것이 아니라 기여 항목이 자리를 먹어 밀린 것이므로 `over_byte_budget`이 아닙니다.
+    expect(withItems.excludedUnits.some(({ reason }) => reason === "over_input_budget")).toBe(true);
     // 선별 결과가 서버 프롬프트 상한 안에 들어갑니다.
     const bytes = new TextEncoder().encode(
       renderStageAPrompt(buildStageAPayload(toStageARequest(withItems.units, [longItem], 1)))
@@ -248,6 +248,7 @@ describe("fetchStageACandidatesFromApi", () => {
       excludedCommits: [],
       excludedUnits: [],
       thresholdScore: 0,
+      selectedUnitCount: 1,
     });
     expect(fetch).toHaveBeenCalledWith("/api/candidates/stage-a", expect.objectContaining({
       method: "POST",
@@ -315,8 +316,15 @@ describe("fetchStageACandidatesFromApi", () => {
     });
   });
 
-  it("모든 묶음을 한 번씩 판단하고 재판단 라운드 없이 끝낸다", async () => {
-    const commits = manyUnits(MULTI_CHUNK_UNITS);
+  /**
+   * 상한을 넘는 저장소의 계약입니다.
+   *
+   * 상한을 넘는 것은 고장이 아니라 설계된 동작입니다. 요청을 나눠 보내지 않고, 점수 상위
+   * `STAGE_A_CHUNK_MAX_UNITS`묶음만 한 번에 보냅니다. 넘친 묶음은 조용히 사라지지 않고
+   * `over_input_budget` 사유로 화면에 남습니다.
+   */
+  it("개수 상한을 넘는 저장소는 상위 묶음만 한 번에 보내고 나머지를 사유와 함께 남긴다", async () => {
+    const commits = manyUnits(STAGE_A_CHUNK_MAX_UNITS + 5);
     const sent: number[] = [];
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -336,30 +344,50 @@ describe("fetchStageACandidatesFromApi", () => {
 
     const output = await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
 
-    expect(sent).toEqual(commits.map((_, index) => index + 1));
-    expect(new Set(sent).size).toBe(MULTI_CHUNK_UNITS);
+    // 요청은 한 번입니다. 나눠 보내면 청크 사이 대기 경로가 살아납니다.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(STAGE_A_CHUNK_MAX_UNITS);
+    expect(new Set(sent).size).toBe(STAGE_A_CHUNK_MAX_UNITS);
+    expect(output.selectedUnitCount).toBe(STAGE_A_CHUNK_MAX_UNITS);
+    expect(output.excludedUnits).toHaveLength(5);
+    expect(output.excludedUnits.every(({ reason }) => reason === "over_input_budget")).toBe(true);
     expect(output.candidates.length).toBeLessThanOrEqual(20);
-    // 청크 수만큼만 호출합니다. 재판단 라운드가 있으면 이 값을 넘습니다.
-    const chunkCount = splitUnitsIntoChunks(toStageAUnits(commits).units, []).length;
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(chunkCount);
   });
 
-  it("앞 청크가 판단 불가로 저하돼도 뒤 청크를 계속 보낸다", async () => {
-    // 라우트가 복구를 소진하면 부분 결과를 rateLimit null로 돌려준다(route.ts의 degrade).
-    // 예전에는 이 응답을 응답 형식 오류로 던져서 청크가 여러 개일 때 뒤 청크를 아예 시도하지
-    // 않았다. 저하는 이미 처리한 판단을 살리려고 만든 경로인데 그 목적을 스스로 깼다.
-    const commits = manyUnits(MULTI_CHUNK_UNITS);
-    const sentChunks: number[][] = [];
+  /**
+   * 선별이 두 상한을 모두 지키므로 결과는 언제나 청크 하나입니다.
+   *
+   * 이 보장이 깨지면 `candidate-client`의 청크 루프가 살아나고, 그 안의 61초 대기
+   * (`STAGE_A_DEGRADED_WAIT_MS`)는 Groq의 분당 토큰 창에서 나온 값이라 Gemini에서는 근거가
+   * 없습니다. 사용자가 이유 없이 1분을 기다리게 됩니다. 두 상한이 어긋나면 이 테스트가 먼저
+   * 실패합니다.
+   */
+  it("선별 결과는 묶음이 아무리 많아도 청크 하나에 담긴다", () => {
+    for (const count of [STAGE_A_CHUNK_MAX_UNITS + 1, STAGE_A_CHUNK_MAX_UNITS * 3]) {
+      const { units } = toStageAUnits(manyUnits(count));
+      expect(units.length).toBeLessThanOrEqual(STAGE_A_CHUNK_MAX_UNITS);
+      expect(splitUnitsIntoChunks(units, []).length).toBe(1);
+    }
+  });
+
+  /**
+   * 라우트가 복구를 소진하면 부분 결과를 `rateLimit` null로 돌려줍니다(route.ts의 degrade).
+   * 예전에는 이 응답을 응답 형식 오류로 던져서 정상 판단된 묶음까지 함께 버렸습니다.
+   *
+   * 청크가 여러 개일 때 뒤 청크를 계속 보내는지 보던 테스트였습니다. 선별이 개수 상한을 지키게
+   * 되면서 요청이 언제나 한 번이라 그 경로에 도달할 수 없고, 남은 계약은 저하 응답을 그대로
+   * 받아들여 판단 불가로 보고하는 것입니다.
+   */
+  it("저하 응답을 통째 실패로 만들지 않고 판단 불가로 보고한다", async () => {
+    const commits = manyUnits(3);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
-      sentChunks.push(request.units.map(({ pullRequestNumber }) => pullRequestNumber));
-      const degraded = sentChunks.length === 1;
       return jsonResponse({
         candidates: [],
-        unclassifiedShas: degraded ? [] : request.units.map(({ representativeSha }) => representativeSha),
-        // 저하의 표식은 판단 불가 묶음이 있다는 것이다.
-        unjudgedShas: degraded ? request.units.map(({ representativeSha }) => representativeSha) : [],
-        rateLimit: degraded ? null : { remainingTokens: 8_000, resetAfterMs: 1, usedTokens: 100 },
+        unclassifiedShas: [],
+        // 저하의 표식은 판단 불가 묶음이 있다는 것입니다.
+        unjudgedShas: request.units.map(({ representativeSha }) => representativeSha),
+        rateLimit: null,
       });
     });
 
@@ -368,37 +396,15 @@ describe("fetchStageACandidatesFromApi", () => {
       commits, [], () => undefined, undefined, async (ms) => { waits.push(ms); }
     );
 
-    const chunkCount = splitUnitsIntoChunks(toStageAUnits(commits).units, []).length;
-    expect(chunkCount).toBeGreaterThan(1);
-    expect(sentChunks).toHaveLength(chunkCount);
-    // 저하된 청크의 묶음은 판단 불가로 남고 뒤 청크의 판단은 살아 있다.
-    expect(output.unjudgedShas.length).toBeGreaterThan(0);
-    expect(output.unclassifiedShas.length).toBeGreaterThan(0);
-    // 남은 토큰을 모르므로 한 창을 기다린 뒤 넘어간다.
-    expect(waits[0]).toBe(STAGE_A_DEGRADED_WAIT_MS);
-  });
-
-  it("한도 메타데이터가 없고 판단 불가도 없으면 응답 형식 오류로 던진다", async () => {
-    // 저하가 아니라 정말 형식이 어긋난 응답이다. 이 경우의 기존 방어는 유지해야 한다.
-    const commits = manyUnits(MULTI_CHUNK_UNITS);
-    vi.mocked(fetch).mockImplementation(async (_url, init) => {
-      const request = parseRequest(init);
-      return jsonResponse({
-        candidates: [],
-        unclassifiedShas: request.units.map(({ representativeSha }) => representativeSha),
-        unjudgedShas: [],
-        rateLimit: null,
-      });
-    });
-
-    await expect(
-      fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined)
-    ).rejects.toMatchObject({ kind: "invalid_response" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    expect(output.unjudgedShas).toHaveLength(3);
+    // 청크가 하나면 다음 청크를 기다릴 일이 없습니다. 61초 대기가 사라졌다는 확인입니다.
+    expect(waits).toEqual([]);
   });
 
   it("체크포인트가 판단 대상 묶음 수를 함께 싣는다", async () => {
     // 실패 문구가 커밋 수로 분모를 다시 유도하지 않도록 체크포인트가 분모를 들고 다닌다.
-    const commits = manyUnits(MULTI_CHUNK_UNITS);
+    const commits = manyUnits(3);
     vi.mocked(fetch).mockResolvedValue(
       jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502)
     );
@@ -409,7 +415,7 @@ describe("fetchStageACandidatesFromApi", () => {
     ).rejects.toMatchObject({ checkpoint: { totalUnits: units.length } });
   });
 
-  it("청크마다 쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
+  it("쿼터를 보내고 쿼터 합이 전역 상한을 넘지 않는다", async () => {
     const commits = manyUnits(MULTI_CHUNK_UNITS);
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const request = parseRequest(init);
@@ -428,35 +434,36 @@ describe("fetchStageACandidatesFromApi", () => {
     expect(limits.reduce((sum, limit) => sum + limit, 0)).toBeLessThanOrEqual(20);
   });
 
-  it("실패 전 완료 청크 체크포인트로 재개해 이미 판단한 묶음을 다시 보내지 않는다", async () => {
-    const commits = manyUnits(MULTI_CHUNK_UNITS);
-    const firstChunk = splitUnitsIntoChunks(toStageAUnits(commits).units, [])[0];
-    vi.mocked(fetch)
-      .mockResolvedValueOnce(jsonResponse({
-        candidates: [],
-        unclassifiedShas: firstChunk.map(({ representativeSha }) => representativeSha),
-        unjudgedShas: [],
-        rateLimit: { remainingTokens: 0, resetAfterMs: 1, usedTokens: 100 },
-      }))
-      .mockResolvedValueOnce(jsonResponse({ error: { kind: "llm_failure", message: "실패" } }, 502));
-
-    let checkpoint: import("./types").StageACheckpoint | undefined;
-    try {
-      await fetchStageACandidatesFromApi(commits, [], () => undefined, undefined, async () => undefined);
-    } catch (error) {
-      checkpoint = (error as CandidateRequestError).checkpoint;
-    }
-    expect(checkpoint?.processedShas).toHaveLength(firstChunk.length);
-
-    vi.mocked(fetch).mockReset();
+  /**
+   * 체크포인트로 재개하면 이미 판단한 묶음을 다시 보내지 않습니다.
+   *
+   * 예전에는 청크 둘을 보내다 두 번째에서 실패하는 방식으로 체크포인트를 만들었습니다. 선별이
+   * 개수 상한을 지키게 되면서 요청이 언제나 한 번이라 그렇게는 만들 수 없고, 남은 계약은 주어진
+   * 체크포인트를 존중하는 것입니다. 체크포인트를 손으로 만들어 그 계약만 확인합니다.
+   */
+  it("체크포인트에 담긴 묶음은 다시 보내지 않는다", async () => {
+    const commits = manyUnits(3);
+    const units = toStageAUnits(commits).units;
+    const checkpoint: import("./types").StageACheckpoint = {
+      processedShas: [units[0].representativeSha],
+      candidates: [],
+      unclassifiedShas: [units[0].representativeSha],
+      unjudgedShas: [],
+      totalUnits: units.length,
+    };
     vi.mocked(fetch).mockResolvedValue(jsonResponse({
       candidates: [], unclassifiedShas: [], unjudgedShas: [], rateLimit: null,
     }));
+
     await fetchStageACandidatesFromApi(commits, [], () => undefined, checkpoint, async () => undefined);
+
     const resumed = parseRequest(vi.mocked(fetch).mock.calls[0][1]);
-    expect(resumed.units.some(({ representativeSha }) =>
-      checkpoint!.processedShas.includes(representativeSha)
-    )).toBe(false);
+    expect(resumed.units).toHaveLength(2);
+    expect(
+      resumed.units.some(({ representativeSha }) =>
+        checkpoint.processedShas.includes(representativeSha)
+      )
+    ).toBe(false);
   });
 
   it("프롬프트 예산을 넘는 묶음은 청크로 쪼개지 않고 선별에서 제외한다", async () => {
@@ -481,7 +488,8 @@ describe("fetchStageACandidatesFromApi", () => {
       .toEqual([2]);
     expect(output.unclassifiedShas).toHaveLength(2);
     expect(toStageAUnits(commits).excludedUnits).toHaveLength(1);
-    expect(toStageAUnits(commits).excludedUnits[0].reason).toBe("over_byte_budget");
+    // 묶음 하나하나는 예산 안에 들어가고 자리가 없어 밀린 것이므로 입력 상한 사유입니다.
+    expect(toStageAUnits(commits).excludedUnits[0].reason).toBe("over_input_budget");
   });
 });
 

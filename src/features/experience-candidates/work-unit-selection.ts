@@ -6,6 +6,7 @@ import {
 } from "./work-unit-score";
 import { renderWorkUnitSummary, summarizeWorkUnit } from "./work-unit-summary";
 import type { WorkUnit } from "./work-unit";
+import { STAGE_A_CHUNK_MAX_UNITS } from "./stage-a";
 
 /**
  * Stage A 한 번에 보낼 수 있는 작업 묶음의 프롬프트 바이트 상한입니다.
@@ -24,20 +25,29 @@ import type { WorkUnit } from "./work-unit";
  * 실리고 **15개가 `over_byte_budget`으로 제외됩니다.** 그 사유는 화면에 "한 번에 보낼 수 있는
  * 분량을 넘어 제외했습니다"로 나가는데, Gemini에서는 사실이 아닌 설명입니다.
  *
- * 새 값의 근거는 실측입니다(2026-09-01, `llm-wiki/raw/2026-09-01-Stage-A-입력-예산-재산정.md`).
- * 27묶음 전량은 프롬프트 17,343바이트이고, 같은 입력 5회에서 전수 응답 계약이 5회 모두
- * `27/27`이었으며 소요는 2,902~3,590밀리초로 예산 55초의 5.3~6.5퍼센트였습니다. 20,000은 그
- * 17,343 위에 15퍼센트를 얹은 값입니다.
+ * **2026-09-02에 20,000에서 110,000으로 다시 올렸습니다.** 20,000은 `demian` 27묶음(17,343바이트)
+ * 하나로 정한 값이었고, `andbread`를 재자마자 모자랐습니다. 그 저장소는 66묶음 전량이
+ * 35,550바이트인데 20,000에서는 10묶음만 실리고 **56묶음이 모델에 닿지 못했습니다.**
  *
- * 이 상한이 담는 묶음 수의 천장은 재지 못했습니다. 측정에 쓴 저장소가 27묶음이라 그 위에서 전수
- * 응답 계약이 어디서 깨지는지 모릅니다. Groq 시절 `andbread` 66묶음에서 첫 시도 계약 준수가
- * 33퍼센트였던 기록이 있으므로 개수가 늘면 깨진다고 보고, 개수 상한
- * (`STAGE_A_CHUNK_MAX_UNITS`)을 함께 둡니다. 이 상한을 더 올리려면 묶음이 더 많은 저장소로 계약
- * 준수를 먼저 재야 합니다.
+ * 이제 이 값은 묶음 수 상한(`STAGE_A_CHUNK_MAX_UNITS` 200)을 담을 수 있는 크기로 정합니다. 실측에서
+ * 200묶음이 109,333바이트였고 110,000은 그 값입니다. **바이트가 아니라 개수가 실질 상한입니다.**
+ * 바이트로만 걸면 같은 상한이 저장소마다 다른 묶음 수를 뜻합니다. 묶음 하나의 크기가 저장소마다
+ * 다르기 때문입니다. 근거와 측정은 `STAGE_A_CHUNK_MAX_UNITS`에 있습니다.
+ *
+ * 두 상한은 함께 움직여야 합니다. 어긋나면 선별 결과가 청크 둘로 갈리고, Groq의 분당 창에서 나온
+ * 61초 대기가 되살아납니다(`STAGE_A_DEGRADED_WAIT_MS`). 회귀 테스트가 두 값이 같은지 고정합니다.
  */
-export const STAGE_A_MAX_SELECTION_BYTES = 20_000;
+export const STAGE_A_MAX_SELECTION_BYTES = 110_000;
 
-export type WorkUnitSelectionExclusionReason = "below_score_threshold" | "over_byte_budget";
+/**
+ * 묶음이 판단 대상에서 빠진 이유입니다.
+ *
+ * `over_input_budget`은 2026-09-02에 `below_score_threshold`에서 이름을 바꿨습니다. 옛 이름은
+ * 점수가 어떤 고정 기준에 못 미쳤다는 뜻으로 읽히는데, 실제 방아쇠는 **입력 상한**입니다.
+ * `andbread` 66묶음에서 56개가 이 사유로 빠졌고, 상한을 올리자 같은 56개가 전부 들어왔습니다.
+ * 점수는 상한 안에서 무엇을 남길지 정하는 순서일 뿐 합격선이 아닙니다.
+ */
+export type WorkUnitSelectionExclusionReason = "over_input_budget" | "over_byte_budget";
 
 export interface SelectedWorkUnit<TCommit extends ScorableCommit> {
   readonly unit: WorkUnit<TCommit>;
@@ -67,8 +77,9 @@ export const WORK_UNIT_SELECTION_EXCLUSION_COPY: Record<
   WorkUnitSelectionExclusionReason,
   string
 > = {
-  below_score_threshold: "점수가 기준에 못 미쳐 판단 대상에서 제외했습니다",
-  over_byte_budget: "한 번에 보낼 수 있는 분량을 넘어 제외했습니다",
+  over_input_budget:
+    "한 번에 판단할 수 있는 입력 상한 안에서 점수 순으로 골랐고, 이 묶음은 그 안에 들지 못했습니다",
+  over_byte_budget: "이 묶음 하나가 한 번에 보낼 수 있는 분량을 혼자 넘습니다",
 };
 
 /**
@@ -90,10 +101,16 @@ export const WORK_UNIT_SELECTION_EXCLUSION_COPY: Record<
  *
  * 제외된 묶음은 사유와 점수를 달아 그대로 돌려줍니다. 조용히 버리면 사용자가 자기 작업이 왜
  * 안 보이는지 알 수 없습니다.
+ *
+ * **바이트와 개수 두 상한을 함께 지킵니다.** 개수 상한이 여기 없으면 묶음 요약이 작은 저장소에서
+ * 선별이 개수 상한을 넘는 결과를 내놓고, 그 결과를 `splitUnitsIntoChunks`가 청크 둘로 나눕니다.
+ * 청크가 갈리면 Groq의 분당 창에서 나온 61초 대기가 되살아나 사용자가 근거 없이 1분을 기다립니다
+ * (`STAGE_A_DEGRADED_WAIT_MS`). 선별이 두 상한을 모두 지키면 결과는 언제나 청크 하나입니다.
  */
 export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
   units: readonly WorkUnit<TCommit>[],
-  maxBytes: number = STAGE_A_MAX_SELECTION_BYTES
+  maxBytes: number = STAGE_A_MAX_SELECTION_BYTES,
+  maxUnits: number = STAGE_A_CHUNK_MAX_UNITS
 ): WorkUnitSelection<TCommit> {
   const scored = units.map((unit) => {
     const summary = summarizeWorkUnit(unit);
@@ -122,7 +139,11 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
     const groupBytes = group.reduce((sum, item) => sum + item.bytes, 0);
     // 묶음 사이마다 줄바꿈 한 글자가 들어갑니다.
     const separators = selected.length + group.length - 1;
-    if (!budgetExhausted && selectedBytes + groupBytes + separators <= maxBytes) {
+    if (
+      !budgetExhausted &&
+      selectedBytes + groupBytes + separators <= maxBytes &&
+      selected.length + group.length <= maxUnits
+    ) {
       group.forEach(({ unit, score: itemScore }) => selected.push({ unit, score: itemScore }));
       selectedBytes += groupBytes;
       continue;
@@ -132,7 +153,11 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
     // 무언가 선택됐다면 남은 예산을 채우려 하지 않고 점수 순위 그대로 자릅니다.
     const allowSplit = selected.length === 0;
     for (const { unit, score: itemScore, bytes, signals } of group) {
-      if (allowSplit && selectedBytes + bytes + selected.length <= maxBytes) {
+      if (
+        allowSplit &&
+        selectedBytes + bytes + selected.length <= maxBytes &&
+        selected.length < maxUnits
+      ) {
         selected.push({ unit, score: itemScore });
         selectedBytes += bytes;
         continue;
@@ -141,7 +166,16 @@ export function selectWorkUnitsForStageA<TCommit extends ScorableCommit>(
         unit,
         score: itemScore,
         signals,
-        reason: allowSplit ? "over_byte_budget" : "below_score_threshold",
+        /**
+         * 두 사유를 정확히 갈라야 화면 문구가 원인을 바로 지목합니다.
+         *
+         * `over_byte_budget`은 **이 묶음 하나가 혼자 예산을 넘는** 경우입니다. 상한을 올리지
+         * 않으면 이 묶음은 어떤 저장소에서도 들어가지 못합니다. 그 밖의 제외는 상한 안에 자리가
+         * 없어서 점수 순위에서 밀린 것이고, 상한을 올리면 들어옵니다. 2026-09-02까지는 무리를
+         * 쪼개는 경로 전체가 `over_byte_budget`이어서, 자리만 없던 묶음에도 "분량을 넘었다"고
+         * 알렸습니다.
+         */
+        reason: bytes > maxBytes ? "over_byte_budget" : "over_input_budget",
       });
     }
   }

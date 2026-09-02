@@ -35,6 +35,7 @@ const EMPTY_STAGE_A_SELECTION: StageASelectionState = {
   excludedCommits: [],
   excludedUnits: [],
   thresholdScore: 0,
+  selectedUnitCount: 0,
   unjudgedShas: [],
 };
 
@@ -183,6 +184,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });
@@ -232,6 +234,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });
@@ -250,6 +253,7 @@ describe("RepositoryAnalysisView Empty의 Stage A 제외 표시", () => {
         excludedCommits: [excludedCommit("abcdef1234567", "잡무 커밋")],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
         unjudgedShas: [],
       },
     });

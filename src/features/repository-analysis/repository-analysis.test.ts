@@ -34,6 +34,7 @@ const STAGE_A_OUTPUT: StageACandidateResult = {
   excludedCommits: [],
   excludedUnits: [],
   thresholdScore: 3,
+  selectedUnitCount: 0,
 };
 const STAGE_B_RESULT: StageBCandidateResult = {
   candidates: [
@@ -223,6 +224,7 @@ describe("generateCandidates", () => {
         excludedCommits: [{ sha: "sha-3", title: "오타 수정", reason: "no_pull_request" }],
         excludedUnits: [],
         thresholdScore: 3,
+        selectedUnitCount: 0,
       }),
     });
     const states: AnalysisState[] = [];
@@ -235,6 +237,7 @@ describe("generateCandidates", () => {
       excludedCommits: [{ sha: "sha-3", title: "오타 수정", reason: "no_pull_request" }],
       excludedUnits: [],
       thresholdScore: 3,
+      selectedUnitCount: 0,
       unjudgedShas: ["sha-2"],
     });
   });
@@ -261,6 +264,7 @@ describe("generateCandidates", () => {
       excludedCommits: STAGE_A_OUTPUT.excludedCommits,
       excludedUnits: STAGE_A_OUTPUT.excludedUnits,
       thresholdScore: STAGE_A_OUTPUT.thresholdScore,
+      selectedUnitCount: STAGE_A_OUTPUT.selectedUnitCount,
       unjudgedShas: STAGE_A_OUTPUT.unjudgedShas,
     });
   });
@@ -293,6 +297,7 @@ describe("generateCandidates", () => {
       excludedCommits: STAGE_A_OUTPUT.excludedCommits,
       excludedUnits: STAGE_A_OUTPUT.excludedUnits,
       thresholdScore: STAGE_A_OUTPUT.thresholdScore,
+      selectedUnitCount: STAGE_A_OUTPUT.selectedUnitCount,
       unjudgedShas: STAGE_A_OUTPUT.unjudgedShas,
     };
 
