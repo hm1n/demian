@@ -312,7 +312,7 @@ async function run(
   pullRequestNumber: number,
   snapshot: ExperienceEvidenceSnapshot
 ): Promise<RunResult> {
-  const prompt = buildInterviewQuestionPrompt(snapshot, variant);
+  const prompt = buildInterviewQuestionPrompt(snapshot, { variant });
   const base = {
     label: `${provider}/${model} ${variant}`,
     provider,
@@ -622,7 +622,7 @@ async function main(): Promise<void> {
       const total = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
       // 예산이 재는 대상은 렌더된 프롬프트입니다. 실제 상한 준수를 여기서도 확인합니다.
       const promptBytes = interviewQuestionPromptBytes(
-        buildInterviewQuestionPrompt(snapshot, "split")
+        buildInterviewQuestionPrompt(snapshot, { variant: "split" })
       );
       const promptTokens = estimateEvidenceTokens(renderInterviewEvidencePrompt(snapshot));
       const fileCount = commits.reduce((count, commit) => count + commit.files.length, 0);

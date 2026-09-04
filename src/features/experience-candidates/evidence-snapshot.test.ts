@@ -514,7 +514,7 @@ describe("근거 예산과 실제 프롬프트", () => {
       )
     );
 
-    const bytes = interviewQuestionPromptBytes(buildInterviewQuestionPrompt(snapshot, "split"));
+    const bytes = interviewQuestionPromptBytes(buildInterviewQuestionPrompt(snapshot, { variant: "split" }));
     expect(bytes).toBeLessThanOrEqual(INTERVIEW_QUESTION_MAX_PROMPT_BYTES);
     // 허용 오차를 쓰지 않고도 통과해야 합니다. 오차는 구성 오차용이고 상시로 쓰는 몫이 아닙니다.
     expect(bytes).toBeLessThanOrEqual(

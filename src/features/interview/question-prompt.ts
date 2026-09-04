@@ -40,6 +40,27 @@ const RULES = {
 } as const;
 
 /**
+ * 꼬리 질문에만 더하는 규칙입니다.
+ *
+ * 첫 질문 규칙 여섯 개는 그대로 둡니다. 여기 넷은 대화가 생겨서 새로 열리는 실패에 대응하며, 첫
+ * 질문에는 그 실패가 없습니다. 그래서 이력이 없는 요청에는 싣지 않습니다. 설계 근거는
+ * `llm-wiki/wiki/2026-09-03-꼬리질문-대화-프롬프트-전략.md` 2절에 있습니다.
+ *
+ * `noGrading`은 첫 질문의 `role`·`format`과 겹쳐 보이지만 겹치는 자리가 다릅니다. 첫 질문에는
+ * 평가하거나 요약할 답변 자체가 없습니다.
+ */
+const FOLLOW_UP_RULES = {
+  useAnswer:
+    "바로 앞의 사용자 답변에서 실제로 말한 것과 말하지 않은 것을 가릅니다. 말하지 않은 부분을 묻습니다.",
+  noRepeat:
+    "이미 물은 것을 다시 묻지 않습니다. 위 대화에 나온 질문의 답을 다시 요구하지 않습니다.",
+  answerNotEvidence:
+    "사용자 답변에 담긴 주장은 근거와 대조합니다. 근거로 확인되지 않는 주장은 Repository 사실로 전제하지 말고 확인하는 형태로 묻습니다.",
+  noGrading:
+    "답을 대신 쓰지 않습니다. 사용자의 답변을 요약하거나 평가하거나 칭찬하지 않고 다음 질문만 냅니다.",
+} as const;
+
+/**
  * 같은 규칙을 한 문단에 모아 둔 변형입니다.
  *
  * Stage A에서 이 형태가 "최대 N개"를 "N개만"으로 읽히게 만든 적이 있어 비교 대상으로 둡니다.
@@ -58,10 +79,25 @@ const SPLIT_SYSTEM_PROMPT = [
   RULES.format,
 ].join("\n\n");
 
+const MERGED_FOLLOW_UP_PROMPT = [MERGED_SYSTEM_PROMPT, ...Object.values(FOLLOW_UP_RULES)].join(" ");
+
+const SPLIT_FOLLOW_UP_PROMPT = [SPLIT_SYSTEM_PROMPT, ...Object.values(FOLLOW_UP_RULES)].join("\n\n");
+
+/**
+ * 시스템 프롬프트를 접습니다.
+ *
+ * `followUp`이 참이면 꼬리 질문 규칙을 더합니다. 이력이 없는 요청에는 더하지 않으므로 첫 질문
+ * 경로의 프롬프트는 지금과 같은 문자열입니다.
+ *
+ * 꼬리 질문 규칙에 별도의 변형 상수를 두지 않고 `variant`를 그대로 따릅니다. 비교하려는 것이 같은
+ * 지시를 한 문단에 두느냐 갈라 두느냐이고, 그 축은 규칙이 늘어나도 하나입니다.
+ */
 export function renderInterviewQuestionSystemPrompt(
-  variant: InterviewPromptVariant = INTERVIEW_QUESTION_PROMPT_VARIANT
+  variant: InterviewPromptVariant = INTERVIEW_QUESTION_PROMPT_VARIANT,
+  followUp = false
 ): string {
-  return variant === "merged" ? MERGED_SYSTEM_PROMPT : SPLIT_SYSTEM_PROMPT;
+  if (variant === "merged") return followUp ? MERGED_FOLLOW_UP_PROMPT : MERGED_SYSTEM_PROMPT;
+  return followUp ? SPLIT_FOLLOW_UP_PROMPT : SPLIT_SYSTEM_PROMPT;
 }
 
 /**
@@ -69,11 +105,16 @@ export function renderInterviewQuestionSystemPrompt(
  *
  * 프롬프트 바이트 상한을 근거 상한에서 유도하려면 시스템 프롬프트 몫을 알아야 합니다. 문구를 고치면
  * 이 값이 따라 움직이므로 상수를 손으로 갱신할 필요가 없습니다. 변형을 늘리면 여기에 함께 넣습니다.
+ *
+ * 꼬리 질문 규칙을 더한 쪽이 언제나 더 크므로 이 값은 그쪽에서 나옵니다. 첫 질문 요청에는 실제로
+ * 더 작은 프롬프트가 실리지만, 상한은 두 경로를 함께 덮어야 합니다.
  */
 export const INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES = Math.max(
-  ...(["split", "merged"] as const).map(
-    (variant) =>
-      new TextEncoder().encode(renderInterviewQuestionSystemPrompt(variant)).byteLength
+  ...(["split", "merged"] as const).flatMap((variant) =>
+    [false, true].map(
+      (followUp) =>
+        new TextEncoder().encode(renderInterviewQuestionSystemPrompt(variant, followUp)).byteLength
+    )
   )
 );
 

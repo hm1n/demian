@@ -6,6 +6,7 @@ import { evidenceSnapshotFixture } from "./question-fixture";
 import {
   buildInterviewQuestionPrompt,
   interviewQuestionPromptBytes,
+  toInterviewQuestionMessages,
   startInterviewQuestionStream,
   toThrowingTextStream,
   type GenerateInterviewQuestion,
@@ -227,5 +228,53 @@ describe("interviewQuestionPromptBytes", () => {
     expect(interviewQuestionPromptBytes(prompt)).toBeGreaterThan(
       new TextEncoder().encode(prompt.evidence).byteLength
     );
+  });
+});
+
+describe("대화 이력", () => {
+  const history = [
+    { role: "question" as const, text: "왜 이 구조를 골랐나요?" },
+    { role: "answer" as const, text: "재시도 비용을 줄이려고요." },
+  ];
+
+  it("이력이 없으면 첫 질문 프롬프트와 같다", () => {
+    // 첫 질문 경로는 지금과 같은 문자열을 받아야 합니다.
+    const first = buildInterviewQuestionPrompt(snapshot);
+
+    expect(first.history).toEqual([]);
+    expect(first).toEqual(buildInterviewQuestionPrompt(snapshot, { history: [] }));
+  });
+
+  it("이력이 있으면 시스템 프롬프트에 꼬리 질문 규칙이 붙는다", () => {
+    const followUp = buildInterviewQuestionPrompt(snapshot, { history });
+
+    expect(followUp.system).not.toBe(buildInterviewQuestionPrompt(snapshot).system);
+    expect(followUp.system).toContain("이미 물은 것을 다시 묻지 않습니다");
+    // 근거는 매 턴 전량이 그대로 실립니다.
+    expect(followUp.evidence).toBe(buildInterviewQuestionPrompt(snapshot).evidence);
+  });
+
+  it("프롬프트 바이트에 이력이 들어간다", () => {
+    const first = buildInterviewQuestionPrompt(snapshot);
+    const followUp = buildInterviewQuestionPrompt(snapshot, { history });
+
+    expect(interviewQuestionPromptBytes(followUp)).toBeGreaterThan(
+      interviewQuestionPromptBytes(first)
+    );
+  });
+
+  it("근거를 첫 사용자 메시지에 두고 질문과 답변을 자리로 가른다", () => {
+    // 접두사가 `시스템 + 근거`로 고정되어야 나중에 캐싱을 얹을 때 캐시가 맞습니다.
+    const prompt = buildInterviewQuestionPrompt(snapshot, { history });
+
+    expect(toInterviewQuestionMessages(prompt)).toEqual([
+      { role: "user", content: prompt.evidence },
+      { role: "assistant", content: history[0].text },
+      { role: "user", content: history[1].text },
+    ]);
+  });
+
+  it("이력이 없으면 사용자 메시지 하나만 보낸다", () => {
+    expect(toInterviewQuestionMessages(buildInterviewQuestionPrompt(snapshot))).toHaveLength(1);
   });
 });
