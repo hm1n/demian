@@ -8,6 +8,7 @@ import {
 } from "./question-fixture";
 import {
   renderInterviewEvidencePrompt,
+  INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES,
   renderInterviewQuestionSystemPrompt,
 } from "./question-prompt";
 
@@ -224,5 +225,52 @@ describe("renderInterviewQuestionSystemPrompt", () => {
       expect(merged).toContain(rule);
       expect(split).toContain(rule);
     }
+  });
+});
+
+describe("꼬리 질문 규칙", () => {
+  it("이력이 없는 요청에는 싣지 않는다", () => {
+    // 첫 질문에는 평가하거나 요약할 답변 자체가 없습니다. 첫 질문 경로의 프롬프트는 그대로입니다.
+    const first = renderInterviewQuestionSystemPrompt("split", false);
+
+    expect(first).not.toContain("이미 물은 것을 다시 묻지 않습니다");
+    expect(first).toBe(renderInterviewQuestionSystemPrompt("split"));
+  });
+
+  it("이력이 있으면 첫 질문 규칙을 그대로 두고 넷을 더한다", () => {
+    const followUp = renderInterviewQuestionSystemPrompt("split", true);
+
+    expect(followUp.startsWith(renderInterviewQuestionSystemPrompt("split"))).toBe(true);
+    for (const rule of [
+      "말하지 않은 부분을 묻습니다",
+      "이미 물은 것을 다시 묻지 않습니다",
+      "근거로 확인되지 않는 주장은 Repository 사실로 전제하지 말고",
+      "요약하거나 평가하거나 칭찬하지 않고",
+    ]) {
+      expect(followUp).toContain(rule);
+    }
+  });
+
+  it("두 변형이 같은 꼬리 질문 규칙을 담는다", () => {
+    const merged = renderInterviewQuestionSystemPrompt("merged", true);
+    const split = renderInterviewQuestionSystemPrompt("split", true);
+
+    expect(merged).not.toContain("\n\n");
+    expect(split).toContain("\n\n");
+    for (const rule of ["말하지 않은 부분을 묻습니다", "이미 물은 것을 다시 묻지 않습니다"]) {
+      expect(merged).toContain(rule);
+      expect(split).toContain(rule);
+    }
+  });
+
+  it("바이트 상한이 규칙을 더한 쪽에서 나온다", () => {
+    expect(INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES).toBe(
+      Math.max(
+        ...(["split", "merged"] as const).map(
+          (variant) =>
+            new TextEncoder().encode(renderInterviewQuestionSystemPrompt(variant, true)).byteLength
+        )
+      )
+    );
   });
 });

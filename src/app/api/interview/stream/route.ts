@@ -13,7 +13,7 @@ import {
 } from "@/features/interview/question-generation";
 import {
   MAX_INTERVIEW_STREAM_BODY_BYTES,
-  isInterviewStreamRequestBody,
+  parseInterviewStreamRequestBody,
 } from "@/features/interview/question-request";
 import { createQuestionSseStream } from "@/features/interview/question-stream";
 import { SSE_RESPONSE_HEADERS } from "@/features/interview/sse";
@@ -47,10 +47,21 @@ function invalidRequest(message: string): Response {
 function bodyTooLarge(): Response {
   return errorResponse(
     "body_too_large",
-    `요청 본문은 ${MAX_INTERVIEW_STREAM_BODY_BYTES / 1024}KB 이하여야 합니다.`,
+    `요청 본문은 ${Math.floor(MAX_INTERVIEW_STREAM_BODY_BYTES / 1024)}KB 이하여야 합니다.`,
     413
   );
 }
+
+/**
+ * 본문 검증 실패의 상태 코드입니다.
+ *
+ * 이력이 큰 요청을 `invalid_request`와 갈라 413으로 보냅니다. 형식이 어긋난 요청은 사용자가 손댈
+ * 자리가 없고, 이력이 큰 요청은 대화를 줄이면 풀립니다.
+ */
+const REQUEST_ERROR_STATUS = {
+  invalid_request: 422,
+  history_too_large: 413,
+} as const;
 
 /**
  * 생성 실패의 상태 코드입니다. 값은 `wiki/2026-08-21-stage-a-선별-계약.md`의 표를 그대로 씁니다.
@@ -173,23 +184,26 @@ export async function handleInterviewQuestionStream(
   } catch {
     return errorResponse("invalid_json", "요청 본문은 JSON이어야 합니다.", 400);
   }
-  if (!isInterviewStreamRequestBody(body)) {
-    return invalidRequest("근거 스냅샷 형식이 올바르지 않습니다.");
+  const parsed = parseInterviewStreamRequestBody(body);
+  if (!parsed.ok) {
+    return errorResponse(parsed.kind, parsed.message, REQUEST_ERROR_STATUS[parsed.kind]);
   }
+  const { snapshot, history } = parsed.body;
 
   // 모델에 실제로 실리는 프롬프트를 서버에서 접어 보고 상한을 확인합니다. 스냅샷을 만드는 쪽에
   // 이미 상한이 있지만 이 route는 클라이언트가 보낸 값을 그대로 받으므로 여기서 한 번 더 봅니다.
   // Stage A route가 같은 이유로 같은 가드를 둡니다.
   const promptBytes = interviewQuestionPromptBytes(
-    buildInterviewQuestionPrompt(body.snapshot, options.variant)
+    buildInterviewQuestionPrompt(snapshot, { history, variant: options.variant })
   );
   if (promptBytes > INTERVIEW_QUESTION_MAX_PROMPT_BYTES) {
     return invalidRequest("질문 근거가 한 번에 보낼 수 있는 크기를 넘었습니다.");
   }
 
   try {
-    const question = await startInterviewQuestionStream(body.snapshot, {
+    const question = await startInterviewQuestionStream(snapshot, {
       ...options,
+      history,
       signal: request.signal,
     });
     return new Response(createQuestionSseStream(question, { signal: request.signal }), {

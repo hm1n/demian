@@ -1,3 +1,11 @@
+import {
+  INTERVIEW_HISTORY_ITEM_MAX_BYTES,
+  INTERVIEW_HISTORY_MAX_BYTES,
+  INTERVIEW_HISTORY_MAX_ITEMS,
+  interviewHistoryItemBytes,
+  isWellFormedInterviewHistory,
+  type InterviewHistoryMessage,
+} from "./history";
 import type {
   EvidenceSnapshotCommit,
   EvidenceSnapshotFile,
@@ -8,20 +16,38 @@ import type {
 /**
  * `POST /api/interview/stream`의 요청 본문입니다. 하위 이슈 B와 공유하는 계약이고 착수 전에
  * 고정했습니다. 서버는 커밋과 diff를 다시 조립하지 않고 스냅샷을 그대로 소비합니다.
+ *
+ * `history`가 없거나 비어 있으면 첫 질문 생성입니다. 있으면 마지막 답변에 이어지는 꼬리 질문
+ * 생성입니다. 근거는 두 경우 모두 전량이 실립니다.
  */
 export interface InterviewStreamRequestBody {
   readonly snapshot: ExperienceEvidenceSnapshot;
+  readonly history: readonly InterviewHistoryMessage[];
 }
 
 /**
- * 요청 본문 상한입니다.
+ * 근거 스냅샷 하나가 차지하는 본문 몫입니다.
  *
- * 근거 스냅샷은 만들 때 추정 3,500토큰으로 묶이고 실측 직렬화 크기는 10KB대였습니다. 64KB는 그
+ * 근거 스냅샷은 만들 때 추정 5,250토큰으로 묶이고 실측 직렬화 크기는 10KB대였습니다. 64KB는 그
  * 위로 넉넉한 자리이면서, 본문을 다 읽기 전에 거절할 수 있는 크기입니다. Stage A의 4.5MB를 쓰지
  * 않는 이유는 입력의 성격이 다르기 때문입니다. Stage A는 저장소 전체 커밋 요약을 받고 이 route는
  * 이미 상한이 걸린 스냅샷 하나만 받습니다.
  */
-export const MAX_INTERVIEW_STREAM_BODY_BYTES = 64 * 1024;
+const SNAPSHOT_BODY_BYTES = 64 * 1024;
+
+/**
+ * 요청 본문 상한입니다.
+ *
+ * 2026-09-03까지는 근거 스냅샷 하나만 받는 전제로 64KB였습니다. 꼬리 질문은 클라이언트가 대화
+ * 전문을 매 턴 실어 보내므로 그 값이 먼저 깨집니다. 실측에서 1,500자 답변 기준 10턴 본문이 58KB
+ * 근처였고 15턴에서 상한을 넘겼습니다
+ * (`llm-wiki/raw/2026-09-03-꼬리질문-근거-재전송-비용-비교-session-log.md` 5절).
+ *
+ * **근거 몫을 손대지 않고 이력 몫만 더합니다.** 이렇게 두면 상한이 커지기만 하므로 지금 통과하는
+ * 첫 질문 요청은 그대로 통과합니다. 이력 몫은 `INTERVIEW_MAX_TURNS`에서 유도되므로 지원할 턴 수를
+ * 바꾸면 이 값이 따라옵니다.
+ */
+export const MAX_INTERVIEW_STREAM_BODY_BYTES = SNAPSHOT_BODY_BYTES + INTERVIEW_HISTORY_MAX_BYTES;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
@@ -134,6 +160,74 @@ export function isExperienceEvidenceSnapshot(value: unknown): value is Experienc
   return value.candidateSha === (value.representativeCommit as EvidenceSnapshotCommit).sha;
 }
 
-export function isInterviewStreamRequestBody(value: unknown): value is InterviewStreamRequestBody {
-  return isRecord(value) && isExperienceEvidenceSnapshot(value.snapshot);
+function isHistoryMessage(value: unknown): value is InterviewHistoryMessage {
+  if (!isRecord(value)) return false;
+  return (value.role === "question" || value.role === "answer") && typeof value.text === "string";
+}
+
+/**
+ * 요청 본문 파싱 결과입니다.
+ *
+ * 실패를 하나로 묶지 않는 이유는 사용자가 할 수 있는 일이 다르기 때문입니다. 모양이 어긋난 요청은
+ * 같은 입력으로 다시 보내도 풀리지 않고 사용자가 손댈 것도 없습니다. 이력이 큰 요청은 대화를 줄이면
+ * 풀립니다. 두 갈래를 같은 분류로 보내면 "다시 시도" 안내 하나로 뭉개집니다.
+ */
+export type InterviewStreamRequestParseResult =
+  | { readonly ok: true; readonly body: InterviewStreamRequestBody }
+  | {
+      readonly ok: false;
+      readonly kind: "invalid_request" | "history_too_large";
+      readonly message: string;
+    };
+
+/**
+ * 요청 본문을 검증해 계약대로 만든 값으로 바꿉니다.
+ *
+ * `history`는 없어도 되고, 없으면 빈 배열로 채웁니다. 첫 질문 요청이 `history` 없이 오던 지금
+ * 형태 그대로 통과해야 하기 때문입니다.
+ *
+ * 모양 검증과 크기 검증을 갈라 부릅니다. 모양이 어긋난 이력의 크기를 재는 것은 의미가 없으므로
+ * 모양을 먼저 봅니다.
+ */
+export function parseInterviewStreamRequestBody(
+  value: unknown
+): InterviewStreamRequestParseResult {
+  if (!isRecord(value) || !isExperienceEvidenceSnapshot(value.snapshot)) {
+    return {
+      ok: false,
+      kind: "invalid_request",
+      message: "근거 스냅샷 형식이 올바르지 않습니다.",
+    };
+  }
+
+  const rawHistory = value.history ?? [];
+  if (!Array.isArray(rawHistory) || !rawHistory.every(isHistoryMessage)) {
+    return { ok: false, kind: "invalid_request", message: "대화 이력 형식이 올바르지 않습니다." };
+  }
+  const history: readonly InterviewHistoryMessage[] = rawHistory;
+  if (!isWellFormedInterviewHistory(history)) {
+    return {
+      ok: false,
+      kind: "invalid_request",
+      message:
+        "대화 이력은 질문으로 시작해 질문과 답변이 번갈아 나오고 답변으로 끝나야 하며, 빈 항목이 있을 수 없습니다.",
+    };
+  }
+
+  if (history.length > INTERVIEW_HISTORY_MAX_ITEMS) {
+    return {
+      ok: false,
+      kind: "history_too_large",
+      message: `대화 이력은 ${INTERVIEW_HISTORY_MAX_ITEMS}개 이하여야 합니다.`,
+    };
+  }
+  if (history.some((message) => interviewHistoryItemBytes(message) > INTERVIEW_HISTORY_ITEM_MAX_BYTES)) {
+    return {
+      ok: false,
+      kind: "history_too_large",
+      message: `질문과 답변은 하나에 ${INTERVIEW_HISTORY_ITEM_MAX_BYTES}바이트 이하여야 합니다.`,
+    };
+  }
+
+  return { ok: true, body: { snapshot: value.snapshot, history } };
 }

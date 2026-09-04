@@ -1,5 +1,10 @@
 import { streamText } from "ai";
 import { generationEmptyError } from "./errors";
+import {
+  INTERVIEW_HISTORY_MAX_BYTES,
+  INTERVIEW_HISTORY_MAX_ITEMS,
+  type InterviewHistoryMessage,
+} from "./history";
 import { mapInterviewLlmError } from "./llm-error";
 import {
   INTERVIEW_QUESTION_PROMPT_VARIANT,
@@ -88,16 +93,26 @@ const PROMPT_BYTES_TOLERANCE = 256;
  * 유도로 두면 근거 상한만 바꿔도 이 값이 따라오고, 근거 상한을 넘긴 스냅샷은 예외 없이 걸립니다.
  * 예전 14,000은 계산된 상한보다 18% 높아 그만큼 넘긴 스냅샷을 통과시켰습니다. 측정 근거는
  * `llm-wiki/raw/2026-08-28-첫-질문-생성-모델-실측.md`에 있습니다.
+ *
+ * 꼬리 질문이 붙으면서 이력 몫이 식에 들어왔습니다. 이력도 손으로 고른 값이 아니라
+ * `INTERVIEW_MAX_TURNS`에서 유도됩니다(`history.ts`). 문단을 잇는 2바이트는 시스템과 근거 사이에
+ * 하나, 이력 항목마다 하나씩 들어가므로 `1 + 항목 상한`만큼 셉니다.
  */
 export const INTERVIEW_QUESTION_MAX_PROMPT_BYTES =
   EVIDENCE_SNAPSHOT_MAX_INPUT_TOKENS * EVIDENCE_SNAPSHOT_BYTES_PER_TOKEN +
   INTERVIEW_QUESTION_SYSTEM_PROMPT_MAX_BYTES +
-  2 +
+  INTERVIEW_HISTORY_MAX_BYTES +
+  2 * (1 + INTERVIEW_HISTORY_MAX_ITEMS) +
   PROMPT_BYTES_TOLERANCE;
 
 export interface InterviewQuestionPrompt {
   readonly system: string;
   readonly evidence: string;
+  /**
+   * 근거 뒤에 오는 대화입니다. 비어 있으면 첫 질문 생성이고, 이때 모델에 실리는 것은 지금까지와
+   * 같이 시스템 프롬프트와 근거 하나뿐입니다.
+   */
+  readonly history: readonly InterviewHistoryMessage[];
 }
 
 /** provider 호출을 주입할 수 있게 열어 둡니다. 테스트와 측정 스크립트가 같은 자리에 들어옵니다. */
@@ -106,19 +121,41 @@ export type GenerateInterviewQuestion = (
   abortSignal: AbortSignal
 ) => AsyncIterable<string>;
 
+export interface BuildInterviewQuestionPromptOptions {
+  readonly history?: readonly InterviewHistoryMessage[];
+  readonly variant?: InterviewPromptVariant;
+}
+
+/**
+ * 모델에 실을 프롬프트를 접습니다.
+ *
+ * 이력이 있으면 시스템 프롬프트에 꼬리 질문 규칙이 더해집니다. 이력이 없으면 첫 질문 경로와
+ * 완전히 같은 값이 나옵니다.
+ */
 export function buildInterviewQuestionPrompt(
   snapshot: ExperienceEvidenceSnapshot,
-  variant: InterviewPromptVariant = INTERVIEW_QUESTION_PROMPT_VARIANT
+  {
+    history = [],
+    variant = INTERVIEW_QUESTION_PROMPT_VARIANT,
+  }: BuildInterviewQuestionPromptOptions = {}
 ): InterviewQuestionPrompt {
   return {
-    system: renderInterviewQuestionSystemPrompt(variant),
+    system: renderInterviewQuestionSystemPrompt(variant, history.length > 0),
     evidence: renderInterviewEvidencePrompt(snapshot),
+    history,
   };
 }
 
-/** 프롬프트 전체의 UTF-8 바이트입니다. route 가드와 측정이 같은 값을 보게 합니다. */
+/**
+ * 프롬프트 전체의 UTF-8 바이트입니다. route 가드와 측정이 같은 값을 보게 합니다.
+ *
+ * 이력 항목도 문단 하나로 세어 시스템·근거와 같은 방식으로 잇습니다. 실제 호출은 항목을 따로 된
+ * 메시지로 보내지만, 재는 것은 모델이 읽는 본문의 크기이므로 항목마다 구분자 2바이트를 한 번씩
+ * 얹으면 충분합니다.
+ */
 export function interviewQuestionPromptBytes(prompt: InterviewQuestionPrompt): number {
-  return new TextEncoder().encode(`${prompt.system}\n\n${prompt.evidence}`).byteLength;
+  const parts = [prompt.system, prompt.evidence, ...prompt.history.map(({ text }) => text)];
+  return new TextEncoder().encode(parts.join("\n\n")).byteLength;
 }
 
 /** `streamText` 결과에서 우리가 실제로 쓰는 부분만 봅니다. provider 종류에 묶이지 않게 둡니다. */
@@ -175,15 +212,39 @@ export async function* toThrowingTextStream(
  */
 export const INTERVIEW_QUESTION_MAX_RETRIES = 1;
 
+/**
+ * 프롬프트를 provider가 받는 메시지 배열로 바꿉니다.
+ *
+ * 근거를 시스템이 아니라 첫 사용자 메시지에 두는 이유는 두 가지입니다. 첫 질문 경로가 이미 그
+ * 배치이고, 접두사가 `시스템 + 근거`로 고정되어야 나중에 캐싱을 얹을 때 캐시가 맞습니다. 이력이
+ * 비어 있으면 사용자 메시지 하나짜리 배열이 되어 2026-09-03까지의 `prompt: evidence` 호출과 같은
+ * 입력입니다.
+ *
+ * 질문은 `assistant`, 답변은 `user`입니다. 모델이 만든 것과 사용자가 쓴 것이 자리로 갈려야 직전
+ * 답변에 이어 묻는다는 지시가 가리킬 대상이 생깁니다.
+ */
+export function toInterviewQuestionMessages({
+  evidence,
+  history,
+}: InterviewQuestionPrompt): { role: "user" | "assistant"; content: string }[] {
+  return [
+    { role: "user", content: evidence },
+    ...history.map(({ role, text }) => ({
+      role: role === "question" ? ("assistant" as const) : ("user" as const),
+      content: text,
+    })),
+  ];
+}
+
 export function createInterviewQuestionGenerate(
   model: string = INTERVIEW_QUESTION_MODEL
 ): GenerateInterviewQuestion {
-  return ({ system, evidence }, abortSignal) =>
+  return (prompt, abortSignal) =>
     toThrowingTextStream(
       streamText({
         model: createInterviewQuestionModel(model),
-        system,
-        prompt: evidence,
+        system: prompt.system,
+        messages: toInterviewQuestionMessages(prompt),
         abortSignal,
         maxRetries: INTERVIEW_QUESTION_MAX_RETRIES,
       })
@@ -212,6 +273,8 @@ export interface InterviewQuestionStream {
 
 export interface StartInterviewQuestionStreamOptions {
   generate?: GenerateInterviewQuestion;
+  /** 지나간 질문과 답변입니다. 비어 있으면 첫 질문을 만듭니다. */
+  history?: readonly InterviewHistoryMessage[];
   variant?: InterviewPromptVariant;
   firstChunkTimeoutMs?: number;
   totalTimeoutMs?: number;
@@ -223,6 +286,7 @@ export async function startInterviewQuestionStream(
   snapshot: ExperienceEvidenceSnapshot,
   {
     generate = defaultGenerate,
+    history,
     variant,
     firstChunkTimeoutMs = INTERVIEW_QUESTION_FIRST_CHUNK_TIMEOUT_MS,
     totalTimeoutMs = INTERVIEW_QUESTION_TOTAL_TIMEOUT_MS,
@@ -268,7 +332,7 @@ export async function startInterviewQuestionStream(
     );
   }
 
-  const prompt = buildInterviewQuestionPrompt(snapshot, variant);
+  const prompt = buildInterviewQuestionPrompt(snapshot, { history, variant });
   const iterator = generate(prompt, controller.signal)[Symbol.asyncIterator]();
 
   /**

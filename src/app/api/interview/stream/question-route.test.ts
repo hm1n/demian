@@ -4,8 +4,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { evidenceSnapshotFixture } from "@/features/interview/question-fixture";
 import {
   INTERVIEW_QUESTION_MAX_PROMPT_BYTES,
+  toInterviewQuestionMessages,
   type GenerateInterviewQuestion,
 } from "@/features/interview/question-generation";
+import {
+  INTERVIEW_HISTORY_ITEM_MAX_BYTES,
+  INTERVIEW_HISTORY_MAX_ITEMS,
+} from "@/features/interview/history";
 import { MAX_INTERVIEW_STREAM_BODY_BYTES } from "@/features/interview/question-request";
 import { createSseEventParser } from "@/features/interview/sse";
 import type { InterviewStreamEvent } from "@/features/interview/sse";
@@ -132,7 +137,9 @@ describe("POST /api/interview/stream", () => {
 
   it("프롬프트가 상한을 넘으면 LLM을 부르기 전에 422로 거절한다", async () => {
     // 스냅샷을 만드는 쪽에 이미 상한이 있지만 이 route는 클라이언트가 보낸 값을 그대로 받습니다.
-    const longMessage = "가".repeat(INTERVIEW_QUESTION_MAX_PROMPT_BYTES);
+    // 한국어 한 글자가 3바이트이므로 프롬프트 상한만 넘기고 본문 상한은 넘기지 않습니다. 본문
+    // 상한을 함께 넘기면 앞 단계에서 413으로 끊겨 이 가드가 도달 불가능해집니다.
+    const longMessage = "가".repeat(Math.ceil(INTERVIEW_QUESTION_MAX_PROMPT_BYTES / 3));
     const oversized = {
       ...snapshot,
       representativeCommit: { ...snapshot.representativeCommit, message: longMessage },
@@ -149,6 +156,97 @@ describe("POST /api/interview/stream", () => {
 
     expect(response.status).toBe(422);
     expect(called).toBe(false);
+  });
+
+  it("이력을 실으면 마지막 답변에 이어지는 질문을 만든다", async () => {
+    // 근거는 매 턴 전량이 다시 실리고 질문과 답변이 자리로 갈려 들어갑니다.
+    let received: { role: string; content: string }[] = [];
+    const history = [
+      { role: "question", text: "왜 이 구조를 골랐나요?" },
+      { role: "answer", text: "재시도 비용을 줄이려고요." },
+    ];
+    const response = await handleInterviewQuestionStream(request({ snapshot, history }), {
+      generate: (prompt) => {
+        received = toInterviewQuestionMessages(prompt);
+        return (async function* () {
+          yield "다음 질문";
+        })();
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(received).toHaveLength(3);
+    expect(received[0].content).toContain(snapshot.candidateSha);
+    expect(received.slice(1)).toEqual([
+      { role: "assistant", content: history[0].text },
+      { role: "user", content: history[1].text },
+    ]);
+  });
+
+  it("history 없는 요청은 첫 질문 경로 그대로 동작한다", async () => {
+    let received: { role: string; content: string }[] = [];
+    const response = await handleInterviewQuestionStream(request({ snapshot }), {
+      generate: (prompt) => {
+        received = toInterviewQuestionMessages(prompt);
+        return (async function* () {
+          yield "첫 질문";
+        })();
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(received).toHaveLength(1);
+    expect(received[0].role).toBe("user");
+  });
+
+  it("답변 없이 끝나는 이력을 422 invalid_request로 거절한다", async () => {
+    // 그대로 실으면 모델이 자기 질문에 이어 또 질문을 만듭니다.
+    const response = await handleInterviewQuestionStream(
+      request({ snapshot, history: [{ role: "question", text: "왜 이 구조를 골랐나요?" }] }),
+      { generate: chunks("질문") }
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ error: { kind: "invalid_request" } });
+  });
+
+  it("이력이 상한을 넘으면 413 history_too_large로 거절한다", async () => {
+    // 본문 상한과 갈라 둡니다. 대화를 줄이면 풀리는 실패라 안내가 다릅니다.
+    const tooMany = Array.from({ length: INTERVIEW_HISTORY_MAX_ITEMS / 2 + 1 }, (_, index) => [
+      { role: "question", text: `질문 ${index}` },
+      { role: "answer", text: `답변 ${index}` },
+    ]).flat();
+    const tooLong = [
+      { role: "question", text: "질문 0" },
+      { role: "answer", text: "a".repeat(INTERVIEW_HISTORY_ITEM_MAX_BYTES + 1) },
+    ];
+
+    for (const history of [tooMany, tooLong]) {
+      const response = await handleInterviewQuestionStream(request({ snapshot, history }), {
+        generate: chunks("질문"),
+      });
+
+      expect(response.status).toBe(413);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { kind: "history_too_large" },
+      });
+    }
+  });
+
+  it("상한을 지킨 이력은 줄바꿈이 많아도 본문 상한에 걸리지 않는다", async () => {
+    // 이력 상한을 원본 UTF-8로 재고 본문 상한을 직렬화 바이트로 재면 두 층이 다른 대상을 봅니다.
+    // 그러면 클라이언트가 자른 결과가 서버에 받아들여진다는 보장이 사라집니다.
+    const filler = "\n".repeat(INTERVIEW_HISTORY_ITEM_MAX_BYTES / 2);
+    const history = Array.from({ length: INTERVIEW_HISTORY_MAX_ITEMS }, (_, index) => ({
+      role: index % 2 === 0 ? "question" : "answer",
+      text: filler,
+    }));
+
+    const response = await handleInterviewQuestionStream(request({ snapshot, history }), {
+      generate: chunks("다음 질문"),
+    });
+
+    expect(response.status).toBe(200);
   });
 
   it("Last-Event-ID가 오면 이어받기를 지원하지 않는다고 거절한다", async () => {
