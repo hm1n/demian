@@ -1,3 +1,5 @@
+import { serializedByteLength } from "@/features/experience-candidates/evidence-snapshot";
+
 /**
  * 인터뷰 대화 이력입니다.
  *
@@ -34,10 +36,11 @@ export const INTERVIEW_MAX_TURNS = 10;
 export const INTERVIEW_HISTORY_MAX_ITEMS = 2 * (INTERVIEW_MAX_TURNS - 1);
 
 /**
- * 이력 항목 하나의 UTF-8 바이트 상한입니다. 질문과 답변에 같은 값을 씁니다.
+ * 이력 항목 하나의 상한입니다. 질문과 답변에 같은 값을 씁니다.
  *
  * 4,500바이트는 2026-09-03 비용 실측의 상단 답변 구간 1,500자입니다. 한국어 한 글자가 UTF-8
- * 3바이트이므로 1,500자가 4,500바이트입니다.
+ * 3바이트이므로 1,500자가 4,500바이트입니다. 한글은 JSON에서 이스케이프되지 않으므로 이 구간의
+ * 답변은 재는 방식과 무관하게 그대로 들어갑니다.
  *
  * 질문에 따로 작은 값을 두지 않습니다. 질문 본문은 서버가 만들지만 클라이언트가 되돌려 보내므로
  * 신뢰할 수 없어 검증은 어차피 필요하고, 첫 질문 실측이 178~213토큰(한국어 기준 약 640바이트)이라
@@ -47,15 +50,28 @@ export const INTERVIEW_HISTORY_MAX_ITEMS = 2 * (INTERVIEW_MAX_TURNS - 1);
 export const INTERVIEW_HISTORY_ITEM_MAX_BYTES = 4_500;
 
 /**
- * 이력 전체의 UTF-8 바이트 상한입니다. 요청 본문 상한과 프롬프트 바이트 상한이 이 값을 더해
- * 유도됩니다.
+ * 이력 전체의 상한입니다. 요청 본문 상한과 프롬프트 바이트 상한이 이 값을 더해 유도됩니다.
+ *
+ * 요청 본문 상한에서는 직렬화 바이트로 읽고, 프롬프트 바이트 상한에서는 원본 UTF-8 바이트로
+ * 읽습니다. 직렬화 바이트가 원본보다 작아지는 경우는 없으므로 뒤쪽 상한도 이 값으로 묶입니다.
  */
 export const INTERVIEW_HISTORY_MAX_BYTES =
   INTERVIEW_HISTORY_MAX_ITEMS * INTERVIEW_HISTORY_ITEM_MAX_BYTES;
 
-/** 이력 항목이 차지하는 UTF-8 바이트입니다. 검증과 절단이 같은 값을 보게 합니다. */
+/**
+ * 이력 항목이 요청 본문에서 차지하는 바이트입니다.
+ *
+ * **원본 UTF-8 바이트가 아니라 JSON 문자열로 직렬화했을 때의 바이트를 셉니다.** 이력은 요청 본문
+ * 상한과 같은 자리에서 겨루므로 같은 대상을 재야 합니다. 원본으로 재면 줄바꿈이 많은 답변에서 실제
+ * 요청 크기를 낮게 봅니다. 줄바꿈은 직렬화에서 2바이트가 되고 제어 문자는 6바이트가 됩니다.
+ *
+ * 재는 대상을 맞추지 않으면 상한을 모두 지킨 이력이 본문 상한에서 거절됩니다. 그러면 클라이언트가
+ * 자른 결과가 서버에 받아들여진다는 보장이 사라져, 절단을 클라이언트가 맡는 계약 자체가 성립하지
+ * 않습니다. 근거 스냅샷의 patch 예산이 같은 이유로 이미 `serializedByteLength`를 씁니다
+ * (`evidence-snapshot.ts`).
+ */
 export function interviewHistoryItemBytes(message: InterviewHistoryMessage): number {
-  return new TextEncoder().encode(message.text).byteLength;
+  return serializedByteLength(message.text);
 }
 
 /**

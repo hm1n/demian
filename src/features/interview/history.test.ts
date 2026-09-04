@@ -32,9 +32,34 @@ describe("이력 상한", () => {
     );
   });
 
-  it("항목 바이트를 문자 수가 아니라 UTF-8 바이트로 센다", () => {
+  it("항목 바이트를 문자 수가 아니라 바이트로 센다", () => {
     // 문자 수로 재면 한국어 답변의 실제 크기를 3분의 1로 봅니다.
     expect(interviewHistoryItemBytes({ role: "answer", text: "한글" })).toBe(6);
+  });
+
+  it("항목 바이트를 직렬화 기준으로 센다", () => {
+    // 원본 UTF-8로 재면 줄바꿈이 많은 답변의 실제 요청 크기를 절반으로 봅니다.
+    expect(interviewHistoryItemBytes({ role: "answer", text: "\n" })).toBe(2);
+    expect(interviewHistoryItemBytes({ role: "answer", text: "\u0001" })).toBe(6);
+  });
+
+  it("상한을 지킨 이력은 직렬화해도 이력 몫 안에 들어온다", () => {
+    // 이 성질이 깨지면 상한을 모두 지킨 이력이 요청 본문 상한에서 거절되고, 클라이언트가 자른
+    // 결과가 서버에 받아들여진다는 보장이 사라집니다.
+    const filler = "\n".repeat(INTERVIEW_HISTORY_ITEM_MAX_BYTES / 2);
+    const worstCase = Array.from({ length: INTERVIEW_HISTORY_MAX_ITEMS }, (_, index) => ({
+      role: index % 2 === 0 ? ("question" as const) : ("answer" as const),
+      text: filler,
+    }));
+
+    expect(Math.max(...worstCase.map(interviewHistoryItemBytes))).toBe(
+      INTERVIEW_HISTORY_ITEM_MAX_BYTES
+    );
+    const serialized = worstCase.reduce(
+      (sum, message) => sum + interviewHistoryItemBytes(message),
+      0
+    );
+    expect(serialized).toBeLessThanOrEqual(INTERVIEW_HISTORY_MAX_BYTES);
   });
 });
 

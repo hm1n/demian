@@ -233,6 +233,22 @@ describe("POST /api/interview/stream", () => {
     }
   });
 
+  it("상한을 지킨 이력은 줄바꿈이 많아도 본문 상한에 걸리지 않는다", async () => {
+    // 이력 상한을 원본 UTF-8로 재고 본문 상한을 직렬화 바이트로 재면 두 층이 다른 대상을 봅니다.
+    // 그러면 클라이언트가 자른 결과가 서버에 받아들여진다는 보장이 사라집니다.
+    const filler = "\n".repeat(INTERVIEW_HISTORY_ITEM_MAX_BYTES / 2);
+    const history = Array.from({ length: INTERVIEW_HISTORY_MAX_ITEMS }, (_, index) => ({
+      role: index % 2 === 0 ? "question" : "answer",
+      text: filler,
+    }));
+
+    const response = await handleInterviewQuestionStream(request({ snapshot, history }), {
+      generate: chunks("다음 질문"),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it("Last-Event-ID가 오면 이어받기를 지원하지 않는다고 거절한다", async () => {
     // 조용히 무시하면 클라이언트가 이어받았다고 믿고 앞부분에 새 생성 결과를 덧붙입니다.
     const response = await handleInterviewQuestionStream(
