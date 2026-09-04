@@ -25,6 +25,15 @@ export type InterviewStreamRequestErrorKind =
   | "invalid_request"
   | "body_too_large"
   /**
+   * 대화 이력이 상한을 넘은 경우입니다. `body_too_large`와 갈라 둔 이유는 사용자가 할 수 있는 일이
+   * 다르기 때문입니다. 본문 상한은 근거와 이력을 합친 값이라 사용자가 손댈 자리가 없고, 이 값은
+   * 대화를 줄이면 풀립니다. 재시도로는 풀리지 않는다는 점만 같습니다.
+   *
+   * 절단은 클라이언트가 하므로 정상 경로에서는 나오지 않습니다. 도달 경로는 답변 하나가 항목
+   * 상한을 넘는 경우입니다. 답변 입력에 화면 차원의 상한을 둘지는 하위 이슈에서 정합니다.
+   */
+  | "history_too_large"
+  /**
    * 서버 설정 때문에 요청을 처리하지 못한 경우입니다. `stage-a` route가 쓰는 값과 같습니다.
    *
    * 도달 경로가 있습니다. 세션 쿠키가 있는 요청에서 `GITHUB_SESSION_ENCRYPTION_KEY`가 없거나
@@ -69,6 +78,7 @@ const SERVER_ERROR_KINDS: Record<
   invalid_json: true,
   invalid_request: true,
   body_too_large: true,
+  history_too_large: true,
   server_error: true,
   generation_empty: true,
   json_parse: true,
@@ -119,6 +129,8 @@ const RETRY_CLEARS: Record<InterviewStreamErrorKind, boolean> = {
   invalid_json: false,
   invalid_request: false,
   body_too_large: false,
+  // 대화를 줄이면 풀립니다. 같은 이력으로 다시 보내면 같은 결과입니다.
+  history_too_large: false,
   // 서버 설정 문제입니다. 사용자가 다시 눌러도 설정이 바뀌지 않습니다.
   server_error: false,
   // 세션을 다시 만들어야 합니다. 같은 세션으로 다시 보내면 같은 결과입니다.
